@@ -19,13 +19,14 @@ from ..services.iscsi_cli import IscsiGatewaysConfig
 from ..services.rbd import format_bitmask
 from ..services.tcmu_service import TcmuService
 from ..exceptions import DashboardException
-from ..tools import TaskManager
+from ..tools import str_to_bool, TaskManager
 
 
 @UiApiController('/iscsi', Scope.ISCSI)
 class IscsiUi(BaseController):
 
-    REQUIRED_CEPH_ISCSI_CONFIG_VERSION = 10
+    REQUIRED_CEPH_ISCSI_CONFIG_MIN_VERSION = 10
+    REQUIRED_CEPH_ISCSI_CONFIG_MAX_VERSION = 11
 
     @Endpoint()
     @ReadPermission
@@ -43,10 +44,13 @@ class IscsiUi(BaseController):
                     status['message'] = 'Gateway {} is inaccessible'.format(gateway)
                     return status
             config = IscsiClient.instance().get_config()
-            if config['version'] != IscsiUi.REQUIRED_CEPH_ISCSI_CONFIG_VERSION:
-                status['message'] = 'Unsupported `ceph-iscsi` config version. Expected {} but ' \
-                                    'found {}.'.format(IscsiUi.REQUIRED_CEPH_ISCSI_CONFIG_VERSION,
-                                                       config['version'])
+            if config['version'] < IscsiUi.REQUIRED_CEPH_ISCSI_CONFIG_MIN_VERSION or \
+                    config['version'] > IscsiUi.REQUIRED_CEPH_ISCSI_CONFIG_MAX_VERSION:
+                status['message'] = 'Unsupported `ceph-iscsi` config version. ' \
+                                    'Expected >= {} and <= {} but found' \
+                                    ' {}.'.format(IscsiUi.REQUIRED_CEPH_ISCSI_CONFIG_MIN_VERSION,
+                                                  IscsiUi.REQUIRED_CEPH_ISCSI_CONFIG_MAX_VERSION,
+                                                  config['version'])
                 return status
             status['available'] = True
         except RequestException as e:
@@ -63,8 +67,37 @@ class IscsiUi(BaseController):
 
     @Endpoint()
     @ReadPermission
+    def version(self):
+        return {
+            'ceph_iscsi_config_version': IscsiClient.instance().get_config()['version']
+        }
+
+    @Endpoint()
+    @ReadPermission
     def settings(self):
-        return IscsiClient.instance().get_settings()
+        settings = IscsiClient.instance().get_settings()
+        if 'target_controls_limits' in settings:
+            target_default_controls = settings['target_default_controls']
+            for ctrl_k, ctrl_v in target_default_controls.items():
+                limits = settings['target_controls_limits'].get(ctrl_k, {})
+                if 'type' not in limits:
+                    # default
+                    limits['type'] = 'int'
+                    # backward compatibility
+                    if target_default_controls[ctrl_k] in ['Yes', 'No']:
+                        limits['type'] = 'bool'
+                        target_default_controls[ctrl_k] = str_to_bool(ctrl_v)
+                settings['target_controls_limits'][ctrl_k] = limits
+        if 'disk_controls_limits' in settings:
+            for backstore, disk_controls_limits in settings['disk_controls_limits'].items():
+                disk_default_controls = settings['disk_default_controls'][backstore]
+                for ctrl_k, ctrl_v in disk_default_controls.items():
+                    limits = disk_controls_limits.get(ctrl_k, {})
+                    if 'type' not in limits:
+                        # default
+                        limits['type'] = 'int'
+                    settings['disk_controls_limits'][backstore][ctrl_k] = limits
+        return settings
 
     @Endpoint()
     @ReadPermission
@@ -216,7 +249,7 @@ class IscsiTarget(RESTController):
 
     @iscsi_target_task('create', {'target_iqn': '{target_iqn}'})
     def create(self, target_iqn=None, target_controls=None, acl_enabled=None,
-               portals=None, disks=None, clients=None, groups=None):
+               auth=None, portals=None, disks=None, clients=None, groups=None):
         target_controls = target_controls or {}
         portals = portals or []
         disks = disks or []
@@ -230,12 +263,13 @@ class IscsiTarget(RESTController):
                                      component='iscsi')
         settings = IscsiClient.instance().get_settings()
         IscsiTarget._validate(target_iqn, target_controls, portals, disks, groups, settings)
-        IscsiTarget._create(target_iqn, target_controls, acl_enabled, portals, disks, clients,
-                            groups, 0, 100, config, settings)
+
+        IscsiTarget._create(target_iqn, target_controls, acl_enabled, auth, portals, disks,
+                            clients, groups, 0, 100, config, settings)
 
     @iscsi_target_task('edit', {'target_iqn': '{target_iqn}'})
     def set(self, target_iqn, new_target_iqn=None, target_controls=None, acl_enabled=None,
-            portals=None, disks=None, clients=None, groups=None):
+            auth=None, portals=None, disks=None, clients=None, groups=None):
         target_controls = target_controls or {}
         portals = IscsiTarget._sorted_portals(portals)
         disks = IscsiTarget._sorted_disks(disks)
@@ -255,8 +289,8 @@ class IscsiTarget(RESTController):
         IscsiTarget._validate(new_target_iqn, target_controls, portals, disks, groups, settings)
         config = IscsiTarget._delete(target_iqn, config, 0, 50, new_target_iqn, target_controls,
                                      portals, disks, clients, groups)
-        IscsiTarget._create(new_target_iqn, target_controls, acl_enabled, portals, disks, clients,
-                            groups, 50, 100, config, settings)
+        IscsiTarget._create(new_target_iqn, target_controls, acl_enabled, auth, portals, disks,
+                            clients, groups, 50, 100, config, settings)
 
     @staticmethod
     def _delete(target_iqn, config, task_progress_begin, task_progress_end, new_target_iqn=None,
@@ -544,8 +578,29 @@ class IscsiTarget(RESTController):
                                      component='iscsi')
 
     @staticmethod
+    def _update_targetauth(config, target_iqn, auth, gateway_name):
+        # Target level authentication was introduced in ceph-iscsi config v11
+        if config['version'] > 10:
+            user = auth['user']
+            password = auth['password']
+            mutual_user = auth['mutual_user']
+            mutual_password = auth['mutual_password']
+            IscsiClient.instance(gateway_name=gateway_name).update_targetauth(target_iqn,
+                                                                              user,
+                                                                              password,
+                                                                              mutual_user,
+                                                                              mutual_password)
+
+    @staticmethod
+    def _update_targetacl(target_config, target_iqn, acl_enabled, gateway_name):
+        if not target_config or target_config['acl_enabled'] != acl_enabled:
+            targetauth_action = ('enable_acl' if acl_enabled else 'disable_acl')
+            IscsiClient.instance(gateway_name=gateway_name).update_targetacl(target_iqn,
+                                                                             targetauth_action)
+
+    @staticmethod
     def _create(target_iqn, target_controls, acl_enabled,
-                portals, disks, clients, groups,
+                auth, portals, disks, clients, groups,
                 task_progress_begin, task_progress_end, config, settings):
         target_config = config['targets'].get(target_iqn, None)
         TaskManager.current_task().set_progress(task_progress_begin)
@@ -569,9 +624,15 @@ class IscsiTarget(RESTController):
                                                                                    host,
                                                                                    ip_list)
                 TaskManager.current_task().inc_progress(task_progress_inc)
-            targetauth_action = ('enable_acl' if acl_enabled else 'disable_acl')
-            IscsiClient.instance(gateway_name=gateway_name).update_targetauth(target_iqn,
-                                                                              targetauth_action)
+
+            if acl_enabled:
+                IscsiTarget._update_targetauth(config, target_iqn, auth, gateway_name)
+                IscsiTarget._update_targetacl(target_config, target_iqn, acl_enabled, gateway_name)
+
+            else:
+                IscsiTarget._update_targetacl(target_config, target_iqn, acl_enabled, gateway_name)
+                IscsiTarget._update_targetauth(config, target_iqn, auth, gateway_name)
+
             for disk in disks:
                 pool = disk['pool']
                 image = disk['image']
@@ -708,9 +769,6 @@ class IscsiTarget(RESTController):
             groups.append(group)
         groups = IscsiTarget._sorted_groups(groups)
         target_controls = target_config['controls']
-        for key, value in target_controls.items():
-            if isinstance(value, bool):
-                target_controls[key] = 'Yes' if value else 'No'
         acl_enabled = target_config['acl_enabled']
         target = {
             'target_iqn': target_iqn,
@@ -721,6 +779,18 @@ class IscsiTarget(RESTController):
             'target_controls': target_controls,
             'acl_enabled': acl_enabled
         }
+        # Target level authentication was introduced in ceph-iscsi config v11
+        if config['version'] > 10:
+            target_user = target_config['auth']['username']
+            target_password = target_config['auth']['password']
+            target_mutual_user = target_config['auth']['mutual_username']
+            target_mutual_password = target_config['auth']['mutual_password']
+            target['auth'] = {
+                'user': target_user,
+                'password': target_password,
+                'mutual_user': target_mutual_user,
+                'mutual_password': target_mutual_password
+            }
         return target
 
     @staticmethod

@@ -8,6 +8,7 @@ import { TableComponent } from '../../../shared/datatable/table/table.component'
 import { Icons } from '../../../shared/enum/icons.enum';
 import { CdTableColumn } from '../../../shared/models/cd-table-column';
 import { CdTableSelection } from '../../../shared/models/cd-table-selection';
+import { BooleanTextPipe } from '../../../shared/pipes/boolean-text.pipe';
 import { IscsiBackstorePipe } from '../../../shared/pipes/iscsi-backstore.pipe';
 
 @Component({
@@ -20,6 +21,8 @@ export class IscsiTargetDetailsComponent implements OnChanges, OnInit {
   selection: CdTableSelection;
   @Input()
   settings: any;
+  @Input()
+  cephIscsiConfigVersion: number;
 
   @ViewChild('highlightTpl', { static: true })
   highlightTpl: TemplateRef<any>;
@@ -40,7 +43,11 @@ export class IscsiTargetDetailsComponent implements OnChanges, OnInit {
   title: string;
   tree: TreeModel;
 
-  constructor(private i18n: I18n, private iscsiBackstorePipe: IscsiBackstorePipe) {}
+  constructor(
+    private i18n: I18n,
+    private iscsiBackstorePipe: IscsiBackstorePipe,
+    private booleanTextPipe: BooleanTextPipe
+  ) {}
 
   ngOnInit() {
     this.columns = [
@@ -75,7 +82,12 @@ export class IscsiTargetDetailsComponent implements OnChanges, OnInit {
   }
 
   private generateTree() {
-    this.metadata = { root: this.selectedItem.target_controls };
+    const target_meta = _.cloneDeep(this.selectedItem.target_controls);
+    // Target level authentication was introduced in ceph-iscsi config v11
+    if (this.cephIscsiConfigVersion > 10) {
+      _.extend(target_meta, _.cloneDeep(this.selectedItem.auth));
+    }
+    this.metadata = { root: target_meta };
     const cssClasses = {
       target: {
         expanded: _.join(
@@ -242,6 +254,13 @@ export class IscsiTargetDetailsComponent implements OnChanges, OnInit {
     };
   }
 
+  private format(value) {
+    if (typeof value === 'boolean') {
+      return this.booleanTextPipe.transform(value);
+    }
+    return value;
+  }
+
   onNodeSelected(e: NodeEvent) {
     if (e.node.id) {
       this.title = e.node.value;
@@ -250,19 +269,33 @@ export class IscsiTargetDetailsComponent implements OnChanges, OnInit {
       if (e.node.id === 'root') {
         this.columns[2].isHidden = false;
         this.data = _.map(this.settings.target_default_controls, (value, key) => {
+          value = this.format(value);
           return {
             displayName: key,
             default: value,
-            current: tempData[key] || value
+            current: !_.isUndefined(tempData[key]) ? this.format(tempData[key]) : value
           };
         });
+        // Target level authentication was introduced in ceph-iscsi config v11
+        if (this.cephIscsiConfigVersion > 10) {
+          ['user', 'password', 'mutual_user', 'mutual_password'].forEach((key) => {
+            this.data.push({
+              displayName: key,
+              default: null,
+              current: tempData[key]
+            });
+          });
+        }
       } else if (e.node.id.toString().startsWith('disk_')) {
         this.columns[2].isHidden = false;
         this.data = _.map(this.settings.disk_default_controls[tempData.backstore], (value, key) => {
+          value = this.format(value);
           return {
             displayName: key,
             default: value,
-            current: !_.isUndefined(tempData.controls[key]) ? tempData.controls[key] : value
+            current: !_.isUndefined(tempData.controls[key])
+              ? this.format(tempData.controls[key])
+              : value
           };
         });
         this.data.push({
@@ -276,7 +309,7 @@ export class IscsiTargetDetailsComponent implements OnChanges, OnInit {
           return {
             displayName: key,
             default: undefined,
-            current: value
+            current: this.format(value)
           };
         });
       }
