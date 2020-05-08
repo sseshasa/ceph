@@ -2,10 +2,14 @@
 #include <iostream>
 #include <numeric>
 #include <seastar/core/app-template.hh>
+#include "common/ceph_argparse.h"
+#include "crimson/common/config_proxy.h"
 #include "crimson/thread/ThreadPool.h"
+#include "include/msgr.h"
 
 using namespace std::chrono_literals;
-using ThreadPool = ceph::thread::ThreadPool;
+using ThreadPool = crimson::thread::ThreadPool;
+using crimson::common::local_conf;
 
 seastar::future<> test_accumulate(ThreadPool& tp) {
   static constexpr auto N = 5;
@@ -25,20 +29,44 @@ seastar::future<> test_accumulate(ThreadPool& tp) {
   });
 }
 
+seastar::future<> test_void_return(ThreadPool& tp) {
+  return tp.submit([=] {
+    std::this_thread::sleep_for(10ns);
+  });
+}
+
 int main(int argc, char** argv)
 {
-  ThreadPool tp{2, 128, 0};
   seastar::app_template app;
-  return app.run(argc, argv, [&tp] {
-      return tp.start().then([&tp] {
-          return test_accumulate(tp);
-        }).handle_exception([](auto e) {
-          std::cerr << "Error: " << e << std::endl;
-          seastar::engine().exit(1);
+  return app.run(argc, argv, [] {
+    std::vector<const char*> args;
+    std::string cluster;
+    std::string conf_file_list;
+    auto init_params = ceph_argparse_early_args(args,
+                                                CEPH_ENTITY_TYPE_CLIENT,
+                                                &cluster,
+                                                &conf_file_list);
+    return crimson::common::sharded_conf().start(init_params.name, cluster)
+    .then([conf_file_list] {
+      return local_conf().parse_config_files(conf_file_list);
+    }).then([] {
+      return seastar::do_with(std::make_unique<crimson::thread::ThreadPool>(2, 128, 0),
+                              [](auto& tp) {
+        return tp->start().then([&tp] {
+          return test_accumulate(*tp);
+        }).then([&tp] {
+          return test_void_return(*tp);
         }).finally([&tp] {
-          return tp.stop();
+          return tp->stop();
         });
       });
+    }).finally([] {
+      return crimson::common::sharded_conf().stop();
+    }).handle_exception([](auto e) {
+      std::cerr << "Error: " << e << std::endl;
+      seastar::engine().exit(1);
+    });
+  });
 }
 
 /*

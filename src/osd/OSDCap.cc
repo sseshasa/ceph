@@ -24,6 +24,7 @@
 #include "include/ipaddr.h"
 
 using std::ostream;
+using std::string;
 using std::vector;
 
 ostream& operator<<(ostream& out, const osd_rwxa_t& p)
@@ -249,7 +250,7 @@ bool OSDCapGrant::is_capable(
   const string& object,
   bool op_may_read,
   bool op_may_write,
-  const std::vector<OpRequest::ClassInfo>& classes,
+  const std::vector<OpInfo::ClassInfo>& classes,
   const entity_addr_t& addr,
   std::vector<bool>* class_allowed) const
 {
@@ -377,7 +378,7 @@ bool OSDCap::is_capable(const string& pool_name, const string& ns,
 			const OSDCapPoolTag::app_map_t& application_metadata,
 			const string& object,
                         bool op_may_read, bool op_may_write,
-			const std::vector<OpRequest::ClassInfo>& classes,
+			const std::vector<OpInfo::ClassInfo>& classes,
 			const entity_addr_t& addr) const
 {
   std::vector<bool> class_allowed(classes.size(), false);

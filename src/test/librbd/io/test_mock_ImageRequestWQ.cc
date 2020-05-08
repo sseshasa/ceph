@@ -40,11 +40,12 @@ template <>
 struct ImageDispatchSpec<librbd::MockTestImageCtx> {
   static ImageDispatchSpec* s_instance;
   AioCompletion *aio_comp = nullptr;
+  bool blocked = false;
 
   static ImageDispatchSpec* create_write_request(
       librbd::MockTestImageCtx &image_ctx, AioCompletion *aio_comp,
       Extents &&image_extents, bufferlist &&bl, int op_flags,
-      const ZTracer::Trace &parent_trace) {
+      const ZTracer::Trace &parent_trace, uint64_t tid) {
     ceph_assert(s_instance != nullptr);
     s_instance->aio_comp = aio_comp;
     return s_instance;
@@ -66,6 +67,9 @@ struct ImageDispatchSpec<librbd::MockTestImageCtx> {
   MOCK_CONST_METHOD0(were_all_throttled, bool());
   MOCK_CONST_METHOD1(set_throttled, void(uint64_t));
   MOCK_CONST_METHOD2(tokens_requested, bool(uint64_t, uint64_t *));
+  MOCK_CONST_METHOD0(get_image_extents, Extents());
+  MOCK_CONST_METHOD0(get_aio_completion, AioCompletion*());
+  MOCK_CONST_METHOD0(get_tid, uint64_t());
 
   ImageDispatchSpec() {
     s_instance = this;
@@ -252,6 +256,16 @@ struct TestMockIoImageRequestWQ : public TestMockFixture {
   void expect_start_op(MockImageDispatchSpec &mock_image_request) {
     EXPECT_CALL(mock_image_request, start_op()).Times(1);
   }
+
+  void expect_get_image_extents(MockImageDispatchSpec &mock_image_request,
+                                const Extents &extents) {
+    EXPECT_CALL(mock_image_request, get_image_extents())
+      .WillOnce(Return(extents));
+  }
+
+  void expect_get_tid(MockImageDispatchSpec &mock_image_request, uint64_t tid) {
+    EXPECT_CALL(mock_image_request, get_tid()).WillOnce(Return(tid));
+  }
 };
 
 TEST_F(TestMockIoImageRequestWQ, AcquireLockError) {
@@ -267,6 +281,8 @@ TEST_F(TestMockIoImageRequestWQ, AcquireLockError) {
   auto mock_queued_image_request = new MockImageDispatchSpec();
   expect_was_throttled(*mock_queued_image_request, false);
   expect_set_throttled(*mock_queued_image_request);
+  expect_get_image_extents(*mock_queued_image_request, {});
+  expect_get_tid(*mock_queued_image_request, 0);
 
   InSequence seq;
   MockImageRequestWQ mock_image_request_wq(&mock_image_ctx, "io", 60, nullptr);
@@ -314,6 +330,8 @@ TEST_F(TestMockIoImageRequestWQ, AcquireLockBlacklisted) {
   auto mock_queued_image_request = new MockImageDispatchSpec();
   expect_was_throttled(*mock_queued_image_request, false);
   expect_set_throttled(*mock_queued_image_request);
+  expect_get_image_extents(*mock_queued_image_request, {});
+  expect_get_tid(*mock_queued_image_request, 0);
 
   InSequence seq;
   MockImageRequestWQ mock_image_request_wq(&mock_image_ctx, "io", 60, nullptr);
@@ -354,6 +372,8 @@ TEST_F(TestMockIoImageRequestWQ, RefreshError) {
   auto mock_queued_image_request = new MockImageDispatchSpec();
   expect_was_throttled(*mock_queued_image_request, false);
   expect_set_throttled(*mock_queued_image_request);
+  expect_get_image_extents(*mock_queued_image_request, {});
+  expect_get_tid(*mock_queued_image_request, 0);
 
   InSequence seq;
   MockImageRequestWQ mock_image_request_wq(&mock_image_ctx, "io", 60, nullptr);
@@ -402,7 +422,6 @@ TEST_F(TestMockIoImageRequestWQ, QosNoLimit) {
   expect_is_refresh_request(mock_image_ctx, false);
   expect_is_write_op(mock_queued_image_request, true);
   expect_dequeue(mock_image_request_wq, &mock_queued_image_request);
-  expect_start_op(mock_queued_image_request);
   ASSERT_TRUE(mock_image_request_wq.invoke_dequeue() == &mock_queued_image_request);
 }
 

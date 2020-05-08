@@ -28,6 +28,7 @@
 
 #include "acconfig.h"
 #include "common/ceph_mutex.h"
+#include "include/common_fwd.h"
 
 #if defined(HAVE_LIBAIO) || defined(HAVE_POSIXAIO)
 #include "ceph_aio.h"
@@ -63,7 +64,6 @@
 #define  WRITE_LIFE_MAX  	1
 #endif
 
-class CephContext;
 
 /// track in-flight io
 struct IOContext {
@@ -138,8 +138,8 @@ private:
   std::atomic_int ioc_reap_count = {0};
 
 protected:
-  uint64_t size;
-  uint64_t block_size;
+  uint64_t size = 0;
+  uint64_t block_size = 0;
   bool support_discard = false;
   bool rotational = true;
   bool lock_exclusive = true;
@@ -149,8 +149,6 @@ public:
   void *aio_callback_priv;
   BlockDevice(CephContext* cct, aio_callback_t cb, void *cbpriv)
   : cct(cct),
-    size(0),
-    block_size(0),
     aio_callback(cb),
     aio_callback_priv(cbpriv)
  {}
@@ -194,7 +192,7 @@ public:
   virtual int read(
     uint64_t off,
     uint64_t len,
-    bufferlist *pbl,
+    ceph::buffer::list *pbl,
     IOContext *ioc,
     bool buffered) = 0;
   virtual int read_random(
@@ -204,18 +202,18 @@ public:
     bool buffered) = 0;
   virtual int write(
     uint64_t off,
-    bufferlist& bl,
+    ceph::buffer::list& bl,
     bool buffered,
     int write_hint = WRITE_LIFE_NOT_SET) = 0;
 
   virtual int aio_read(
     uint64_t off,
     uint64_t len,
-    bufferlist *pbl,
+    ceph::buffer::list *pbl,
     IOContext *ioc) = 0;
   virtual int aio_write(
     uint64_t off,
-    bufferlist& bl,
+    ceph::buffer::list& bl,
     IOContext *ioc,
     bool buffered,
     int write_hint = WRITE_LIFE_NOT_SET) = 0;

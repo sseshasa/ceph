@@ -12,6 +12,7 @@
  *
  */
 
+#include "include/compat.h"
 #include "gtest/gtest.h"
 #include "include/cephfs/libcephfs.h"
 #include "include/stat.h"
@@ -21,7 +22,6 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <dirent.h>
-#include <sys/xattr.h>
 #include <sys/uio.h>
 #include <sys/time.h>
 #include <sys/resource.h>
@@ -30,11 +30,16 @@
 
 #ifdef __linux__
 #include <limits.h>
+#include <sys/xattr.h>
 #endif
 
 #include <map>
 #include <vector>
 #include <thread>
+
+#ifndef ALLPERMS
+#define ALLPERMS (S_ISUID|S_ISGID|S_ISVTX|S_IRWXU|S_IRWXG|S_IRWXO)
+#endif
 
 TEST(LibCephFS, OpenEmptyComponent) {
 
@@ -2266,5 +2271,42 @@ TEST(LibCephFS, SnapXattrs) {
   }
   ASSERT_EQ(found, 0);
 
+  ceph_shutdown(cmount);
+}
+
+TEST(LibCephFS, Lseek) {
+  struct ceph_mount_info *cmount;
+  ASSERT_EQ(0, ceph_create(&cmount, NULL));
+  ASSERT_EQ(0, ceph_conf_read_file(cmount, NULL));
+  ASSERT_EQ(0, ceph_conf_parse_env(cmount, NULL));
+  ASSERT_EQ(0, ceph_mount(cmount, "/"));
+
+  char c_path[1024];
+  sprintf(c_path, "test_lseek_%d", getpid());
+  int fd = ceph_open(cmount, c_path, O_RDWR|O_CREAT|O_TRUNC, 0666);
+  ASSERT_LT(0, fd);
+
+  const char *out_buf = "hello world";
+  size_t size = strlen(out_buf);
+  ASSERT_EQ(ceph_write(cmount, fd, out_buf, size, 0), (int)size);
+
+  /* basic SEEK_SET/END/CUR tests */
+  ASSERT_EQ(0, ceph_lseek(cmount, fd, 0, SEEK_SET));
+  ASSERT_EQ(size, ceph_lseek(cmount, fd, 0, SEEK_END));
+  ASSERT_EQ(0, ceph_lseek(cmount, fd, -size, SEEK_CUR));
+
+  /* Test basic functionality and out of bounds conditions for SEEK_HOLE/DATA */
+#ifdef SEEK_HOLE
+  ASSERT_EQ(size, ceph_lseek(cmount, fd, 0, SEEK_HOLE));
+  ASSERT_EQ(-ENXIO, ceph_lseek(cmount, fd, -1, SEEK_HOLE));
+  ASSERT_EQ(-ENXIO, ceph_lseek(cmount, fd, size + 1, SEEK_HOLE));
+#endif
+#ifdef SEEK_DATA
+  ASSERT_EQ(0, ceph_lseek(cmount, fd, 0, SEEK_DATA));
+  ASSERT_EQ(-ENXIO, ceph_lseek(cmount, fd, -1, SEEK_DATA));
+  ASSERT_EQ(-ENXIO, ceph_lseek(cmount, fd, size + 1, SEEK_DATA));
+#endif
+
+  ASSERT_EQ(0, ceph_close(cmount, fd));
   ceph_shutdown(cmount);
 }

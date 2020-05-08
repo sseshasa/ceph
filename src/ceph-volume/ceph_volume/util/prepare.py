@@ -334,6 +334,30 @@ def _link_device(device, device_type, osd_id):
 
     process.run(command)
 
+def _validate_bluestore_device(device, excepted_device_type, osd_uuid):
+    """
+    Validate whether the given device is truly what it is supposed to be
+    """
+
+    out, err, ret = process.call(['ceph-bluestore-tool', 'show-label', '--dev', device])
+    if err:
+        terminal.error('ceph-bluestore-tool failed to run. %s'% err)
+        raise SystemExit(1)
+    if ret:
+        terminal.error('no label on %s'% device)
+        raise SystemExit(1)
+    oj = json.loads(''.join(out))
+    if device not in oj:
+        terminal.error('%s not in the output of ceph-bluestore-tool, buggy?'% device)
+        raise SystemExit(1)
+    current_device_type = oj[device]['description']
+    if current_device_type != excepted_device_type:
+        terminal.error('%s is not a %s device but %s'% (device, excepted_device_type, current_device_type))
+        raise SystemExit(1)
+    current_osd_uuid = oj[device]['osd_uuid']
+    if current_osd_uuid != osd_uuid:
+        terminal.error('device %s is used by another osd %s as %s, should be %s'% (device, current_osd_uuid, current_device_type, osd_uuid))
+        raise SystemExit(1)
 
 def link_journal(journal_device, osd_id):
     _link_device(journal_device, 'journal', osd_id)
@@ -343,11 +367,13 @@ def link_block(block_device, osd_id):
     _link_device(block_device, 'block', osd_id)
 
 
-def link_wal(wal_device, osd_id):
+def link_wal(wal_device, osd_id, osd_uuid=None):
+    _validate_bluestore_device(wal_device, 'bluefs wal', osd_uuid)
     _link_device(wal_device, 'block.wal', osd_id)
 
 
-def link_db(db_device, osd_id):
+def link_db(db_device, osd_id, osd_uuid=None):
+    _validate_bluestore_device(db_device, 'bluefs db', osd_uuid)
     _link_device(db_device, 'block.db', osd_id)
 
 
@@ -371,6 +397,10 @@ def get_monmap(osd_id):
         '--keyring', bootstrap_keyring,
         'mon', 'getmap', '-o', monmap_destination
     ])
+
+
+def get_osdspec_affinity():
+    return os.environ.get('CEPH_VOLUME_OSDSPEC_AFFINITY', '')
 
 
 def osd_mkfs_bluestore(osd_id, fsid, keyring=None, wal=False, db=False):
@@ -423,6 +453,9 @@ def osd_mkfs_bluestore(osd_id, fsid, keyring=None, wal=False, db=False):
         )
         system.chown(db)
 
+    if get_osdspec_affinity():
+        base_command.extend(['--osdspec-affinity', get_osdspec_affinity()])
+
     command = base_command + supplementary_command
 
     _, _, returncode = process.call(command, stdin=keyring, show_command=True)
@@ -458,6 +491,9 @@ def osd_mkfs_filestore(osd_id, fsid, keyring):
         '-i', osd_id,
         '--monmap', monmap,
     ]
+
+    if get_osdspec_affinity():
+        command.extend(['--osdspec-affinity', get_osdspec_affinity()])
 
     if __release__ != 'luminous':
         # goes through stdin

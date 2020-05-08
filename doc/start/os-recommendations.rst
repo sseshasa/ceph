@@ -24,7 +24,8 @@ Linux Kernel
   - 4.19.z
   - 4.14.z
 
-  For CephFS, see `CephFS best practices`_ for kernel version guidance.
+  For CephFS, see the section about `Mounting CephFS using Kernel Driver`_
+  for kernel version guidance.
 
   Older kernel client versions may not support your `CRUSH tunables`_ profile
   or other newer features of the Ceph cluster, requiring the storage cluster
@@ -38,6 +39,28 @@ The charts below show how Ceph's requirements map onto various Linux
 platforms.  Generally speaking, there is very little dependence on
 specific distributions aside from the kernel and system initialization
 package (i.e., sysvinit, upstart, systemd).
+
+Octopus (15.2.z)
+-----------------
+
++----------+----------+--------------------+--------------+---------+------------+
+| Distro   | Release  | Code Name          | Kernel       | Notes   | Testing    |
++==========+==========+====================+==============+=========+============+
+| CentOS   | 8        | N/A                | linux-4.18   |         | B, I, C    |
++----------+----------+--------------------+--------------+---------+------------+
+| CentOS   | 7        | N/A                | linux-3.10.0 | 4, 5    | B, I       |
++----------+----------+--------------------+--------------+---------+------------+
+| Debian   | 10       | Buster             | linux-4.19   |         | B          |
++----------+----------+--------------------+--------------+---------+------------+
+| RHEL     | 8        | Ootpa              | linux-4.18   |         | B, I, C    |
++----------+----------+--------------------+--------------+---------+------------+
+| RHEL     | 7        | Maipo              | linux-3.10.0 |         | B, I       |
++----------+----------+--------------------+--------------+---------+------------+
+| Ubuntu   | 18.04    | Bionic Beaver      | linux-4.15   | 4       | B, I, C    |
++----------+----------+--------------------+--------------+---------+------------+
+| openSUSE | 15.2     | Leap               | linux-5.3    | 6       |            |
++----------+----------+--------------------+--------------+---------+------------+
+
 
 Nautilus (14.2.z)
 -----------------
@@ -89,16 +112,23 @@ Notes
 -----
 
 - **1**: The default kernel has an older version of ``btrfs`` that we do not
-  recommend for ``ceph-osd`` storage nodes.  We recommend using ``XFS``.
+  recommend for ``ceph-osd`` storage nodes.  We recommend using ``bluestore``
+  starting from Mimic, and ``XFS`` for previous releases with ``filestore``.
 
 - **2**: The default kernel has an old Ceph client that we do not recommend
   for kernel client (kernel RBD or the Ceph file system).  Upgrade to a
   recommended kernel.
 
 - **3**: The default kernel regularly fails in QA when the ``btrfs``
-  file system is used.  We do not recommend using ``btrfs`` for
-  backing Ceph OSDs.
+  file system is used.  We recommend using ``bluestore`` starting from
+  Mimic, and ``XFS`` for previous releases with ``filestore``.
 
+- **4**: ``btrfs`` is no longer tested on this release. We recommend
+  using ``bluestore``.
+
+- **5**: Some additional features related to dashboard are not available.
+
+- **6**: Building packages are built regularly, but not distributed by Ceph.
 
 Testing
 -------
@@ -116,4 +146,4 @@ Testing
 
 .. _CRUSH Tunables: ../../rados/operations/crush-map#tunables
 
-.. _CephFS best practices: ../../cephfs/best-practices
+.. _Mounting CephFS using Kernel Driver: ../../cephfs/mount-using-kernel-driver#which-kernel-version

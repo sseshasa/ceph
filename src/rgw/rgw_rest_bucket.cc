@@ -18,7 +18,7 @@ class RGWOp_Bucket_Info : public RGWRESTOp {
 public:
   RGWOp_Bucket_Info() {}
 
-  int check_caps(RGWUserCaps& caps) override {
+  int check_caps(const RGWUserCaps& caps) override {
     return caps.check_cap("buckets", RGW_CAP_READ);
   }
 
@@ -55,7 +55,7 @@ class RGWOp_Get_Policy : public RGWRESTOp {
 public:
   RGWOp_Get_Policy() {}
 
-  int check_caps(RGWUserCaps& caps) override {
+  int check_caps(const RGWUserCaps& caps) override {
     return caps.check_cap("buckets", RGW_CAP_READ);
   }
 
@@ -85,7 +85,7 @@ class RGWOp_Check_Bucket_Index : public RGWRESTOp {
 public:
   RGWOp_Check_Bucket_Index() {}
 
-  int check_caps(RGWUserCaps& caps) override {
+  int check_caps(const RGWUserCaps& caps) override {
     return caps.check_cap("buckets", RGW_CAP_WRITE);
   }
 
@@ -119,7 +119,7 @@ class RGWOp_Bucket_Link : public RGWRESTOp {
 public:
   RGWOp_Bucket_Link() {}
 
-  int check_caps(RGWUserCaps& caps) override {
+  int check_caps(const RGWUserCaps& caps) override {
     return caps.check_cap("buckets", RGW_CAP_WRITE);
   }
 
@@ -164,7 +164,7 @@ class RGWOp_Bucket_Unlink : public RGWRESTOp {
 public:
   RGWOp_Bucket_Unlink() {}
 
-  int check_caps(RGWUserCaps& caps) override {
+  int check_caps(const RGWUserCaps& caps) override {
     return caps.check_cap("buckets", RGW_CAP_WRITE);
   }
 
@@ -204,7 +204,7 @@ class RGWOp_Bucket_Remove : public RGWRESTOp {
 public:
   RGWOp_Bucket_Remove() {}
 
-  int check_caps(RGWUserCaps& caps) override {
+  int check_caps(const RGWUserCaps& caps) override {
     return caps.check_cap("buckets", RGW_CAP_WRITE);
   }
 
@@ -242,7 +242,7 @@ class RGWOp_Set_Bucket_Quota : public RGWRESTOp {
 public:
   RGWOp_Set_Bucket_Quota() {}
 
-  int check_caps(RGWUserCaps& caps) override {
+  int check_caps(const RGWUserCaps& caps) override {
     return caps.check_cap("buckets", RGW_CAP_WRITE);
   }
 
@@ -293,8 +293,7 @@ void RGWOp_Set_Bucket_Quota::execute()
   if (use_http_params) {
     RGWBucketInfo bucket_info;
     map<string, bufferlist> attrs;
-    auto obj_ctx = store->svc()->sysobj->init_obj_ctx();
-    http_ret = store->getRados()->get_bucket_info(obj_ctx, uid.tenant, bucket, bucket_info, NULL, s->yield, &attrs);
+    http_ret = store->getRados()->get_bucket_info(store->svc(), uid.tenant, bucket, bucket_info, NULL, s->yield, &attrs);
     if (http_ret < 0) {
       return;
     }
@@ -320,7 +319,7 @@ class RGWOp_Sync_Bucket : public RGWRESTOp {
 public:
   RGWOp_Sync_Bucket() {}
 
-  int check_caps(RGWUserCaps& caps) override {
+  int check_caps(const RGWUserCaps& caps) override {
     return caps.check_cap("buckets", RGW_CAP_WRITE);
   }
 
@@ -352,7 +351,7 @@ class RGWOp_Object_Remove: public RGWRESTOp {
 public:
   RGWOp_Object_Remove() {}
 
-  int check_caps(RGWUserCaps& caps) override {
+  int check_caps(const RGWUserCaps& caps) override {
     return caps.check_cap("buckets", RGW_CAP_WRITE);
   }
 

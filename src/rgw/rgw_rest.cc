@@ -567,7 +567,7 @@ void end_header(struct req_state* s, RGWOp* op, const char *content_type,
   dump_trans_id(s);
 
   if ((!s->is_err()) &&
-      (s->bucket_info.owner != s->user->user_id) &&
+      (s->bucket_info.owner != s->user->get_id()) &&
       (s->bucket_info.requester_pays)) {
     dump_header(s, "x-amz-request-charged", "requester");
   }
@@ -1599,6 +1599,16 @@ int RGWListBucketMultiparts_ObjStore::get_params()
     return op_ret;
   }
 
+  if (auto encoding_type = s->info.args.get_optional("encoding-type");
+      encoding_type != boost::none) {
+    if (strcasecmp(encoding_type->c_str(), "url") != 0) {
+      op_ret = -EINVAL;
+      s->err.message="Invalid Encoding Method specified in Request";
+      return op_ret;
+    }
+    encode_url = true;
+  }
+
   string key_marker = s->info.args.get("key-marker");
   string upload_id_marker = s->info.args.get("upload-id-marker");
   if (!key_marker.empty())
@@ -1636,10 +1646,10 @@ void RGWRESTOp::send_response()
 
 int RGWRESTOp::verify_permission()
 {
-  return check_caps(s->user->caps);
+  return check_caps(s->user->get_info().caps);
 }
 
-RGWOp* RGWHandler_REST::get_op(rgw::sal::RGWRadosStore* store)
+RGWOp* RGWHandler_REST::get_op(void)
 {
   RGWOp *op;
   switch (s->op) {
@@ -1836,16 +1846,16 @@ int RGWHandler_REST::init_permissions(RGWOp* op)
 {
   if (op->get_type() == RGW_OP_CREATE_BUCKET) {
     // We don't need user policies in case of STS token returned by AssumeRole, hence the check for user type
-    if (! s->user->user_id.empty() && s->auth.identity->get_identity_type() != TYPE_ROLE) {
+    if (! s->user->get_id().empty() && s->auth.identity->get_identity_type() != TYPE_ROLE) {
       try {
         map<string, bufferlist> uattrs;
-        if (auto ret = store->ctl()->user->get_attrs_by_uid(s->user->user_id, &uattrs, null_yield); ! ret) {
+        if (auto ret = store->ctl()->user->get_attrs_by_uid(s->user->get_id(), &uattrs, null_yield); ! ret) {
           if (s->iam_user_policies.empty()) {
-            s->iam_user_policies = get_iam_user_policy_from_attr(s->cct, store, uattrs, s->user->user_id.tenant);
+            s->iam_user_policies = get_iam_user_policy_from_attr(s->cct, store, uattrs, s->user->get_tenant());
           } else {
           // This scenario can happen when a STS token has a policy, then we need to append other user policies
           // to the existing ones. (e.g. token returned by GetSessionToken)
-          auto user_policies = get_iam_user_policy_from_attr(s->cct, store, uattrs, s->user->user_id.tenant);
+          auto user_policies = get_iam_user_policy_from_attr(s->cct, store, uattrs, s->user->get_tenant());
           s->iam_user_policies.insert(s->iam_user_policies.end(), user_policies.begin(), user_policies.end());
           }
         }
@@ -2032,9 +2042,17 @@ int RGWREST::preprocess(struct req_state *s, rgw::io::BasicClient* cio)
   bool s3website_enabled = api_priority_s3website >= 0;
 
   if (info.host.size()) {
-    ssize_t pos = info.host.find(':');
-    if (pos >= 0) {
-      info.host = info.host.substr(0, pos);
+    ssize_t pos;
+    if (info.host.find('[') == 0) {
+      pos = info.host.find(']');
+      if (pos >=1) {
+        info.host = info.host.substr(1, pos-1);
+      }
+    } else {
+      pos = info.host.find(':');
+      if (pos >= 0) {
+        info.host = info.host.substr(0, pos);
+      }
     }
     ldout(s->cct, 10) << "host=" << info.host << dendl;
     string domain;

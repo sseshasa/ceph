@@ -2,7 +2,7 @@
 from __future__ import absolute_import
 import json
 
-from .helper import DashboardTestCase
+from .helper import DashboardTestCase, JList, JObj
 from .test_orchestrator import test_data
 
 
@@ -17,7 +17,7 @@ class HostControllerTest(DashboardTestCase):
         super(HostControllerTest, cls).setUpClass()
         cls._load_module("test_orchestrator")
 
-        cmd = ['orchestrator', 'set', 'backend', 'test_orchestrator']
+        cmd = ['orch', 'set', 'backend', 'test_orchestrator']
         cls.mgr_cluster.mon_manager.raw_cluster_cmd(*cmd)
 
         cmd = ['test_orchestrator', 'load_data', '-i', '-']
@@ -73,3 +73,33 @@ class HostControllerTest(DashboardTestCase):
         test_hostnames = {inventory_node['name'] for inventory_node in test_data['inventory']}
         resp_hostnames = {host['hostname'] for host in data}
         self.assertEqual(len(test_hostnames.intersection(resp_hostnames)), 0)
+
+    def test_host_devices(self):
+        hosts = self._get('{}'.format(self.URL_HOST))
+        hosts = [host['hostname'] for host in hosts if host['hostname'] != '']
+        assert hosts[0]
+        data = self._get('{}/devices'.format('{}/{}'.format(self.URL_HOST, hosts[0])))
+        self.assertStatus(200)
+        self.assertSchema(data, JList(JObj({
+            'daemons': JList(str),
+            'devid': str,
+            'location': JList(JObj({
+                'host': str,
+                'dev': str,
+                'path': str
+            }))
+        })))
+
+
+class HostControllerNoOrchestratorTest(DashboardTestCase):
+    def test_host_create(self):
+        self._post('/api/host?hostname=foo')
+        self.assertStatus(503)
+        self.assertError(code='orchestrator_status_unavailable',
+                         component='orchestrator')
+
+    def test_host_delete(self):
+        self._delete('/api/host/bar')
+        self.assertStatus(503)
+        self.assertError(code='orchestrator_status_unavailable',
+                         component='orchestrator')

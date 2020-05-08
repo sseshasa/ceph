@@ -20,7 +20,7 @@ import {
 } from '../app/shared/models/prometheus-alerts';
 import { _DEV_ } from '../unit-test-configuration';
 
-export function configureTestBed(configuration, useOldMethod?) {
+export function configureTestBed(configuration: any, useOldMethod?: boolean) {
   if (_DEV_ && !useOldMethod) {
     const resetTestingModule = TestBed.resetTestingModule;
     beforeAll((done) =>
@@ -111,7 +111,6 @@ export class PermissionHelper {
 
   setSelection(selection: object[]) {
     this.tac.selection.selected = selection;
-    this.tac.selection.update();
   }
 }
 
@@ -191,7 +190,7 @@ export class FormHelper {
  *
  * Please make sure to call this function *inside* your mock and return the reference at the end.
  */
-export function modalServiceShow(componentClass: Type<any>, modalConfig) {
+export function modalServiceShow(componentClass: Type<any>, modalConfig: any) {
   const ref = new BsModalRef();
   const fixture = TestBed.createComponent(componentClass);
   let component = fixture.componentInstance;
@@ -237,8 +236,19 @@ export class FixtureHelper {
     expect(props['value'] || props['checked'].toString()).toBe(value);
   }
 
+  expectTextToBe(css: string, value: string) {
+    expect(this.getText(css)).toBe(value);
+  }
+
   clickElement(css: string) {
     this.getElementByCss(css).triggerEventHandler('click', null);
+    this.fixture.detectChanges();
+  }
+
+  selectElement(css: string, value: string) {
+    const nativeElement = this.getElementByCss(css).nativeElement;
+    nativeElement.value = value;
+    nativeElement.dispatchEvent(new Event('change'));
     this.fixture.detectChanges();
   }
 
@@ -247,14 +257,26 @@ export class FixtureHelper {
     return e ? e.nativeElement.textContent.trim() : null;
   }
 
+  getTextAll(css: string) {
+    const elements = this.getElementByCssAll(css);
+    return elements.map((element) => {
+      return element ? element.nativeElement.textContent.trim() : null;
+    });
+  }
+
   getElementByCss(css: string) {
     this.fixture.detectChanges();
     return this.fixture.debugElement.query(By.css(css));
   }
+
+  getElementByCssAll(css: string) {
+    this.fixture.detectChanges();
+    return this.fixture.debugElement.queryAll(By.css(css));
+  }
 }
 
 export class PrometheusHelper {
-  createSilence(id) {
+  createSilence(id: string) {
     return {
       id: id,
       createdBy: `Creator of ${id}`,
@@ -271,7 +293,7 @@ export class PrometheusHelper {
     };
   }
 
-  createRule(name, severity, alerts: any[]): PrometheusRule {
+  createRule(name: string, severity: string, alerts: any[]): PrometheusRule {
     return {
       name: name,
       labels: {
@@ -281,7 +303,7 @@ export class PrometheusHelper {
     } as PrometheusRule;
   }
 
-  createAlert(name, state = 'active', timeMultiplier = 1): AlertmanagerAlert {
+  createAlert(name: string, state = 'active', timeMultiplier = 1): AlertmanagerAlert {
     return {
       fingerprint: name,
       status: { state },
@@ -299,7 +321,7 @@ export class PrometheusHelper {
     } as AlertmanagerAlert;
   }
 
-  createNotificationAlert(name, status = 'firing'): AlertmanagerNotificationAlert {
+  createNotificationAlert(name: string, status = 'firing'): AlertmanagerNotificationAlert {
     return {
       status: status,
       labels: {
@@ -320,7 +342,7 @@ export class PrometheusHelper {
     return { alerts, status } as AlertmanagerNotification;
   }
 
-  createLink(url) {
+  createLink(url: string) {
     return `<a href="${url}" target="_blank"><i class="${Icons.lineChart}"></i></a>`;
   }
 }
@@ -351,4 +373,24 @@ export function expectItemTasks(item: any, executing: string, percentage?: numbe
     }
   }
   expect(item.cdExecuting).toBe(executing);
+}
+
+export class IscsiHelper {
+  static validateUser(formHelper: FormHelper, fieldName: string) {
+    formHelper.expectErrorChange(fieldName, 'short', 'pattern');
+    formHelper.expectValidChange(fieldName, 'thisIsCorrect');
+    formHelper.expectErrorChange(fieldName, '##?badChars?##', 'pattern');
+    formHelper.expectErrorChange(
+      fieldName,
+      'thisUsernameIsWayyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyTooBig',
+      'pattern'
+    );
+  }
+
+  static validatePassword(formHelper: FormHelper, fieldName: string) {
+    formHelper.expectErrorChange(fieldName, 'short', 'pattern');
+    formHelper.expectValidChange(fieldName, 'thisIsCorrect');
+    formHelper.expectErrorChange(fieldName, '##?badChars?##', 'pattern');
+    formHelper.expectErrorChange(fieldName, 'thisPasswordIsWayTooBig', 'pattern');
+  }
 }

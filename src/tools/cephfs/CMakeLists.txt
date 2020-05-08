@@ -12,6 +12,15 @@ add_executable(cephfs-journal-tool ${cephfs_journal_tool_srcs})
 target_link_libraries(cephfs-journal-tool librados mds osdc global
   ${BLKID_LIBRARIES} ${CMAKE_DL_LIBS})
 
+set(cephfs-meta-injection_srcs
+  cephfs-meta-injection.cc
+  MetaTool.cc
+  RoleSelector.cc
+  MDSUtility.cc)
+add_executable(cephfs-meta-injection ${cephfs-meta-injection_srcs})
+target_link_libraries(cephfs-meta-injection librados mds osdc global
+  ${BLKID_LIBRARIES} ${CMAKE_DL_LIBS})
+
 set(cephfs_table_tool_srcs
   cephfs-table-tool.cc
   TableTool.cc
@@ -44,8 +53,7 @@ if(WITH_CEPHFS_SHELL)
     message(WARNING "Please enable WITH_PYTHON3 for cephfs-shell")
   else()
     include(Distutils)
-    distutils_install_module(cephfs-shell
-      PYTHON_VERSION 3)
+    distutils_install_module(cephfs-shell)
   endif()
   if(WITH_TESTS)
     include(AddCephTest)

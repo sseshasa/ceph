@@ -116,17 +116,13 @@ librados::TestRadosClient *create_rados_client() {
 
 } // anonymous namespace
 
-extern "C" int rados_aio_create_completion(void *cb_arg,
-                                           rados_callback_t cb_complete,
-                                           rados_callback_t cb_safe,
-                                           rados_completion_t *pc)
+extern "C" int rados_aio_create_completion2(void *cb_arg,
+					    rados_callback_t cb_complete,
+					    rados_completion_t *pc)
 {
   librados::AioCompletionImpl *c = new librados::AioCompletionImpl;
   if (cb_complete) {
     c->set_complete_callback(cb_arg, cb_complete);
-  }
-  if (cb_safe) {
-    c->set_safe_callback(cb_arg, cb_safe);
   }
   *pc = c;
   return 0;
@@ -349,9 +345,13 @@ extern "C" int rados_wait_for_latest_osdmap(rados_t cluster) {
 
 namespace librados {
 
-void AioCompletion::release() {
-  AioCompletionImpl *c = reinterpret_cast<AioCompletionImpl *>(pc);
+AioCompletion::~AioCompletion()
+{
+  auto c = reinterpret_cast<AioCompletionImpl *>(pc);
   c->release();
+}
+
+void AioCompletion::release() {
   delete this;
 }
 
@@ -938,9 +938,18 @@ void ObjectWriteOperation::set_alloc_hint(uint64_t expected_object_size,
                                           uint64_t expected_write_size) {
   TestObjectOperationImpl *o = reinterpret_cast<TestObjectOperationImpl*>(impl);
   o->ops.push_back(boost::bind(&TestIoCtxImpl::set_alloc_hint, _1, _2,
-			       expected_object_size, expected_write_size, _4));
+			       expected_object_size, expected_write_size, 0,
+                               _4));
 }
 
+void ObjectWriteOperation::set_alloc_hint2(uint64_t expected_object_size,
+                                           uint64_t expected_write_size,
+                                           uint32_t flags) {
+  TestObjectOperationImpl *o = reinterpret_cast<TestObjectOperationImpl*>(impl);
+  o->ops.push_back(boost::bind(&TestIoCtxImpl::set_alloc_hint, _1, _2,
+			       expected_object_size, expected_write_size, flags,
+                               _4));
+}
 
 void ObjectWriteOperation::tmap_update(const bufferlist& cmdbl) {
   TestObjectOperationImpl *o = reinterpret_cast<TestObjectOperationImpl*>(impl);
@@ -1005,10 +1014,9 @@ void Rados::from_rados_t(rados_t p, Rados &rados) {
 }
 
 AioCompletion *Rados::aio_create_completion(void *cb_arg,
-                                            callback_t cb_complete,
-                                            callback_t cb_safe) {
+                                            callback_t cb_complete) {
   AioCompletionImpl *c;
-  int r = rados_aio_create_completion(cb_arg, cb_complete, cb_safe,
+  int r = rados_aio_create_completion2(cb_arg, cb_complete,
       reinterpret_cast<void**>(&c));
   ceph_assert(r == 0);
   return new AioCompletion(c);
@@ -1408,6 +1416,12 @@ int cls_cxx_truncate(cls_method_context_t hctx, int ofs) {
   return ctx->io_ctx_impl->truncate(ctx->oid, ofs, ctx->snapc);
 }
 
+int cls_cxx_write_zero(cls_method_context_t hctx, int ofs, int len) {
+  librados::TestClassHandler::MethodContext *ctx =
+    reinterpret_cast<librados::TestClassHandler::MethodContext*>(hctx);
+  return ctx->io_ctx_impl->zero(ctx->oid, len, ofs, ctx->snapc);
+}
+
 int cls_cxx_list_watchers(cls_method_context_t hctx,
 			  obj_list_watch_response_t *watchers) {
   librados::TestClassHandler::MethodContext *ctx =
@@ -1518,5 +1532,9 @@ int cls_cxx_map_read_header(cls_method_handle_t, bufferlist *) {
 }
 
 uint64_t cls_get_osd_min_alloc_size(cls_method_context_t hctx) {
+  return 0;
+}
+
+uint64_t cls_get_pool_stripe_width(cls_method_context_t hctx) {
   return 0;
 }

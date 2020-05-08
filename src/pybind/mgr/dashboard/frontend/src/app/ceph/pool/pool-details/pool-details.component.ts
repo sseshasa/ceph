@@ -1,11 +1,11 @@
 import { Component, Input, OnChanges, ViewChild } from '@angular/core';
 
 import { I18n } from '@ngx-translate/i18n-polyfill';
+import * as _ from 'lodash';
 import { TabsetComponent } from 'ngx-bootstrap/tabs';
 
 import { PoolService } from '../../../shared/api/pool.service';
 import { CdTableColumn } from '../../../shared/models/cd-table-column';
-import { CdTableSelection } from '../../../shared/models/cd-table-selection';
 import { RbdConfigurationEntry } from '../../../shared/models/configuration';
 import { Permissions } from '../../../shared/models/permissions';
 
@@ -18,7 +18,7 @@ export class PoolDetailsComponent implements OnChanges {
   cacheTierColumns: Array<CdTableColumn> = [];
 
   @Input()
-  selection: CdTableSelection;
+  selection: any;
   @Input()
   permissions: Permissions;
   @Input()
@@ -63,10 +63,14 @@ export class PoolDetailsComponent implements OnChanges {
   }
 
   ngOnChanges() {
-    if (this.selection.hasSingleSelection) {
-      this.poolService.getConfiguration(this.selection.first().pool_name).subscribe((poolConf) => {
+    if (this.selection) {
+      this.poolService.getConfiguration(this.selection.pool_name).subscribe((poolConf) => {
         this.selectedPoolConfiguration = poolConf;
       });
     }
+  }
+
+  filterNonPoolData(pool: object): object {
+    return _.omit(pool, ['cdExecuting', 'cdIsBinary']);
   }
 }

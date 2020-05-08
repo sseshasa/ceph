@@ -1,5 +1,6 @@
 import pytest
 from ceph_volume.devices.lvm.strategies import bluestore
+from ceph_volume.api import lvm
 
 
 class TestSingleType(object):
@@ -13,7 +14,7 @@ class TestSingleType(object):
         computed_osd = bluestore.SingleType.with_auto_devices(args, devices).computed['osds'][0]
         assert computed_osd['data']['percentage'] == 100
         assert computed_osd['data']['parts'] == 1
-        assert computed_osd['data']['human_readable_size'] == '5.66 GB'
+        assert computed_osd['data']['human_readable_size'] == '5.00 GB'
         assert computed_osd['data']['path'] == '/dev/sda'
 
     def test_sdd_device_is_large_enough(self, fakedevice, factory):
@@ -25,7 +26,7 @@ class TestSingleType(object):
         computed_osd = bluestore.SingleType.with_auto_devices(args, devices).computed['osds'][0]
         assert computed_osd['data']['percentage'] == 100
         assert computed_osd['data']['parts'] == 1
-        assert computed_osd['data']['human_readable_size'] == '5.66 GB'
+        assert computed_osd['data']['human_readable_size'] == '5.00 GB'
         assert computed_osd['data']['path'] == '/dev/sda'
 
     def test_device_cannot_have_many_osds_per_device(self, fakedevice, factory):
@@ -51,7 +52,7 @@ class TestSingleType(object):
 
 class TestMixedType(object):
 
-    def test_filter_all_data_devs(self, fakedevice, factory):
+    def test_filter_all_data_devs(self, fakedevice, factory, monkeypatch):
         # in this scenario the user passed a already used device to be used for
         # data and an unused device to be used as db device.
         db_dev = fakedevice(used_by_ceph=False, is_lvm_member=False, rotational=False, sys_api=dict(size=6073740000))
@@ -59,6 +60,8 @@ class TestMixedType(object):
         args = factory(filtered_devices=[data_dev], osds_per_device=1,
                        block_db_size=None, block_wal_size=None,
                        osd_ids=[])
+        monkeypatch.setattr(lvm, 'VolumeGroup', lambda x, **kw: [])
+        monkeypatch.setattr(lvm, 'VolumeGroups', lambda: [])
         bluestore.MixedType(args, [], [db_dev], [])
 
 

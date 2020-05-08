@@ -3,7 +3,6 @@ Thrash mds by simulating failures
 """
 import logging
 import contextlib
-import ceph_manager
 import itertools
 import random
 import time
@@ -13,12 +12,13 @@ from gevent.greenlet import Greenlet
 from gevent.event import Event
 from teuthology import misc as teuthology
 
+from tasks import ceph_manager
 from tasks.cephfs.filesystem import MDSCluster, Filesystem
 from tasks.thrasher import Thrasher
 
 log = logging.getLogger(__name__)
 
-class MDSThrasher(Greenlet, Thrasher):
+class MDSThrasher(Thrasher, Greenlet):
     """
     MDSThrasher::
 
@@ -136,7 +136,7 @@ class MDSThrasher(Greenlet, Thrasher):
             #   File "/usr/lib/python2.7/traceback.py", line 13, in _print
             #     file.write(str+terminator)
             # 2017-02-03T14:34:01.261 CRITICAL:root:IOError
-            self.exception = e
+            self.set_thrasher_exception(e)
             self.logger.exception("exception:")
             # allow successful completion so gevent doesn't see an exception...
 
@@ -150,7 +150,7 @@ class MDSThrasher(Greenlet, Thrasher):
     def kill_mds(self, mds):
         if self.config.get('powercycle'):
             (remote,) = (self.ctx.cluster.only('mds.{m}'.format(m=mds)).
-                         remotes.iterkeys())
+                         remotes.keys())
             self.log('kill_mds on mds.{m} doing powercycle of {s}'.
                      format(m=mds, s=remote.name))
             self._assert_ipmi(remote)
@@ -171,7 +171,7 @@ class MDSThrasher(Greenlet, Thrasher):
         """
         if self.config.get('powercycle'):
             (remote,) = (self.ctx.cluster.only('mds.{m}'.format(m=mds)).
-                         remotes.iterkeys())
+                         remotes.keys())
             self.log('revive_mds on mds.{m} doing powercycle of {s}'.
                      format(m=mds, s=remote.name))
             self._assert_ipmi(remote)
@@ -203,7 +203,8 @@ class MDSThrasher(Greenlet, Thrasher):
                         pass # no rank present
                     if len(actives) >= max_mds:
                         # no replacement can occur!
-                        self.log("cluster has %d actives (max_mds is %d), no MDS can replace rank %d".format(len(actives), max_mds, rank))
+                        self.log("cluster has {actives} actives (max_mds is {max_mds}), no MDS can replace rank {rank}".format(
+                            actives=len(actives), max_mds=max_mds, rank=rank))
                         return status
                 else:
                     if len(actives) == max_mds:
@@ -303,7 +304,7 @@ class MDSThrasher(Greenlet, Thrasher):
                     self.log(
                         '{label} reported laggy/crashed since: {since}'.format(label=label, since=last_laggy_since))
                 else:
-                    self.log('{label} down, removed from mdsmap'.format(label=label, since=last_laggy_since))
+                    self.log('{label} down, removed from mdsmap'.format(label=label))
 
                 # wait for a standby mds to takeover and become active
                 status = self.wait_for_stable(rank, gid)
@@ -387,7 +388,7 @@ def task(ctx, config):
     log.info('mds thrasher using random seed: {seed}'.format(seed=seed))
     random.seed(seed)
 
-    (first,) = ctx.cluster.only('mds.{_id}'.format(_id=mdslist[0])).remotes.iterkeys()
+    (first,) = ctx.cluster.only('mds.{_id}'.format(_id=mdslist[0])).remotes.keys()
     manager = ceph_manager.CephManager(
         first, ctx=ctx, logger=log.getChild('ceph_manager'),
     )

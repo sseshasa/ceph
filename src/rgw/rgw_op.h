@@ -34,6 +34,7 @@
 
 #include "rgw_common.h"
 #include "rgw_dmclock.h"
+#include "rgw_sal.h"
 #include "rgw_user.h"
 #include "rgw_bucket.h"
 #include "rgw_acl.h"
@@ -41,6 +42,7 @@
 #include "rgw_quota.h"
 #include "rgw_putobj.h"
 #include "rgw_multi.h"
+#include "rgw_sal.h"
 
 #include "rgw_lc.h"
 #include "rgw_torrent.h"
@@ -48,6 +50,7 @@
 #include "rgw_object_lock.h"
 #include "cls/lock/cls_lock_client.h"
 #include "cls/rgw/cls_rgw_client.h"
+#include "rgw_public_access.h"
 
 #include "services/svc_sys_obj.h"
 #include "services/svc_tier_rados.h"
@@ -72,7 +75,7 @@ class StrategyRegistry;
 }
 
 int rgw_op_get_bucket_policy_from_attr(CephContext *cct,
-                                       RGWUserCtl *user_ctl,
+				       rgw::sal::RGWRadosStore *store,
                                        RGWBucketInfo& bucket_info,
                                        map<string, bufferlist>& bucket_attrs,
                                        RGWAccessControlPolicy *policy);
@@ -464,6 +467,48 @@ public:
   RGWOpType get_type() override { return RGW_OP_DELETE_BUCKET_TAGGING;}
 };
 
+struct rgw_sync_policy_group;
+
+class RGWGetBucketReplication : public RGWOp {
+public:
+  int verify_permission() override;
+  void execute() override;
+  void pre_exec() override;
+
+  virtual void send_response_data() = 0;
+  const char* name() const override { return "get_bucket_replication"; }
+  virtual uint32_t op_mask() override { return RGW_OP_TYPE_READ; }
+  RGWOpType get_type() override { return RGW_OP_GET_BUCKET_REPLICATION; }
+};
+
+class RGWPutBucketReplication : public RGWOp {
+protected:
+  bufferlist in_data;
+  std::vector<rgw_sync_policy_group> sync_policy_groups;
+public:
+  int verify_permission() override;
+  void execute() override;
+
+  virtual void send_response() override = 0;
+  virtual int get_params() = 0;
+  const char* name() const override { return "put_bucket_replication"; }
+  virtual uint32_t op_mask() override { return RGW_OP_TYPE_WRITE; }
+  RGWOpType get_type() override { return RGW_OP_PUT_BUCKET_REPLICATION; }
+};
+
+class RGWDeleteBucketReplication : public RGWOp {
+protected:
+  virtual void update_sync_policy(rgw_sync_policy_info *policy) = 0;
+public:
+  void pre_exec() override;
+  int verify_permission() override;
+  void execute() override;
+
+  const char* name() const override { return "delete_bucket_replication"; }
+  virtual uint32_t op_mask() override { return RGW_OP_TYPE_DELETE; }
+  RGWOpType get_type() override { return RGW_OP_DELETE_BUCKET_REPLICATION;}
+};
+
 class RGWBulkDelete : public RGWOp {
 public:
   struct acct_path_t {
@@ -712,15 +757,15 @@ public:
   void execute() override;
 
   virtual int get_params() = 0;
-  virtual void handle_listing_chunk(RGWUserBuckets&& buckets) {
+  virtual void handle_listing_chunk(rgw::sal::RGWBucketList&& buckets) {
     /* The default implementation, used by e.g. S3, just generates a new
      * part of listing and sends it client immediately. Swift can behave
      * differently: when the reverse option is requested, all incoming
-     * instances of RGWUserBuckets are buffered and finally reversed. */
+     * instances of RGWBucketList are buffered and finally reversed. */
     return send_response_data(buckets);
   }
   virtual void send_response_begin(bool has_buckets) = 0;
-  virtual void send_response_data(RGWUserBuckets& buckets) = 0;
+  virtual void send_response_data(rgw::sal::RGWBucketList& buckets) = 0;
   virtual void send_response_end() = 0;
   void send_response() override {}
 
@@ -780,7 +825,7 @@ public:
 
 class RGWListBucket : public RGWOp {
 protected:
-  RGWBucketEnt bucket;
+  rgw::sal::RGWBucket* bucket;
   string prefix;
   rgw_obj_key marker; 
   rgw_obj_key next_marker; 
@@ -802,13 +847,18 @@ protected:
   int parse_max_keys();
 
 public:
-  RGWListBucket() : list_versions(false), max(0),
+  RGWListBucket() : bucket(nullptr), list_versions(false), max(0),
                     default_max(0), is_truncated(false),
 		    allow_unordered(false), shard_id(-1) {}
+  ~RGWListBucket() { delete bucket; }
   int verify_permission() override;
   void pre_exec() override;
   void execute() override;
 
+  void init(rgw::sal::RGWRadosStore *store, struct req_state *s, RGWHandler *h) override {
+    RGWOp::init(store, s, h);
+    bucket = new rgw::sal::RGWRadosBucket(store, *s->user, s->bucket);
+  }
   virtual int get_params() = 0;
   void send_response() override = 0;
   const char* name() const override { return "list_bucket"; }
@@ -937,11 +987,11 @@ public:
 
 class RGWStatBucket : public RGWOp {
 protected:
-  RGWBucketEnt bucket;
+  rgw::sal::RGWBucket* bucket;
 
 public:
-  RGWStatBucket() {}
-  ~RGWStatBucket() override {}
+  RGWStatBucket() : bucket(nullptr) {}
+  ~RGWStatBucket() override { delete bucket; }
 
   int verify_permission() override;
   void pre_exec() override;
@@ -1546,19 +1596,8 @@ public:
 };
 
 class RGWDeleteLC : public RGWOp {
-protected:
-  size_t len;
-  char *data;
-
 public:
-  RGWDeleteLC() {
-    len = 0;
-    data = NULL;
-  }
-  ~RGWDeleteLC() override {
-    free(data);
-  }
-
+  RGWDeleteLC() = default;
   int verify_permission() override;
   void pre_exec() override;
   void execute() override;
@@ -1790,6 +1829,13 @@ public:
 struct RGWMultipartUploadEntry {
   rgw_bucket_dir_entry obj;
   RGWMPObj mp;
+
+  friend std::ostream& operator<<(std::ostream& out,
+				  const RGWMultipartUploadEntry& e) {
+    constexpr char quote = '"';
+    return out << "RGWMultipartUploadEntry{ obj.key=" <<
+      quote << e.obj.key << quote << " mp=" << e.mp << " }";
+  }
 };
 
 class RGWListBucketMultiparts : public RGWOp {
@@ -1803,6 +1849,7 @@ protected:
   map<string, bool> common_prefixes;
   bool is_truncated;
   int default_max;
+  bool encode_url {false};
 
 public:
   RGWListBucketMultiparts() {
@@ -2136,7 +2183,7 @@ public:
     return caps.check_cap("admin", RGW_CAP_READ);
   }
   int verify_permission() override {
-    return check_caps(s->user->caps);
+    return check_caps(s->user->get_info().caps);
   }
   void pre_exec() override;
   void execute() override;
@@ -2343,6 +2390,59 @@ public:
   void execute() override;
   const char* name() const override { return "get_cluster_stat"; }
   dmc::client_id dmclock_client() override { return dmc::client_id::admin; }
+};
+
+class RGWGetBucketPolicyStatus : public RGWOp {
+protected:
+  bool isPublic {false};
+public:
+  int verify_permission() override;
+  const char* name() const override { return "get_bucket_policy_status"; }
+  virtual RGWOpType get_type() override { return RGW_OP_GET_BUCKET_POLICY_STATUS; }
+  virtual uint32_t op_mask() override { return RGW_OP_TYPE_READ; }
+  void execute() override;
+  dmc::client_id dmclock_client() override { return dmc::client_id::metadata; }
+};
+
+class RGWPutBucketPublicAccessBlock : public RGWOp {
+protected:
+  bufferlist data;
+  PublicAccessBlockConfiguration access_conf;
+public:
+  int verify_permission() override;
+  const char* name() const override { return "put_bucket_public_access_block";}
+  virtual RGWOpType get_type() override { return RGW_OP_PUT_BUCKET_PUBLIC_ACCESS_BLOCK; }
+  virtual uint32_t op_mask() override { return RGW_OP_TYPE_WRITE; }
+  int get_params();
+  void execute() override;
+  dmc::client_id dmclock_client() override { return dmc::client_id::metadata; }
+};
+
+class RGWGetBucketPublicAccessBlock : public RGWOp {
+protected:
+  PublicAccessBlockConfiguration access_conf;
+public:
+  int verify_permission() override;
+  const char* name() const override { return "get_bucket_public_access_block";}
+  virtual RGWOpType get_type() override { return RGW_OP_GET_BUCKET_PUBLIC_ACCESS_BLOCK; }
+  virtual uint32_t op_mask() override { return RGW_OP_TYPE_READ; }
+  int get_params();
+  void execute() override;
+  dmc::client_id dmclock_client() override { return dmc::client_id::metadata; }
+};
+
+class RGWDeleteBucketPublicAccessBlock : public RGWOp {
+protected:
+  PublicAccessBlockConfiguration access_conf;
+public:
+  int verify_permission() override;
+  const char* name() const override { return "delete_bucket_public_access_block";}
+  virtual RGWOpType get_type() override { return RGW_OP_DELETE_BUCKET_PUBLIC_ACCESS_BLOCK; }
+  virtual uint32_t op_mask() override { return RGW_OP_TYPE_WRITE; }
+  int get_params();
+  void execute() override;
+  void send_response() override;
+  dmc::client_id dmclock_client() override { return dmc::client_id::metadata; }
 };
 
 static inline int parse_value_and_bound(

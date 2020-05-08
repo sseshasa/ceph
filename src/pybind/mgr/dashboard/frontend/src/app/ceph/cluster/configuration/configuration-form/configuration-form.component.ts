@@ -81,6 +81,8 @@ export class ConfigurationFormComponent implements OnInit {
 
       return typeValidators.validators;
     }
+
+    return undefined;
   }
 
   getStep(type: string, value: number): number | undefined {
@@ -110,18 +112,12 @@ export class ConfigurationFormComponent implements OnInit {
         } else {
           sectionValue = value.value;
         }
-        this.configForm
-          .get('values')
-          .get(value.section)
-          .setValue(sectionValue);
+        this.configForm.get('values').get(value.section).setValue(sectionValue);
       });
     }
 
     this.availSections.forEach((section) => {
-      this.configForm
-        .get('values')
-        .get(section)
-        .setValidators(validators);
+      this.configForm.get('values').get(section).setValidators(validators);
     });
 
     const currentType = ConfigOptionTypes.getType(response.type);
@@ -131,11 +127,11 @@ export class ConfigurationFormComponent implements OnInit {
   }
 
   createRequest(): ConfigFormCreateRequestModel | null {
-    const values = [];
+    const values: any[] = [];
 
     this.availSections.forEach((section) => {
       const sectionValue = this.configForm.getValue(section);
-      if (sectionValue) {
+      if (sectionValue !== null && sectionValue !== '') {
         values.push({ section: section, value: sectionValue });
       }
     });

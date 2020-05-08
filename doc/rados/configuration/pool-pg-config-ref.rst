@@ -60,15 +60,6 @@ Ceph configuration file.
 :Default: ``30``
 
 
-``mon pg warn max per osd``
-
-:Description: Issue a ``HEALTH_WARN`` in cluster log if the average number
-              of PGs per (in) OSD is above this number. (a non-positive number
-              disables this)
-:Type: Integer
-:Default: ``300``
-
-
 ``mon pg warn min objects``
 
 :Description: Do not warn if the total number of objects in cluster is below
@@ -207,7 +198,7 @@ Ceph configuration file.
               value is the same as ``pg_num`` with ``mkpool``.
 
 :Type: 32-bit Integer
-:Default: ``8``
+:Default: ``32``
 
 
 ``osd pool default pgp num``
@@ -243,7 +234,16 @@ Ceph configuration file.
               when trimming log files.
 
 :Type: 32-bit Int Unsigned
-:Default: ``1000``
+:Default: ``250``
+
+
+``osd max pg log entries``
+
+:Description: The maximum number of placement group logs to maintain
+              when trimming log files.
+
+:Type: 32-bit Int Unsigned
+:Default: ``10000``
 
 
 ``osd default data pool replay window``

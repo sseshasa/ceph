@@ -1,6 +1,7 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, HostBinding, OnDestroy, OnInit } from '@angular/core';
 
-import { PrometheusService } from '../../../shared/api/prometheus.service';
+import { Subscription } from 'rxjs';
+
 import { Icons } from '../../../shared/enum/icons.enum';
 import { Permissions } from '../../../shared/models/permissions';
 import { AuthStorageService } from '../../../shared/services/auth-storage.service';
@@ -8,6 +9,7 @@ import {
   FeatureTogglesMap$,
   FeatureTogglesService
 } from '../../../shared/services/feature-toggles.service';
+import { PrometheusAlertService } from '../../../shared/services/prometheus-alert.service';
 import { SummaryService } from '../../../shared/services/summary.service';
 
 @Component({
@@ -15,33 +17,51 @@ import { SummaryService } from '../../../shared/services/summary.service';
   templateUrl: './navigation.component.html',
   styleUrls: ['./navigation.component.scss']
 })
-export class NavigationComponent implements OnInit {
+export class NavigationComponent implements OnInit, OnDestroy {
+  @HostBinding('class.isPwdDisplayed') isPwdDisplayed = false;
+
   permissions: Permissions;
+  enabledFeature$: FeatureTogglesMap$;
   summaryData: any;
   icons = Icons;
 
   isCollapsed = true;
-  prometheusConfigured = false;
-  enabledFeature$: FeatureTogglesMap$;
+  showMenuSidebar = true;
+  displayedSubMenu = '';
+
+  simplebar = {
+    autoHide: false
+  };
+  private subs = new Subscription();
 
   constructor(
     private authStorageService: AuthStorageService,
-    private prometheusService: PrometheusService,
     private summaryService: SummaryService,
-    private featureToggles: FeatureTogglesService
+    private featureToggles: FeatureTogglesService,
+    public prometheusAlertService: PrometheusAlertService
   ) {
     this.permissions = this.authStorageService.getPermissions();
     this.enabledFeature$ = this.featureToggles.get();
   }
 
   ngOnInit() {
-    this.summaryService.subscribe((data: any) => {
-      if (!data) {
-        return;
-      }
-      this.summaryData = data;
-    });
-    this.prometheusService.ifAlertmanagerConfigured(() => (this.prometheusConfigured = true));
+    this.subs.add(
+      this.summaryService.subscribe((data: any) => {
+        if (!data) {
+          return;
+        }
+        this.summaryData = data;
+      })
+    );
+    this.subs.add(
+      this.authStorageService.isPwdDisplayed$.subscribe((isDisplayed) => {
+        this.isPwdDisplayed = isDisplayed;
+      })
+    );
+  }
+
+  ngOnDestroy(): void {
+    this.subs.unsubscribe();
   }
 
   blockHealthColor() {
@@ -51,6 +71,16 @@ export class NavigationComponent implements OnInit {
       } else if (this.summaryData.rbd_mirroring.warnings > 0) {
         return { color: '#f0ad4e' };
       }
+    }
+
+    return undefined;
+  }
+
+  toggleSubMenu(menu: string) {
+    if (this.displayedSubMenu === menu) {
+      this.displayedSubMenu = '';
+    } else {
+      this.displayedSubMenu = menu;
     }
   }
 }

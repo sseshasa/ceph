@@ -25,10 +25,11 @@ export class RgwUserDetailsComponent implements OnChanges, OnInit {
   public secretKeyTpl: TemplateRef<any>;
 
   @Input()
-  selection: CdTableSelection;
+  selection: any;
 
   // Details tab
   user: any;
+  maxBucketsMap: {};
 
   // Keys tab
   keys: any = [];
@@ -56,11 +57,15 @@ export class RgwUserDetailsComponent implements OnChanges, OnInit {
         flexGrow: 1
       }
     ];
+    this.maxBucketsMap = {
+      '-1': this.i18n('Disabled'),
+      0: this.i18n('Unlimited')
+    };
   }
 
   ngOnChanges() {
-    if (this.selection.hasSelection) {
-      this.user = this.selection.first();
+    if (this.selection) {
+      this.user = this.selection;
 
       // Sort subusers and capabilities.
       this.user.subusers = _.sortBy(this.user.subusers, 'id');
@@ -73,22 +78,27 @@ export class RgwUserDetailsComponent implements OnChanges, OnInit {
 
       // Process the keys.
       this.keys = [];
-      this.user.keys.forEach((key: RgwUserS3Key) => {
-        this.keys.push({
-          id: this.keys.length + 1, // Create an unique identifier
-          type: 'S3',
-          username: key.user,
-          ref: key
+      if (this.user.keys) {
+        this.user.keys.forEach((key: RgwUserS3Key) => {
+          this.keys.push({
+            id: this.keys.length + 1, // Create an unique identifier
+            type: 'S3',
+            username: key.user,
+            ref: key
+          });
         });
-      });
-      this.user.swift_keys.forEach((key: RgwUserSwiftKey) => {
-        this.keys.push({
-          id: this.keys.length + 1, // Create an unique identifier
-          type: 'Swift',
-          username: key.user,
-          ref: key
+      }
+      if (this.user.swift_keys) {
+        this.user.swift_keys.forEach((key: RgwUserSwiftKey) => {
+          this.keys.push({
+            id: this.keys.length + 1, // Create an unique identifier
+            type: 'Swift',
+            username: key.user,
+            ref: key
+          });
         });
-      });
+      }
+
       this.keys = _.sortBy(this.keys, 'user');
     }
   }

@@ -30,6 +30,22 @@
 #include "messages/MOSDPGRecoveryDelete.h"
 #include "messages/MOSDPGRecoveryDeleteReply.h"
 
+using std::list;
+using std::make_pair;
+using std::map;
+using std::ostream;
+using std::ostringstream;
+using std::pair;
+using std::set;
+using std::string;
+using std::stringstream;
+using std::vector;
+
+using ceph::bufferlist;
+using ceph::bufferptr;
+using ceph::ErasureCodeProfile;
+using ceph::ErasureCodeInterfaceRef;
+
 #define dout_context cct
 #define dout_subsys ceph_subsys_osd
 #define DOUT_PREFIX_ARGS this
@@ -1270,10 +1286,16 @@ void PGBackend::be_omap_checks(const map<pg_shard_t,ScrubMap*> &maps,
       omap_stats.omap_bytes += obj.object_omap_bytes;
       omap_stats.omap_keys += obj.object_omap_keys;
       if (obj.large_omap_object_found) {
+        pg_t pg;
+        auto osdmap = get_osdmap();
+        osdmap->map_to_pg(k.pool, k.oid.name, k.get_key(), k.nspace, &pg);
+        pg_t mpg = osdmap->raw_pg_to_pg(pg);
         omap_stats.large_omap_objects++;
-        warnstream << "Large omap object found. Object: " << k << " Key count: "
-                   << obj.large_omap_object_key_count << " Size (bytes): "
-                   << obj.large_omap_object_value_size << '\n';
+        warnstream << "Large omap object found. Object: " << k
+                   << " PG: " << pg << " (" << mpg << ")"
+                   << " Key count: " << obj.large_omap_object_key_count
+                   << " Size (bytes): " << obj.large_omap_object_value_size
+                   << '\n';
         break;
       }
     }

@@ -1,103 +1,14 @@
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpParams } from '@angular/common/http';
 import { Injectable } from '@angular/core';
 
 import { I18n } from '@ngx-translate/i18n-polyfill';
+import { map } from 'rxjs/operators';
 
+import * as _ from 'lodash';
+import { CdDevice } from '../models/devices';
+import { SmartDataResponseV1 } from '../models/smart';
+import { DeviceService } from '../services/device.service';
 import { ApiModule } from './api.module';
-
-export interface SmartAttribute {
-  flags: object;
-  id: number;
-  name: string;
-  raw: { string: string; value: number };
-  thresh: number;
-  value: number;
-  when_failed: string;
-  worst: number;
-}
-
-export interface SmartError {
-  dev: string;
-  error: string;
-  nvme_smart_health_information_add_log_error: string;
-  nvme_smart_health_information_add_log_error_code: number;
-  nvme_vendor: string;
-  smartctl_error_code: number;
-  smartctl_output: string;
-}
-
-export interface SmartDataV1 {
-  ata_sct_capabilities: object;
-  ata_smart_attributes: {
-    revision: number;
-    table: SmartAttribute[];
-  };
-  ata_smart_data: {
-    capabilities: {
-      attribute_autosave_enabled: boolean;
-      conveyance_self_test_supported: boolean;
-      error_logging_supported: boolean;
-      exec_offline_immediate_supported: boolean;
-      gp_logging_supported: boolean;
-      offline_is_aborted_upon_new_cmd: boolean;
-      offline_surface_scan_supported: boolean;
-      selective_self_test_supported: boolean;
-      self_tests_supported: boolean;
-      values: boolean;
-    };
-    offline_data_collection: {
-      completion_seconds: number;
-      status: {
-        string: string;
-        value: number;
-      };
-    };
-    self_test: {
-      polling_minutes: {
-        conveyance: number;
-        extended: number;
-        short: number;
-      };
-      status: {
-        passed: boolean;
-        string: string;
-        value: number;
-      };
-    };
-  };
-  ata_smart_error_log: object;
-  ata_smart_selective_self_test_log: object;
-  ata_smart_self_test_log: object;
-  ata_version: object;
-  device: {
-    name: string;
-    info_name: string;
-    type: string;
-    protocol: string;
-  };
-  firmware_version: string;
-  in_smartctl_database: boolean;
-  interface_speed: object;
-  json_format_version: number[];
-  local_time: object;
-  logical_block_size: number;
-  model_family: string;
-  model_name: string;
-  nvme_smart_health_information_add_log_error: string;
-  nvme_smart_health_information_add_log_error_code: number;
-  nvme_vendor: string;
-  physical_block_size: number;
-  power_cycle_count: number;
-  power_on_time: object;
-  rotation_rate: number;
-  sata_version: object;
-  serial_number: string;
-  smart_status: object;
-  smartctl: object;
-  temperature: object;
-  user_capacity: object;
-  wwn: object;
-}
 
 @Injectable({
   providedIn: ApiModule
@@ -150,7 +61,16 @@ export class OsdService {
     ]
   };
 
-  constructor(private http: HttpClient, private i18n: I18n) {}
+  constructor(private http: HttpClient, private i18n: I18n, private deviceService: DeviceService) {}
+
+  create(driveGroups: Object[]) {
+    const request = {
+      method: 'drive_groups',
+      data: driveGroups,
+      tracking_id: _.join(_.map(driveGroups, 'service_id'), ', ')
+    };
+    return this.http.post(this.path, request, { observe: 'response' });
+  }
 
   getList() {
     return this.http.get(`${this.path}`);
@@ -170,12 +90,10 @@ export class OsdService {
    * @param id OSD ID
    */
   getSmartData(id: number) {
-    return this.http.get<{ [deviceId: string]: SmartDataV1 | SmartError }>(
-      `${this.path}/${id}/get_smart_data`
-    );
+    return this.http.get<SmartDataResponseV1>(`${this.path}/${id}/smart`);
   }
 
-  scrub(id, deep) {
+  scrub(id: string, deep: boolean) {
     return this.http.post(`${this.path}/${id}/scrub?deep=${deep}`, null);
   }
 
@@ -203,6 +121,10 @@ export class OsdService {
     return this.http.post(`${this.path}/${id}/reweight`, { weight: weight });
   }
 
+  update(id: number, deviceClass: string) {
+    return this.http.put(`${this.path}/${id}`, { device_class: deviceClass });
+  }
+
   markLost(id: number) {
     return this.http.post(`${this.path}/${id}/mark_lost`, null);
   }
@@ -215,11 +137,31 @@ export class OsdService {
     return this.http.post(`${this.path}/${id}/destroy`, null);
   }
 
+  delete(id: number, force?: boolean) {
+    const options = force ? { params: new HttpParams().set('force', 'true') } : {};
+    options['observe'] = 'response';
+    return this.http.delete(`${this.path}/${id}`, options);
+  }
+
   safeToDestroy(ids: string) {
     interface SafeToDestroyResponse {
-      'safe-to-destroy': boolean;
+      is_safe_to_destroy: boolean;
       message?: string;
     }
-    return this.http.get<SafeToDestroyResponse>(`${this.path}/${ids}/safe_to_destroy`);
+    return this.http.get<SafeToDestroyResponse>(`${this.path}/safe_to_destroy?ids=${ids}`);
+  }
+
+  safeToDelete(ids: string) {
+    interface SafeToDeleteResponse {
+      is_safe_to_delete: boolean;
+      message?: string;
+    }
+    return this.http.get<SafeToDeleteResponse>(`${this.path}/safe_to_delete?svc_ids=${ids}`);
+  }
+
+  getDevices(osdId: number) {
+    return this.http
+      .get<CdDevice[]>(`${this.path}/${osdId}/devices`)
+      .pipe(map((devices) => devices.map((device) => this.deviceService.prepareDevice(device))));
   }
 }

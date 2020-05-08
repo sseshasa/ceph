@@ -7,17 +7,18 @@
 
 #include "crimson/common/log.h"
 #include "crimson/net/Errors.h"
+#include "crimson/net/Dispatcher.h"
 #include "crimson/net/Socket.h"
 #include "crimson/net/SocketConnection.h"
 #include "msg/Message.h"
 
 namespace {
   seastar::logger& logger() {
-    return ceph::get_logger(ceph_subsys_ms);
+    return crimson::get_logger(ceph_subsys_ms);
   }
 }
 
-namespace ceph::net {
+namespace crimson::net {
 
 Protocol::Protocol(proto_t type,
                    Dispatcher& dispatcher,
@@ -34,42 +35,64 @@ Protocol::~Protocol()
   assert(!exit_open);
 }
 
-bool Protocol::is_connected() const
-{
-  return write_state == write_state_t::open;
-}
-
-seastar::future<> Protocol::close()
+void Protocol::close(bool dispatch_reset,
+                     std::optional<std::function<void()>> f_accept_new)
 {
   if (closed) {
     // already closing
-    assert(close_ready.valid());
-    return close_ready.get_future();
+    return;
   }
+
+  bool is_replace = f_accept_new ? true : false;
+  logger().info("{} closing: reset {}, replace {}", conn,
+                dispatch_reset ? "yes" : "no",
+                is_replace ? "yes" : "no");
 
   // unregister_conn() drops a reference, so hold another until completion
   auto cleanup = [conn_ref = conn.shared_from_this(), this] {
       logger().debug("{} closed!", conn);
+#ifdef UNIT_TESTS_BUILT
+      is_closed_clean = true;
+      if (conn.interceptor) {
+        conn.interceptor->register_conn_closed(conn);
+      }
+#endif
     };
 
+  // atomic operations
+  closed = true;
   trigger_close();
-
-  // close_ready become valid only after state is state_t::closing
-  assert(!close_ready.valid());
-
+  if (f_accept_new) {
+    (*f_accept_new)();
+  }
   if (socket) {
     socket->shutdown();
-    close_ready = pending_dispatch.close().finally([this] {
-      return socket->close();
-    }).finally(std::move(cleanup));
-  } else {
-    close_ready = pending_dispatch.close().finally(std::move(cleanup));
   }
-
-  closed = true;
   set_write_state(write_state_t::drop);
+  auto gate_closed = pending_dispatch.close();
+  auto reset_dispatched = seastar::futurize_invoke([this, dispatch_reset, is_replace] {
+    if (dispatch_reset) {
+      return dispatcher.ms_handle_reset(
+          seastar::static_pointer_cast<SocketConnection>(conn.shared_from_this()),
+          is_replace);
+    }
+    return seastar::now();
+  }).handle_exception([this] (std::exception_ptr eptr) {
+    logger().error("{} ms_handle_reset caught exception: {}", conn, eptr);
+    ceph_abort("unexpected exception from ms_handle_reset()");
+  });
 
-  return close_ready.get_future();
+  // asynchronous operations
+  assert(!close_ready.valid());
+  close_ready = seastar::when_all_succeed(
+    std::move(gate_closed).finally([this] {
+      if (socket) {
+        return socket->close();
+      }
+      return seastar::now();
+    }),
+    std::move(reset_dispatched)
+  ).finally(std::move(cleanup));
 }
 
 seastar::future<> Protocol::send(MessageRef msg)
@@ -171,14 +194,39 @@ void Protocol::ack_writes(seq_num_t seq)
   }
 }
 
+seastar::future<stop_t> Protocol::try_exit_sweep() {
+  assert(!is_queued());
+  return socket->flush().then([this] {
+    if (!is_queued()) {
+      // still nothing pending to send after flush,
+      // the dispatching can ONLY stop now
+      ceph_assert(write_dispatching);
+      write_dispatching = false;
+      if (unlikely(exit_open.has_value())) {
+        exit_open->set_value();
+        exit_open = std::nullopt;
+        logger().info("{} write_event: nothing queued at {},"
+                      " set exit_open",
+                      conn, get_state_name(write_state));
+      }
+      return seastar::make_ready_future<stop_t>(stop_t::yes);
+    } else {
+      // something is pending to send during flushing
+      return seastar::make_ready_future<stop_t>(stop_t::no);
+    }
+  });
+}
+
 seastar::future<> Protocol::do_write_dispatch_sweep()
 {
   return seastar::repeat([this] {
     switch (write_state) {
      case write_state_t::open: {
       size_t num_msgs = conn.out_q.size();
-      // we must have something to write...
-      ceph_assert(is_queued());
+      bool still_queued = is_queued();
+      if (unlikely(!still_queued)) {
+        return try_exit_sweep();
+      }
       conn.pending_q.clear();
       conn.pending_q.swap(conn.out_q);
       if (!conn.policy.lossy) {
@@ -199,26 +247,7 @@ seastar::future<> Protocol::do_write_dispatch_sweep()
         assert(ack_left >= acked);
         ack_left -= acked;
         if (!is_queued()) {
-          // good, we have nothing pending to send now.
-          return socket->flush().then([this] {
-            if (!is_queued()) {
-              // still nothing pending to send after flush,
-              // the dispatching can ONLY stop now
-              ceph_assert(write_dispatching);
-              write_dispatching = false;
-              if (unlikely(exit_open.has_value())) {
-                exit_open->set_value();
-                exit_open = std::nullopt;
-                logger().info("{} write_event: nothing queued at {},"
-                              " set exit_open",
-                              conn, get_state_name(write_state));
-              }
-              return seastar::make_ready_future<stop_t>(stop_t::yes);
-            } else {
-              // something is pending to send during flushing
-              return seastar::make_ready_future<stop_t>(stop_t::no);
-            }
-          });
+          return try_exit_sweep();
         } else {
           // messages were enqueued during socket write
           return seastar::make_ready_future<stop_t>(stop_t::no);
@@ -251,8 +280,8 @@ seastar::future<> Protocol::do_write_dispatch_sweep()
       ceph_assert(false);
     }
   }).handle_exception_type([this] (const std::system_error& e) {
-    if (e.code() != error::broken_pipe &&
-        e.code() != error::connection_reset &&
+    if (e.code() != std::errc::broken_pipe &&
+        e.code() != std::errc::connection_reset &&
         e.code() != error::negotiation_failure) {
       logger().error("{} write_event(): unexpected error at {} -- {}",
                      conn, get_state_name(write_state), e);
@@ -283,13 +312,8 @@ void Protocol::write_event()
    case write_state_t::open:
      [[fallthrough]];
    case write_state_t::delay:
-    (void) seastar::with_gate(pending_dispatch, [this] {
-      return do_write_dispatch_sweep(
-      ).handle_exception([this] (std::exception_ptr eptr) {
-        logger().error("{} do_write_dispatch_sweep(): unexpected exception {}",
-                       conn, eptr);
-        ceph_abort();
-      });
+    gated_dispatch("do_write_dispatch_sweep", [this] {
+      return do_write_dispatch_sweep();
     });
     return;
    case write_state_t::drop:
@@ -300,4 +324,4 @@ void Protocol::write_event()
   }
 }
 
-} // namespace ceph::net
+} // namespace crimson::net

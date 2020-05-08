@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-set -x
+set -ex
 
 git submodule update --init --recursive
 
-[ -z "$BUILD_DIR" ] && BUILD_DIR=build
+: ${BUILD_DIR:=build}
+: ${CEPH_GIT_DIR:=..}
 
 if [ -e $BUILD_DIR ]; then
     echo "'$BUILD_DIR' dir already exists; either rm -rf '$BUILD_DIR' and re-run, or set BUILD_DIR env var to a different directory name"
@@ -15,8 +16,9 @@ if [ -r /etc/os-release ]; then
   source /etc/os-release
   case "$ID" in
       fedora)
-          if [ "$VERSION_ID" -ge "29" ] ; then
-              PYBUILD="3.7"
+          PYBUILD="3.7"
+          if [ "$VERSION_ID" -ge "32" ] ; then
+              PYBUILD="3.8"
           fi
           ;;
       rhel|centos)
@@ -27,27 +29,26 @@ if [ -r /etc/os-release ]; then
           ;;
       opensuse*|suse|sles)
           PYBUILD="3"
-          WITH_RADOSGW_AMQP_ENDPOINT="OFF"
+          ARGS+=" -DWITH_RADOSGW_AMQP_ENDPOINT=OFF"
+          ARGS+=" -DWITH_RADOSGW_KAFKA_ENDPOINT=OFF"
           ;;
   esac
 elif [ "$(uname)" == FreeBSD ] ; then
   PYBUILD="3"
-  WITH_RADOSGW_AMQP_ENDPOINT="OFF"
+  ARGS+=" -DWITH_RADOSGW_AMQP_ENDPOINT=OFF"
+  ARGS+=" -DWITH_RADOSGW_KAFKA_ENDPOINT=OFF"
 else
   echo Unknown release
   exit 1
 fi
 
 if [[ "$PYBUILD" =~ ^3(\..*)?$ ]] ; then
-    ARGS="$ARGS -DWITH_PYTHON2=OFF -DWITH_PYTHON3=${PYBUILD} -DMGR_PYTHON_VERSION=${PYBUILD}"
+    ARGS+=" -DWITH_PYTHON3=${PYBUILD}"
 fi
 
 if type ccache > /dev/null 2>&1 ; then
     echo "enabling ccache"
-    ARGS="$ARGS -DWITH_CCACHE=ON"
-fi
-if [ -n "$WITH_RADOSGW_AMQP_ENDPOINT" ] ; then
-    ARGS="$ARGS -DWITH_RADOSGW_AMQP_ENDPOINT=$WITH_RADOSGW_AMQP_ENDPOINT"
+    ARGS+=" -DWITH_CCACHE=ON"
 fi
 
 mkdir $BUILD_DIR
@@ -57,7 +58,8 @@ if type cmake3 > /dev/null 2>&1 ; then
 else
     CMAKE=cmake
 fi
-${CMAKE} -DCMAKE_BUILD_TYPE=Debug $ARGS "$@" .. || exit 1
+${CMAKE} $ARGS "$@" $CEPH_GIT_DIR || exit 1
+set +x
 
 # minimal config to find plugins
 cat <<EOF > ceph.conf
@@ -67,7 +69,9 @@ erasure code dir = lib
 EOF
 
 echo done.
-cat <<EOF
+
+if [[ ! $ARGS =~ "-DCMAKE_BUILD_TYPE" ]]; then
+  cat <<EOF
 
 ****
 WARNING: do_cmake.sh now creates debug builds by default. Performance
@@ -75,3 +79,5 @@ may be severely affected. Please use -DCMAKE_BUILD_TYPE=RelWithDebInfo
 if a performance sensitive build is required.
 ****
 EOF
+fi
+

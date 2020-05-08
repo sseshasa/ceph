@@ -21,7 +21,7 @@
 
 class AuthAuthorizer;
 
-namespace ceph::net {
+namespace crimson::net {
 
 class Dispatcher {
  public:
@@ -39,25 +39,17 @@ class Dispatcher {
     return seastar::make_ready_future<>();
   }
 
-  virtual seastar::future<> ms_handle_reset(ConnectionRef conn) {
+  // a reset event is dispatched when the connection is closed unexpectedly.
+  // is_replace=true means the reset connection is going to be replaced by
+  // another accepting connection with the same peer_addr, which currently only
+  // happens under lossy policy when both sides wish to connect to each other.
+  virtual seastar::future<> ms_handle_reset(ConnectionRef conn, bool is_replace) {
     return seastar::make_ready_future<>();
   }
 
   virtual seastar::future<> ms_handle_remote_reset(ConnectionRef conn) {
     return seastar::make_ready_future<>();
   }
-
-  virtual seastar::future<msgr_tag_t, bufferlist>
-  ms_verify_authorizer(entity_type_t,
-		       auth_proto_t,
-		       bufferlist&) {
-    return seastar::make_ready_future<msgr_tag_t, bufferlist>(0, bufferlist{});
-  }
-
-  // get the local dispatcher shard if it is accessed by another core
-  virtual Dispatcher* get_local_shard() {
-    return this;
-  }
 };
 
-} // namespace ceph::net
+} // namespace crimson::net

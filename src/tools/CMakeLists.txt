@@ -50,7 +50,7 @@ add_executable(ceph-objectstore-tool
   RadosDump.cc)
 target_link_libraries(ceph-objectstore-tool osd os global Boost::program_options ${CMAKE_DL_LIBS})
 if(WITH_FUSE)
-  target_link_libraries(ceph-objectstore-tool ${FUSE_LIBRARIES})
+  target_link_libraries(ceph-objectstore-tool FUSE::FUSE)
 endif(WITH_FUSE)
 install(TARGETS ceph-objectstore-tool DESTINATION bin)
 
@@ -88,6 +88,10 @@ add_executable(osdmaptool ${osdomaptool_srcs})
 target_link_libraries(osdmaptool global)
 install(TARGETS osdmaptool DESTINATION bin)
 
+set(ceph-diff-sorted_srcs ceph-diff-sorted.cc)
+add_executable(ceph-diff-sorted ${ceph-diff-sorted_srcs})
+install(TARGETS ceph-diff-sorted DESTINATION bin)
+
 if(WITH_TESTS)
 set(ceph_psim_srcs psim.cc)
 add_executable(ceph_psim ${ceph_psim_srcs})
@@ -122,5 +126,10 @@ if(WITH_RBD)
   endif()
 endif(WITH_RBD)
 
+if(WITH_SEASTAR)
+  add_subdirectory(crimson)
+endif()
+
 add_subdirectory(immutable_object_cache)
 add_subdirectory(ceph-dencoder)
+add_subdirectory(erasure-code)

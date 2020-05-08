@@ -210,7 +210,7 @@ int TestIoCtxImpl::operate(const std::string& oid, TestObjectOperationImpl &ops)
     &TestIoCtxImpl::execute_aio_operations, this, oid, &ops,
     reinterpret_cast<bufferlist*>(0), m_snapc), comp);
 
-  comp->wait_for_safe();
+  comp->wait_for_complete();
   int ret = comp->get_return_value();
   comp->put();
   return ret;
@@ -256,6 +256,7 @@ int TestIoCtxImpl::selfmanaged_snap_set_write_ctx(snap_t seq,
 int TestIoCtxImpl::set_alloc_hint(const std::string& oid,
                                   uint64_t expected_object_size,
                                   uint64_t expected_write_size,
+                                  uint32_t flags,
                                   const SnapContext &snapc) {
   return 0;
 }

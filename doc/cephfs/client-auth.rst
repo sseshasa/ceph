@@ -10,6 +10,13 @@ to the lowest possible level of authority needed.
     Path restriction and layout modification restriction are new features
     in the Jewel release of Ceph.
 
+.. note::
+
+   Using Erasure Coded(EC) pools with CephFS is supported only with the
+   BlueStore Backend. They cannot be used as metadata pools and overwrites must
+   be enabled on the data pools.
+
+
 Path restriction
 ================
 
@@ -29,9 +36,9 @@ directory while creating key for a client using the following syntax. ::
 
  ceph fs authorize *file_system_name* client.*client_name* /*specified_directory* rw
 
-For example, to restrict client ``foo`` to writing only in the ``bar`` directory of file system ``cephfs``, use ::
+For example, to restrict client ``foo`` to writing only in the ``bar`` directory of file system ``cephfs_a``, use ::
 
- ceph fs authorize cephfs client.foo / r /bar rw
+ ceph fs authorize cephfs_a client.foo / r /bar rw
 
  results in:
 
@@ -44,7 +51,7 @@ For example, to restrict client ``foo`` to writing only in the ``bar`` directory
 To completely restrict the client to the ``bar`` directory, omit the
 root directory ::
 
- ceph fs authorize cephfs client.foo /bar rw
+ ceph fs authorize cephfs_a client.foo /bar rw
 
 Note that if a client's read access is restricted to a path, they will only
 be able to mount the file system when specifying a readable path in the

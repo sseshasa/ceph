@@ -18,7 +18,7 @@
 #include "msg/Message.h"
 #include "include/types.h"
 
-class MExportDirDiscoverAck : public Message {
+class MExportDirDiscoverAck : public SafeMessage {
 private:
   static const int HEAD_VERSION = 1;
   static const int COMPAT_VERSION = 1;
@@ -32,9 +32,9 @@ private:
   bool is_success() const { return success; }
 
 protected:
-  MExportDirDiscoverAck() : Message{MSG_MDS_EXPORTDIRDISCOVERACK, HEAD_VERSION, COMPAT_VERSION} {}
+  MExportDirDiscoverAck() : SafeMessage{MSG_MDS_EXPORTDIRDISCOVERACK, HEAD_VERSION, COMPAT_VERSION} {}
   MExportDirDiscoverAck(dirfrag_t df, uint64_t tid, bool s=true) :
-    Message{MSG_MDS_EXPORTDIRDISCOVERACK, HEAD_VERSION, COMPAT_VERSION},
+    SafeMessage{MSG_MDS_EXPORTDIRDISCOVERACK, HEAD_VERSION, COMPAT_VERSION},
     dirfrag(df), success(s) {
     set_tid(tid);
   }
@@ -42,7 +42,7 @@ protected:
 
 public:
   std::string_view get_type_name() const override { return "ExDisA"; }
-  void print(ostream& o) const override {
+  void print(std::ostream& o) const override {
     o << "export_discover_ack(" << dirfrag;
     if (success) 
       o << " success)";
@@ -51,6 +51,7 @@ public:
   }
 
   void decode_payload() override {
+    using ceph::decode;
     auto p = payload.cbegin();
     decode(dirfrag, p);
     decode(success, p);

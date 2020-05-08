@@ -1,4 +1,5 @@
 import { Component, OnInit, TemplateRef, ViewChild } from '@angular/core';
+import { Router } from '@angular/router';
 
 import { I18n } from '@ngx-translate/i18n-polyfill';
 import * as _ from 'lodash';
@@ -6,32 +7,41 @@ import { BsModalRef, BsModalService } from 'ngx-bootstrap/modal';
 import { forkJoin as observableForkJoin, Observable } from 'rxjs';
 
 import { OsdService } from '../../../../shared/api/osd.service';
+import { ListWithDetails } from '../../../../shared/classes/list-with-details.class';
 import { ConfirmationModalComponent } from '../../../../shared/components/confirmation-modal/confirmation-modal.component';
 import { CriticalConfirmationModalComponent } from '../../../../shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
-import { ActionLabelsI18n } from '../../../../shared/constants/app.constants';
+import { FormModalComponent } from '../../../../shared/components/form-modal/form-modal.component';
+import { ActionLabelsI18n, URLVerbs } from '../../../../shared/constants/app.constants';
 import { TableComponent } from '../../../../shared/datatable/table/table.component';
 import { CellTemplate } from '../../../../shared/enum/cell-template.enum';
 import { Icons } from '../../../../shared/enum/icons.enum';
+import { NotificationType } from '../../../../shared/enum/notification-type.enum';
 import { CdTableAction } from '../../../../shared/models/cd-table-action';
 import { CdTableColumn } from '../../../../shared/models/cd-table-column';
 import { CdTableSelection } from '../../../../shared/models/cd-table-selection';
+import { FinishedTask } from '../../../../shared/models/finished-task';
 import { Permissions } from '../../../../shared/models/permissions';
 import { DimlessBinaryPipe } from '../../../../shared/pipes/dimless-binary.pipe';
 import { AuthStorageService } from '../../../../shared/services/auth-storage.service';
+import { DepCheckerService } from '../../../../shared/services/dep-checker.service';
+import { NotificationService } from '../../../../shared/services/notification.service';
+import { TaskWrapperService } from '../../../../shared/services/task-wrapper.service';
+import { URLBuilderService } from '../../../../shared/services/url-builder.service';
 import { OsdFlagsModalComponent } from '../osd-flags-modal/osd-flags-modal.component';
 import { OsdPgScrubModalComponent } from '../osd-pg-scrub-modal/osd-pg-scrub-modal.component';
 import { OsdRecvSpeedModalComponent } from '../osd-recv-speed-modal/osd-recv-speed-modal.component';
 import { OsdReweightModalComponent } from '../osd-reweight-modal/osd-reweight-modal.component';
 import { OsdScrubModalComponent } from '../osd-scrub-modal/osd-scrub-modal.component';
 
+const BASE_URL = 'osd';
+
 @Component({
   selector: 'cd-osd-list',
   templateUrl: './osd-list.component.html',
-  styleUrls: ['./osd-list.component.scss']
+  styleUrls: ['./osd-list.component.scss'],
+  providers: [{ provide: URLBuilderService, useValue: new URLBuilderService(BASE_URL) }]
 })
-export class OsdListComponent implements OnInit {
-  @ViewChild('statusColor', { static: true })
-  statusColor: TemplateRef<any>;
+export class OsdListComponent extends ListWithDetails implements OnInit {
   @ViewChild('osdUsageTpl', { static: true })
   osdUsageTpl: TemplateRef<any>;
   @ViewChild('markOsdConfirmationTpl', { static: true })
@@ -53,9 +63,9 @@ export class OsdListComponent implements OnInit {
   icons = Icons;
 
   selection = new CdTableSelection();
-  osds = [];
+  osds: any[] = [];
 
-  protected static collectStates(osd) {
+  protected static collectStates(osd: any) {
     const states = [osd['in'] ? 'in' : 'out'];
     if (osd['up']) {
       states.push('up');
@@ -73,16 +83,44 @@ export class OsdListComponent implements OnInit {
     private dimlessBinaryPipe: DimlessBinaryPipe,
     private modalService: BsModalService,
     private i18n: I18n,
-    public actionLabels: ActionLabelsI18n
+    private urlBuilder: URLBuilderService,
+    private router: Router,
+    private depCheckerService: DepCheckerService,
+    private taskWrapper: TaskWrapperService,
+    public actionLabels: ActionLabelsI18n,
+    public notificationService: NotificationService
   ) {
+    super();
     this.permissions = this.authStorageService.getPermissions();
     this.tableActions = [
+      {
+        name: this.actionLabels.CREATE,
+        permission: 'create',
+        icon: Icons.add,
+        click: () => {
+          this.depCheckerService.checkOrchestratorOrModal(
+            this.actionLabels.CREATE,
+            this.i18n('OSD'),
+            () => {
+              this.router.navigate([this.urlBuilder.getCreate()]);
+            }
+          );
+        },
+        canBePrimary: (selection: CdTableSelection) => !selection.hasSelection
+      },
+      {
+        name: this.actionLabels.EDIT,
+        permission: 'update',
+        icon: Icons.edit,
+        click: () => this.editAction()
+      },
       {
         name: this.actionLabels.SCRUB,
         permission: 'update',
         icon: Icons.analyse,
         click: () => this.scrubAction(false),
-        disable: () => !this.hasOsdSelected
+        disable: () => !this.hasOsdSelected,
+        canBePrimary: (selection: CdTableSelection) => selection.hasSelection
       },
       {
         name: this.actionLabels.DEEP_SCRUB,
@@ -127,6 +165,10 @@ export class OsdListComponent implements OnInit {
             this.i18n('Mark'),
             this.i18n('OSD lost'),
             this.i18n('marked lost'),
+            (ids: number[]) => {
+              return this.osdService.safeToDestroy(JSON.stringify(ids));
+            },
+            'is_safe_to_destroy',
             this.osdService.markLost
           ),
         disable: () => this.isNotSelectedOrInState('up'),
@@ -140,7 +182,11 @@ export class OsdListComponent implements OnInit {
             this.i18n('Purge'),
             this.i18n('OSD'),
             this.i18n('purged'),
-            (id) => {
+            (ids: number[]) => {
+              return this.osdService.safeToDestroy(JSON.stringify(ids));
+            },
+            'is_safe_to_destroy',
+            (id: number) => {
               this.selection = new CdTableSelection();
               return this.osdService.purge(id);
             }
@@ -156,12 +202,49 @@ export class OsdListComponent implements OnInit {
             this.i18n('destroy'),
             this.i18n('OSD'),
             this.i18n('destroyed'),
-            (id) => {
+            (ids: number[]) => {
+              return this.osdService.safeToDestroy(JSON.stringify(ids));
+            },
+            'is_safe_to_destroy',
+            (id: number) => {
               this.selection = new CdTableSelection();
               return this.osdService.destroy(id);
             }
           ),
         disable: () => this.isNotSelectedOrInState('up'),
+        icon: Icons.destroyCircle
+      },
+      {
+        name: this.actionLabels.DELETE,
+        permission: 'delete',
+        click: () => {
+          this.depCheckerService.checkOrchestratorOrModal(
+            this.actionLabels.DELETE,
+            this.i18n('OSD'),
+            () => {
+              this.showCriticalConfirmationModal(
+                this.i18n('delete'),
+                this.i18n('OSD'),
+                this.i18n('deleted'),
+                (ids: number[]) => {
+                  return this.osdService.safeToDelete(JSON.stringify(ids));
+                },
+                'is_safe_to_delete',
+                (id: number) => {
+                  this.selection = new CdTableSelection();
+                  return this.taskWrapper.wrapTaskAroundCall({
+                    task: new FinishedTask('osd/' + URLVerbs.DELETE, {
+                      svc_id: id
+                    }),
+                    call: this.osdService.delete(id, true)
+                  });
+                },
+                true
+              );
+            }
+          );
+        },
+        disable: () => !this.hasOsdSelected,
         icon: Icons.destroy
       }
     ];
@@ -193,10 +276,45 @@ export class OsdListComponent implements OnInit {
     ];
     this.columns = [
       { prop: 'host.name', name: this.i18n('Host') },
-      { prop: 'id', name: this.i18n('ID'), cellTransformation: CellTemplate.bold },
-      { prop: 'collectedStates', name: this.i18n('Status'), cellTemplate: this.statusColor },
-      { prop: 'stats.numpg', name: this.i18n('PGs') },
-      { prop: 'stats.stat_bytes', name: this.i18n('Size'), pipe: this.dimlessBinaryPipe },
+      { prop: 'id', name: this.i18n('ID'), flexGrow: 1, cellTransformation: CellTemplate.bold },
+      {
+        prop: 'collectedStates',
+        name: this.i18n('Status'),
+        flexGrow: 1,
+        cellTransformation: CellTemplate.badge,
+        customTemplateConfig: {
+          map: {
+            in: { class: 'badge-success' },
+            up: { class: 'badge-success' },
+            down: { class: 'badge-danger' },
+            out: { class: 'badge-danger' },
+            destroyed: { class: 'badge-danger' }
+          }
+        }
+      },
+      {
+        prop: 'tree.device_class',
+        name: this.i18n('Device class'),
+        flexGrow: 1,
+        cellTransformation: CellTemplate.badge,
+        customTemplateConfig: {
+          map: {
+            hdd: { class: 'badge-hdd' },
+            ssd: { class: 'badge-ssd' }
+          }
+        }
+      },
+      {
+        prop: 'stats.numpg',
+        name: this.i18n('PGs'),
+        flexGrow: 1
+      },
+      {
+        prop: 'stats.stat_bytes',
+        name: this.i18n('Size'),
+        flexGrow: 1,
+        pipe: this.dimlessBinaryPipe
+      },
       { prop: 'stats.usage', name: this.i18n('Usage'), cellTemplate: this.osdUsageTpl },
       {
         prop: 'stats_history.out_bytes',
@@ -205,7 +323,7 @@ export class OsdListComponent implements OnInit {
       },
       {
         prop: 'stats_history.in_bytes',
-        name: this.i18n('Writes bytes'),
+        name: this.i18n('Write bytes'),
         cellTransformation: CellTemplate.sparkline
       },
       {
@@ -269,8 +387,8 @@ export class OsdListComponent implements OnInit {
     this.osdService.getList().subscribe((data: any[]) => {
       this.osds = data.map((osd) => {
         osd.collectedStates = OsdListComponent.collectStates(osd);
-        osd.stats_history.out_bytes = osd.stats_history.op_out_bytes.map((i) => i[1]);
-        osd.stats_history.in_bytes = osd.stats_history.op_in_bytes.map((i) => i[1]);
+        osd.stats_history.out_bytes = osd.stats_history.op_out_bytes.map((i: string) => i[1]);
+        osd.stats_history.in_bytes = osd.stats_history.op_in_bytes.map((i: string) => i[1]);
         osd.stats.usage = osd.stats.stat_bytes_used / osd.stats.stat_bytes;
         osd.cdIsBinary = true;
         return osd;
@@ -278,7 +396,40 @@ export class OsdListComponent implements OnInit {
     });
   }
 
-  scrubAction(deep) {
+  editAction() {
+    const selectedOsd = _.filter(this.osds, ['id', this.selection.first().id]).pop();
+
+    this.modalService.show(FormModalComponent, {
+      initialState: {
+        titleText: this.i18n('Edit OSD: {{id}}', {
+          id: selectedOsd.id
+        }),
+        fields: [
+          {
+            type: 'text',
+            name: 'deviceClass',
+            value: selectedOsd.tree.device_class,
+            label: this.i18n('Device class'),
+            required: true
+          }
+        ],
+        submitButtonText: this.i18n('Edit OSD'),
+        onSubmit: (values: any) => {
+          this.osdService.update(selectedOsd.id, values.deviceClass).subscribe(() => {
+            this.notificationService.show(
+              NotificationType.success,
+              this.i18n('Updated OSD "{{id}}"', {
+                id: selectedOsd.id
+              })
+            );
+            this.getOsdList();
+          });
+        }
+      }
+    });
+  }
+
+  scrubAction(deep: boolean) {
     if (!this.hasOsdSelected) {
       return;
     }
@@ -323,32 +474,59 @@ export class OsdListComponent implements OnInit {
     });
   }
 
+  /**
+   * Perform check first and display a critical confirmation modal.
+   * @param {string} actionDescription name of the action.
+   * @param {string} itemDescription the item's name that the action operates on.
+   * @param {string} templateItemDescription the action name to be displayed in modal template.
+   * @param {Function} check the function is called to check if the action is safe.
+   * @param {string} checkKey the safe indicator's key in the check response.
+   * @param {Function} action the action function.
+   * @param {boolean} oneshot if true, action function is called with all items as parameter.
+   *   Otherwise, multiple action functions with individual items are sent.
+   */
   showCriticalConfirmationModal(
     actionDescription: string,
     itemDescription: string,
     templateItemDescription: string,
-    action: (id: number) => Observable<any>
+    check: (ids: number[]) => Observable<any>,
+    checkKey: string,
+    action: (id: number | number[]) => Observable<any>,
+    taskWrapped: boolean = false
   ): void {
-    this.osdService.safeToDestroy(JSON.stringify(this.getSelectedOsdIds())).subscribe((result) => {
+    check(this.getSelectedOsdIds()).subscribe((result) => {
       const modalRef = this.modalService.show(CriticalConfirmationModalComponent, {
         initialState: {
           actionDescription: actionDescription,
           itemDescription: itemDescription,
           bodyTemplate: this.criticalConfirmationTpl,
           bodyContext: {
-            result: result,
+            safeToPerform: result[checkKey],
+            message: result.message,
             actionDescription: templateItemDescription
           },
           submitAction: () => {
-            observableForkJoin(
+            const observable = observableForkJoin(
               this.getSelectedOsdIds().map((osd: any) => action.call(this.osdService, osd))
-            ).subscribe(
-              () => {
-                this.getOsdList();
-                modalRef.hide();
-              },
-              () => modalRef.hide()
             );
+            if (taskWrapped) {
+              observable.subscribe(
+                undefined,
+                () => {
+                  this.getOsdList();
+                  modalRef.hide();
+                },
+                () => modalRef.hide()
+              );
+            } else {
+              observable.subscribe(
+                () => {
+                  this.getOsdList();
+                  modalRef.hide();
+                },
+                () => modalRef.hide()
+              );
+            }
           }
         }
       });

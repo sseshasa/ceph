@@ -13,11 +13,11 @@
 
 namespace {
   seastar::logger& logger() {
-    return ceph::get_logger(ceph_subsys_osd);
+    return crimson::get_logger(ceph_subsys_osd);
   }
 }
 
-namespace ceph::osd {
+namespace crimson::osd {
 
 void PeeringEvent::print(std::ostream &lhs) const
 {
@@ -53,7 +53,16 @@ seastar::future<> PeeringEvent::start()
   logger().debug("{}: start", *this);
 
   IRef ref = this;
-  return get_pg().then([this](Ref<PG> pg) {
+  return [this] {
+    if (delay) {
+      return seastar::sleep(std::chrono::milliseconds(
+		std::lround(delay*1000)));
+    } else {
+      return seastar::now();
+    }
+  }().then([this] {
+    return get_pg();
+  }).then([this](Ref<PG> pg) {
     if (!pg) {
       logger().warn("{}: pg absent, did not create", *this);
       on_pg_absent();

@@ -1,17 +1,16 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef CEPH_RGW_REST_CONN_H
-#define CEPH_RGW_REST_CONN_H
+#pragma once
 
 #include "rgw_rados.h"
 #include "rgw_rest_client.h"
 #include "common/ceph_json.h"
 #include "common/RefCountedObj.h"
+#include "include/common_fwd.h"
 
 #include <atomic>
 
-class CephContext;
 class RGWSI_Zone;
 
 template <class T>
@@ -515,7 +514,3 @@ public:
                                                                   params, extra_headers, _mgr) {}
 
 };
-
-
-
-#endif

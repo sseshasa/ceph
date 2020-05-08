@@ -213,6 +213,7 @@ int abort_multipart_upload(rgw::sal::RGWRadosStore *store, CephContext *cct,
   bool truncated;
   int marker = 0;
   int ret;
+  uint64_t parts_accounted_size = 0;
 
   do {
     ret = list_multipart_parts(store, bucket_info, cct,
@@ -249,14 +250,19 @@ int abort_multipart_upload(rgw::sal::RGWRadosStore *store, CephContext *cct,
           remove_objs.push_back(key);
         }
       }
+      parts_accounted_size += obj_part.accounted_size;
     }
   } while (truncated);
 
-  /* use upload id as tag and do it asynchronously */
-  ret = store->getRados()->send_chain_to_gc(chain, mp_obj.get_upload_id(), false);
+  /* use upload id as tag and do it synchronously */
+  ret = store->getRados()->send_chain_to_gc(chain, mp_obj.get_upload_id());
   if (ret < 0) {
     ldout(cct, 5) << __func__ << ": gc->send_chain() returned " << ret << dendl;
-    return (ret == -ENOENT) ? -ERR_NO_SUCH_UPLOAD : ret;
+    if (ret == -ENOENT) {
+      return -ERR_NO_SUCH_UPLOAD;
+    }
+    //Delete objects inline if send chain to gc fails
+    store->getRados()->delete_objs_inline(chain, mp_obj.get_upload_id());
   }
 
   RGWRados::Object del_target(store->getRados(), bucket_info, *obj_ctx, meta_obj);
@@ -266,6 +272,9 @@ int abort_multipart_upload(rgw::sal::RGWRadosStore *store, CephContext *cct,
   if (!remove_objs.empty()) {
     del_op.params.remove_objs = &remove_objs;
   }
+  
+  del_op.params.abortmp = true;
+  del_op.params.parts_accounted_size = parts_accounted_size;
 
   // and also remove the metadata obj
   ret = del_op.delete_obj(null_yield);

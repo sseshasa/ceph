@@ -16,8 +16,13 @@
 #undef dout_prefix
 #define dout_prefix *_dout << "throttle(" << name << " " << (void*)this << ") "
 
+using std::list;
+using std::ostream;
+using std::string;
+
 using ceph::mono_clock;
 using ceph::mono_time;
+using ceph::timespan;
 
 enum {
   l_throttle_first = 532430,
@@ -136,10 +141,7 @@ int64_t Throttle::take(int64_t c)
   }
   ceph_assert(c >= 0);
   ldout(cct, 10) << "take " << c << dendl;
-  {
-    std::lock_guard l(lock);
-    count += c;
-  }
+  count += c;
   if (logger) {
     logger->inc(l_throttle_take);
     logger->inc(l_throttle_take_sum, c);
@@ -151,6 +153,7 @@ int64_t Throttle::take(int64_t c)
 bool Throttle::get(int64_t c, int64_t m)
 {
   if (0 == max && 0 == m) {
+    count += c;
     return false;
   }
 
@@ -183,6 +186,7 @@ bool Throttle::get(int64_t c, int64_t m)
 bool Throttle::get_or_fail(int64_t c)
 {
   if (0 == max) {
+    count += c;
     return true;
   }
 
@@ -211,6 +215,7 @@ bool Throttle::get_or_fail(int64_t c)
 int64_t Throttle::put(int64_t c)
 {
   if (0 == max) {
+    count -= c;
     return 0;
   }
 

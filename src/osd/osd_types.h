@@ -12,7 +12,7 @@
  * modify it under the terms of the GNU Lesser General Public
  * License version 2.1, as published by the Free Software 
  * Foundation.  See file COPYING.
- * 
+ *
  */
 
 #ifndef CEPH_OSD_TYPES_H
@@ -365,6 +365,7 @@ enum {
   CEPH_OSD_RMW_FLAG_SKIP_HANDLE_CACHE = (1 << 8),
   CEPH_OSD_RMW_FLAG_SKIP_PROMOTE      = (1 << 9),
   CEPH_OSD_RMW_FLAG_RWORDERED         = (1 << 10),
+  CEPH_OSD_RMW_FLAG_RETURNVEC = (1 << 11),
 };
 
 
@@ -463,6 +464,19 @@ struct pg_t {
   hobject_t get_hobj_start() const;
   hobject_t get_hobj_end(unsigned pg_num) const;
 
+  // strong ordering is supported
+  inline int compare(const pg_t& p) const noexcept {
+    if (auto delta = pool() - p.pool(); delta != 0) {
+      return delta;
+    } else if (ps() < p.ps()) {
+      return -1;
+    } else if (ps() > p.ps()) {
+      return 1;
+    } else {
+      return 0;
+    }
+  }
+
   void encode(ceph::buffer::list& bl) const {
     using ceph::encode;
     __u8 v = 1;
@@ -477,7 +491,7 @@ struct pg_t {
     decode(v, bl);
     decode(m_pool, bl);
     decode(m_seed, bl);
-    bl.advance(sizeof(int32_t)); // was preferred
+    bl += sizeof(int32_t); // was preferred
   }
   void decode_old(ceph::buffer::list::const_iterator& bl) {
     using ceph::decode;
@@ -491,28 +505,22 @@ struct pg_t {
 WRITE_CLASS_ENCODER(pg_t)
 
 inline bool operator<(const pg_t& l, const pg_t& r) {
-  return l.pool() < r.pool() ||
-    (l.pool() == r.pool() && (l.ps() < r.ps()));
+  return l.compare(r) < 0;
 }
 inline bool operator<=(const pg_t& l, const pg_t& r) {
-  return l.pool() < r.pool() ||
-    (l.pool() == r.pool() && (l.ps() <= r.ps()));
+  return l.compare(r) <= 0;
 }
 inline bool operator==(const pg_t& l, const pg_t& r) {
-  return l.pool() == r.pool() &&
-    l.ps() == r.ps();
+  return l.compare(r) == 0;
 }
 inline bool operator!=(const pg_t& l, const pg_t& r) {
-  return l.pool() != r.pool() ||
-    l.ps() != r.ps();
+  return l.compare(r) != 0;
 }
 inline bool operator>(const pg_t& l, const pg_t& r) {
-  return l.pool() > r.pool() ||
-    (l.pool() == r.pool() && (l.ps() > r.ps()));
+  return l.compare(r) > 0;
 }
 inline bool operator>=(const pg_t& l, const pg_t& r) {
-  return l.pool() > r.pool() ||
-    (l.pool() == r.pool() && (l.ps() >= r.ps()));
+  return l.compare(r) >= 0;
 }
 
 std::ostream& operator<<(std::ostream& out, const pg_t &pg);
@@ -992,6 +1000,8 @@ WRITE_CLASS_ENCODER_FEATURES(objectstore_perf_stat_t)
 #define PG_STATE_FORCED_RECOVERY    (1ULL << 30) // force recovery of this pg before any other
 #define PG_STATE_FORCED_BACKFILL    (1ULL << 31) // force backfill of this pg before any other
 #define PG_STATE_FAILED_REPAIR      (1ULL << 32) // A repair failed to fix all errors
+#define PG_STATE_LAGGY              (1ULL << 33) // PG is laggy/unreabable due to slow/delayed pings
+#define PG_STATE_WAIT               (1ULL << 34) // PG is waiting for prior intervals' readable period to expire
 
 std::string pg_state_string(uint64_t state);
 std::string pg_vector_string(const std::vector<int32_t> &a);
@@ -1048,6 +1058,7 @@ public:
     TARGET_SIZE_BYTES,  // total bytes in pool
     TARGET_SIZE_RATIO,  // fraction of total cluster
     PG_AUTOSCALE_BIAS,
+    READ_LEASE_INTERVAL,
   };
 
   enum type_t {
@@ -1922,6 +1933,7 @@ struct object_stat_sum_t {
   }
 
   void clear() {
+    // FIPS zeroization audit 20191117: this memset is not security related.
     memset(this, 0, sizeof(*this));
   }
 
@@ -2360,7 +2372,7 @@ struct osd_stat_t {
     uint32_t front_max[3];
     uint32_t front_last;
   };
-  map<int, Interfaces> hb_pingtime;  ///< map of osd id to Interfaces
+  std::map<int, Interfaces> hb_pingtime;  ///< map of osd id to Interfaces
 
   osd_stat_t() : snap_trim_queue_len(0), num_snap_trimming(0),
        num_shards_repaired(0)	{}
@@ -2404,7 +2416,8 @@ struct osd_stat_t {
       }
     }
   }
-  void dump(ceph::Formatter *f) const;
+  void dump(ceph::Formatter *f, bool with_net = true) const;
+  void dump_ping_time(ceph::Formatter *f) const;
   void encode(ceph::buffer::list &bl, uint64_t features) const;
   void decode(ceph::buffer::list::const_iterator &bl);
   static void generate_test_instances(std::list<osd_stat_t*>& o);
@@ -2631,7 +2644,7 @@ struct pg_history_t {
   epoch_t last_interval_clean = 0;; // first epoch of last_epoch_clean interval
   epoch_t last_epoch_split = 0;;    // as parent or child
   epoch_t last_epoch_marked_full = 0;;  // pool or cluster
-  
+
   /**
    * In the event of a map discontinuity, same_*_since may reflect the first
    * map the osd has seen in the new map sequence rather than the actual start
@@ -2648,6 +2661,9 @@ struct pg_history_t {
   utime_t last_scrub_stamp;
   utime_t last_deep_scrub_stamp;
   utime_t last_clean_scrub_stamp;
+
+  /// upper bound on how long prior interval readable (relative to encode time)
+  ceph::timespan prior_readable_until_ub = ceph::timespan::zero();
 
   friend bool operator==(const pg_history_t& l, const pg_history_t& r) {
     return
@@ -2666,7 +2682,8 @@ struct pg_history_t {
       l.last_deep_scrub == r.last_deep_scrub &&
       l.last_scrub_stamp == r.last_scrub_stamp &&
       l.last_deep_scrub_stamp == r.last_deep_scrub_stamp &&
-      l.last_clean_scrub_stamp == r.last_clean_scrub_stamp;
+      l.last_clean_scrub_stamp == r.last_clean_scrub_stamp &&
+      l.prior_readable_until_ub == r.prior_readable_until_ub;
   }
 
   pg_history_t() {}
@@ -2699,6 +2716,15 @@ struct pg_history_t {
     }
     if (last_interval_started < other.last_interval_started) {
       last_interval_started = other.last_interval_started;
+      // if we are learning about a newer *started* interval, our
+      // readable_until_ub is obsolete
+      prior_readable_until_ub = other.prior_readable_until_ub;
+      modified = true;
+    } else if (other.last_interval_started == last_interval_started &&
+	       other.prior_readable_until_ub < prior_readable_until_ub) {
+      // if other is the *same* interval, than pull our upper bound in
+      // if they have a tighter bound.
+      prior_readable_until_ub = other.prior_readable_until_ub;
       modified = true;
     }
     if (last_epoch_clean < other.last_epoch_clean) {
@@ -2744,16 +2770,39 @@ struct pg_history_t {
   void decode(ceph::buffer::list::const_iterator& p);
   void dump(ceph::Formatter *f) const;
   static void generate_test_instances(std::list<pg_history_t*>& o);
+
+  ceph::signedspan refresh_prior_readable_until_ub(
+    ceph::signedspan now,  ///< now, relative to osd startup_time
+    ceph::signedspan ub) { ///< ub, relative to osd startup_time
+    if (now >= ub) {
+      // prior interval(s) are unreadable; we can zero the upper bound
+      prior_readable_until_ub = ceph::signedspan::zero();
+      return ceph::signedspan::zero();
+    } else {
+      prior_readable_until_ub = ub - now;
+      return ub;
+    }
+  }
+  ceph::signedspan get_prior_readable_until_ub(ceph::signedspan now) {
+    if (prior_readable_until_ub == ceph::signedspan::zero()) {
+      return ceph::signedspan::zero();
+    }
+    return now + prior_readable_until_ub;
+  }
 };
 WRITE_CLASS_ENCODER(pg_history_t)
 
 inline std::ostream& operator<<(std::ostream& out, const pg_history_t& h) {
-  return out << "ec=" << h.epoch_created << "/" << h.epoch_pool_created
-	     << " lis/c=" << h.last_interval_started
-	     << "/" << h.last_interval_clean
-	     << " les/c/f=" << h.last_epoch_started << "/" << h.last_epoch_clean
-	     << "/" << h.last_epoch_marked_full
-	     << " sis=" << h.same_interval_since;
+  out << "ec=" << h.epoch_created << "/" << h.epoch_pool_created
+      << " lis/c=" << h.last_interval_started
+      << "/" << h.last_interval_clean
+      << " les/c/f=" << h.last_epoch_started << "/" << h.last_epoch_clean
+      << "/" << h.last_epoch_marked_full
+      << " sis=" << h.same_interval_since;
+  if (h.prior_readable_until_ub != ceph::timespan::zero()) {
+    out << " pruub=" << h.prior_readable_until_ub;
+  }
+  return out;
 }
 
 
@@ -2763,7 +2812,7 @@ inline std::ostream& operator<<(std::ostream& out, const pg_history_t& h) {
  * some notes: 
  *  - last_complete implies we have all objects that existed as of that
  *    stamp, OR a newer object, OR have already applied a later delete.
- *  - if last_complete >= log.bottom, then we know pg contents thru log.head.
+ *  - if last_complete >= log.tail, then we know pg contents thru log.head.
  *    otherwise, we have no idea what the pg is supposed to contain.
  */
 struct pg_info_t {
@@ -3609,6 +3658,69 @@ inline std::ostream& operator<<(std::ostream& out, const pg_query_t& q) {
   return out;
 }
 
+/**
+ * pg_lease_t - readable lease metadata, from primary -> non-primary
+ *
+ * This metadata serves to increase either or both of the lease expiration
+ * and upper bound on the non-primary.
+ */
+struct pg_lease_t {
+  /// pg readable_until value; replicas must not be readable beyond this
+  ceph::signedspan readable_until = ceph::signedspan::zero();
+
+  /// upper bound on any acting osd's readable_until
+  ceph::signedspan readable_until_ub = ceph::signedspan::zero();
+
+  /// duration of the lease (in case clock deltas aren't available)
+  ceph::signedspan interval = ceph::signedspan::zero();
+
+  pg_lease_t() {}
+  pg_lease_t(ceph::signedspan ru, ceph::signedspan ruub,
+	     ceph::signedspan i)
+    : readable_until(ru),
+      readable_until_ub(ruub),
+      interval(i) {}
+
+  void encode(ceph::buffer::list &bl) const;
+  void decode(ceph::buffer::list::const_iterator &bl);
+  void dump(ceph::Formatter *f) const;
+  static void generate_test_instances(std::list<pg_lease_t*>& o);
+
+  friend std::ostream& operator<<(std::ostream& out, const pg_lease_t& l) {
+    return out << "pg_lease(ru " << l.readable_until
+	       << " ub " << l.readable_until_ub
+	       << " int " << l.interval << ")";
+  }
+};
+WRITE_CLASS_ENCODER(pg_lease_t)
+
+/**
+ * pg_lease_ack_t - lease ack, from non-primary -> primary
+ *
+ * This metadata acknowledges to the primary what a non-primary's noted
+ * upper bound is.
+ */
+struct pg_lease_ack_t {
+  /// highest upper bound non-primary has recorded (primary's clock)
+  ceph::signedspan readable_until_ub = ceph::signedspan::zero();
+
+  pg_lease_ack_t() {}
+  pg_lease_ack_t(ceph::signedspan ub)
+    : readable_until_ub(ub) {}
+
+  void encode(ceph::buffer::list &bl) const;
+  void decode(ceph::buffer::list::const_iterator &bl);
+  void dump(ceph::Formatter *f) const;
+  static void generate_test_instances(std::list<pg_lease_ack_t*>& o);
+
+  friend std::ostream& operator<<(std::ostream& out, const pg_lease_ack_t& l) {
+    return out << "pg_lease_ack(ruub " << l.readable_until_ub << ")";
+  }
+};
+WRITE_CLASS_ENCODER(pg_lease_ack_t)
+
+
+
 class PGBackend;
 class ObjectModDesc {
   bool can_local_rollback;
@@ -3783,7 +3895,7 @@ private:
   bool new_object;
   bool clean_omap;
   interval_set<uint64_t> clean_offsets;
-  static std::atomic<int32_t> max_num_intervals;
+  static std::atomic<uint32_t> max_num_intervals;
 
   /**
    * trim the number of intervals if clean_offsets.num_intervals()
@@ -3793,7 +3905,7 @@ private:
    * finally, clean_offsets becomes {[5~10], [30~10]}
    */
   void trim();
-  friend ostream& operator<<(ostream& out, const ObjectCleanRegions& ocr);
+  friend std::ostream& operator<<(std::ostream& out, const ObjectCleanRegions& ocr);
 public:
   ObjectCleanRegions() : new_object(false), clean_omap(true) {
     clean_offsets.insert(0, (uint64_t)-1);
@@ -3805,7 +3917,7 @@ public:
   bool operator==(const ObjectCleanRegions &orc) const {
     return new_object == orc.new_object && clean_omap == orc.clean_omap && clean_offsets == orc.clean_offsets;
   }
-  static void set_max_num_intervals(int32_t num);
+  static void set_max_num_intervals(uint32_t num);
   void merge(const ObjectCleanRegions &other);
   void mark_data_region_dirty(uint64_t offset, uint64_t len);
   void mark_omap_dirty();
@@ -3815,13 +3927,109 @@ public:
   bool omap_is_dirty() const;
   bool object_is_exist() const;
 
-  void encode(bufferlist &bl) const;
-  void decode(bufferlist::const_iterator &bl);
-  void dump(Formatter *f) const;
-  static void generate_test_instances(list<ObjectCleanRegions*>& o);
+  void encode(ceph::buffer::list &bl) const;
+  void decode(ceph::buffer::list::const_iterator &bl);
+  void dump(ceph::Formatter *f) const;
+  static void generate_test_instances(std::list<ObjectCleanRegions*>& o);
 };
 WRITE_CLASS_ENCODER(ObjectCleanRegions)
-ostream& operator<<(ostream& out, const ObjectCleanRegions& ocr);
+std::ostream& operator<<(std::ostream& out, const ObjectCleanRegions& ocr);
+
+
+struct OSDOp {
+  ceph_osd_op op;
+  sobject_t soid;
+
+  ceph::buffer::list indata, outdata;
+  errorcode32_t rval = 0;
+
+  OSDOp() {
+    // FIPS zeroization audit 20191115: this memset clean for security
+    memset(&op, 0, sizeof(ceph_osd_op));
+  }
+
+  OSDOp(const int op_code) {
+    // FIPS zeroization audit 20191115: this memset clean for security
+    memset(&op, 0, sizeof(ceph_osd_op));
+    op.op = op_code;
+  }
+
+  /**
+   * split a ceph::buffer::list into constituent indata members of a vector of OSDOps
+   *
+   * @param ops [out] vector of OSDOps
+   * @param in  [in] combined data buffer
+   */
+  static void split_osd_op_vector_in_data(std::vector<OSDOp>& ops, ceph::buffer::list& in);
+
+  /**
+   * merge indata members of a vector of OSDOp into a single ceph::buffer::list
+   *
+   * Notably this also encodes certain other OSDOp data into the data
+   * buffer, including the sobject_t soid.
+   *
+   * @param ops [in] vector of OSDOps
+   * @param out [out] combined data buffer
+   */
+  static void merge_osd_op_vector_in_data(std::vector<OSDOp>& ops, ceph::buffer::list& out);
+
+  /**
+   * split a ceph::buffer::list into constituent outdata members of a vector of OSDOps
+   *
+   * @param ops [out] vector of OSDOps
+   * @param in  [in] combined data buffer
+   */
+  static void split_osd_op_vector_out_data(std::vector<OSDOp>& ops, ceph::buffer::list& in);
+
+  /**
+   * merge outdata members of a vector of OSDOps into a single ceph::buffer::list
+   *
+   * @param ops [in] vector of OSDOps
+   * @param out [out] combined data buffer
+   */
+  static void merge_osd_op_vector_out_data(std::vector<OSDOp>& ops, ceph::buffer::list& out);
+
+  /**
+   * Clear data as much as possible, leave minimal data for historical op dump
+   *
+   * @param ops [in] vector of OSDOps
+   */
+  static void clear_data(std::vector<OSDOp>& ops);
+};
+std::ostream& operator<<(std::ostream& out, const OSDOp& op);
+
+
+struct pg_log_op_return_item_t {
+  int32_t rval;
+  ceph::buffer::list bl;
+  void encode(ceph::buffer::list& p) const {
+    using ceph::encode;
+    encode(rval, p);
+    encode(bl, p);
+  }
+  void decode(ceph::buffer::list::const_iterator& p) {
+    using ceph::decode;
+    decode(rval, p);
+    decode(bl, p);
+  }
+  void dump(ceph::Formatter *f) const {
+    f->dump_int("rval", rval);
+    f->dump_unsigned("bl_length", bl.length());
+  }
+  friend bool operator==(const pg_log_op_return_item_t& lhs,
+			 const pg_log_op_return_item_t& rhs) {
+    return lhs.rval == rhs.rval &&
+      lhs.bl.contents_equal(rhs.bl);
+  }
+  friend bool operator!=(const pg_log_op_return_item_t& lhs,
+			 const pg_log_op_return_item_t& rhs) {
+    return !(lhs == rhs);
+  }
+  friend std::ostream& operator<<(std::ostream& out, const pg_log_op_return_item_t& i) {
+    return out << "r=" << i.rval << "+" << i.bl.length() << "b";
+  }
+};
+WRITE_CLASS_ENCODER(pg_log_op_return_item_t)
 
 /**
  * pg_log_entry_t - single entry/event in pg log
@@ -3882,6 +4090,8 @@ struct pg_log_entry_t {
   version_t user_version; // the user version for this entry
   utime_t     mtime;  // this is the _user_ mtime, mind you
   int32_t return_code; // only stored for ERRORs for dup detection
+
+  std::vector<pg_log_op_return_item_t> op_returns;
 
   __s32      op;
   bool invalid_hash; // only when decoding sobject_t based entries
@@ -3947,6 +4157,14 @@ struct pg_log_entry_t {
       (op == MODIFY || op == DELETE || op == ERROR);
   }
 
+  void set_op_returns(const std::vector<OSDOp>& ops) {
+    op_returns.resize(ops.size());
+    for (unsigned i = 0; i < ops.size(); ++i) {
+      op_returns[i].rval = ops[i].rval;
+      op_returns[i].bl = ops[i].outdata;
+    }
+  }
+
   std::string get_key_name() const;
   void encode_with_checksum(ceph::buffer::list& bl) const;
   void decode_with_checksum(ceph::buffer::list::const_iterator& p);
@@ -3967,12 +4185,16 @@ struct pg_log_dup_t {
   version_t user_version; // the user version for this entry
   int32_t return_code; // only stored for ERRORs for dup detection
 
+  std::vector<pg_log_op_return_item_t> op_returns;
+
   pg_log_dup_t()
     : user_version(0), return_code(0)
   {}
   explicit pg_log_dup_t(const pg_log_entry_t& entry)
     : reqid(entry.reqid), version(entry.version),
-      user_version(entry.user_version), return_code(entry.return_code)
+      user_version(entry.user_version),
+      return_code(entry.return_code),
+      op_returns(entry.op_returns)
   {}
   pg_log_dup_t(const eversion_t& v, version_t uv,
 	       const osd_reqid_t& rid, int return_code)
@@ -3990,7 +4212,8 @@ struct pg_log_dup_t {
     return reqid == rhs.reqid &&
       version == rhs.version &&
       user_version == rhs.user_version &&
-      return_code == rhs.return_code;
+      return_code == rhs.return_code &&
+      op_returns == rhs.op_returns;
   }
   bool operator!=(const pg_log_dup_t &rhs) const {
     return !(*this == rhs);
@@ -5664,67 +5887,6 @@ struct ScrubMapBuilder {
   }
 };
 
-struct OSDOp {
-  ceph_osd_op op;
-  sobject_t soid;
-
-  ceph::buffer::list indata, outdata;
-  errorcode32_t rval = 0;
-
-  OSDOp() {
-    memset(&op, 0, sizeof(ceph_osd_op));
-  }
-
-  OSDOp(const int op_code) {
-    memset(&op, 0, sizeof(ceph_osd_op));
-    op.op = op_code;
-  }
-
-  /**
-   * split a ceph::buffer::list into constituent indata members of a vector of OSDOps
-   *
-   * @param ops [out] vector of OSDOps
-   * @param in  [in] combined data buffer
-   */
-  static void split_osd_op_vector_in_data(std::vector<OSDOp>& ops, ceph::buffer::list& in);
-
-  /**
-   * merge indata members of a vector of OSDOp into a single ceph::buffer::list
-   *
-   * Notably this also encodes certain other OSDOp data into the data
-   * buffer, including the sobject_t soid.
-   *
-   * @param ops [in] vector of OSDOps
-   * @param out [out] combined data buffer
-   */
-  static void merge_osd_op_vector_in_data(std::vector<OSDOp>& ops, ceph::buffer::list& out);
-
-  /**
-   * split a ceph::buffer::list into constituent outdata members of a vector of OSDOps
-   *
-   * @param ops [out] vector of OSDOps
-   * @param in  [in] combined data buffer
-   */
-  static void split_osd_op_vector_out_data(std::vector<OSDOp>& ops, ceph::buffer::list& in);
-
-  /**
-   * merge outdata members of a vector of OSDOps into a single ceph::buffer::list
-   *
-   * @param ops [in] vector of OSDOps
-   * @param out [out] combined data buffer
-   */
-  static void merge_osd_op_vector_out_data(std::vector<OSDOp>& ops, ceph::buffer::list& out);
-
-  /**
-   * Clear data as much as possible, leave minimal data for historical op dump
-   *
-   * @param ops [in] vector of OSDOps
-   */
-  static void clear_data(std::vector<OSDOp>& ops);
-};
-
-std::ostream& operator<<(std::ostream& out, const OSDOp& op);
-
 struct watch_item_t {
   entity_name_t name;
   uint64_t cookie;
@@ -6058,11 +6220,11 @@ WRITE_CLASS_ENCODER(pool_pg_num_history_t)
 
 // prefix pgmeta_oid keys with _ so that PGLog::read_log_and_missing() can
 // easily skip them
-static const string_view infover_key = "_infover"sv;
-static const string_view info_key = "_info"sv;
-static const string_view biginfo_key = "_biginfo"sv;
-static const string_view epoch_key = "_epoch"sv;
-static const string_view fastinfo_key = "_fastinfo"sv;
+static const std::string_view infover_key = "_infover";
+static const std::string_view info_key = "_info";
+static const std::string_view biginfo_key = "_biginfo";
+static const std::string_view epoch_key = "_epoch";
+static const std::string_view fastinfo_key = "_fastinfo";
 
 static const __u8 pg_latest_struct_v = 10;
 // v10 is the new past_intervals encoding
@@ -6074,7 +6236,8 @@ static const __u8 pg_compat_struct_v = 10;
 
 int prepare_info_keymap(
   CephContext* cct,
-  map<string,bufferlist> *km,
+  std::map<std::string,ceph::buffer::list> *km,
+  std::string *key_to_remove,
   epoch_t epoch,
   pg_info_t &info,
   pg_info_t &last_written_info,
@@ -6136,10 +6299,10 @@ public:
 class PGLSPlainFilter : public PGLSFilter {
   std::string val;
 public:
-  int init(ceph::bufferlist::const_iterator &params) override;
+  int init(ceph::buffer::list::const_iterator &params) override;
   ~PGLSPlainFilter() override {}
   bool filter(const hobject_t& obj,
-              const ceph::bufferlist& xattr_data) const override;
+              const ceph::buffer::list& xattr_data) const override;
 };
 
 

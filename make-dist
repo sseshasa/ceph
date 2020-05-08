@@ -68,34 +68,49 @@ download_boost() {
     rm -rf src/boost
 }
 
-_python_autoselect() {
-  python_command=
-  for interpreter in python2.7 python3 ; do
-    type $interpreter > /dev/null 2>&1 || continue
-    python_command=$interpreter
-    break
-  done
-  if [ -z "$python_command" ] ; then
-    echo "Could not find a suitable python interpreter! Bailing out."
-    exit 1
-  fi
-  echo $python_command
-}
-
 build_dashboard_frontend() {
   CURR_DIR=`pwd`
   TEMP_DIR=`mktemp -d`
-  $CURR_DIR/src/tools/setup-virtualenv.sh --python=$(_python_autoselect) $TEMP_DIR
+
+  $CURR_DIR/src/tools/setup-virtualenv.sh $TEMP_DIR
   $TEMP_DIR/bin/pip install nodeenv
-  $TEMP_DIR/bin/nodeenv -p --node=10.16.0
+  $TEMP_DIR/bin/nodeenv -p --node=10.18.1
   cd src/pybind/mgr/dashboard/frontend
+
+  DEFAULT_LANG=`jq -r .config.locale package.json`
+  if [ -z "$DASHBOARD_FRONTEND_LANGS" ]; then
+    BUILD_TARGET=":${DEFAULT_LANG}"
+  else
+    if [ "$DASHBOARD_FRONTEND_LANGS" == "ALL" ]; then
+      BUILD_TARGET=":*"
+    else
+      DASHBOARD_FRONTEND_LANGS_LIST=`echo "$DASHBOARD_FRONTEND_LANGS" | sed 's/ /,/g'`
+      if [[ $DASHBOARD_FRONTEND_LANGS_LIST != *"${DEFAULT_LANG}"* ]]; then
+        # default language must be always built
+        DASHBOARD_FRONTEND_LANGS_LIST="${DASHBOARD_FRONTEND_LANGS},${DEFAULT_LANG}"
+      fi
+      BUILD_TARGET=":{${DASHBOARD_FRONTEND_LANGS_LIST}}"
+    fi
+  fi
+  # number of frontend languages to build in parallel - default to 1 to work
+  # around https://tracker.ceph.com/issues/43152
+  [ -z "$MAX_DASHBOARD_PARALLEL_BUILDS" ] && MAX_DASHBOARD_PARALLEL_BUILDS=1
+
   . $TEMP_DIR/bin/activate
   NG_CLI_ANALYTICS="false" timeout 1h npm ci
-  npm run build -- --prod --progress=false
+  echo "Building ceph-dashboard frontend with build${BUILD_TARGET} script";
+  # we need to use "-- --" because so that "--prod" survives accross all
+  # scripts redirections inside package.json
+  npx npm-run-all --print-label --parallel --max-parallel $MAX_DASHBOARD_PARALLEL_BUILDS "build${BUILD_TARGET} -- -- --prod"
   deactivate
   cd $CURR_DIR
   rm -rf $TEMP_DIR
   tar cf dashboard_frontend.tar $outfile/src/pybind/mgr/dashboard/frontend/dist
+}
+
+generate_rook_ceph_client() {
+  $outfile/src/pybind/mgr/rook/generate_rook_ceph_client.sh
+  tar cf rook_ceph_client.tar $outfile/src/pybind/mgr/rook/rook_client/*.py
 }
 
 # clean out old cruft...
@@ -124,16 +139,19 @@ ln -s . $outfile
 tar cvf $outfile.version.tar $outfile/src/.git_version $outfile/ceph.spec $outfile/alpine/APKBUILD
 # NOTE: If you change this version number make sure the package is available
 # at the three URLs referenced below (may involve uploading to download.ceph.com)
-boost_version=1.67.0
-download_boost $boost_version 2684c972994ee57fc5632e03bf044746f6eb45d4920c343937a465fd67a5adba \
+boost_version=1.72.0
+download_boost $boost_version 59c9b274bc451cf91a9ba1dd2c7fdcaf5d60b1b3aa83f2c9fa143417cc660722 \
                https://dl.bintray.com/boostorg/release/$boost_version/source \
                https://downloads.sourceforge.net/project/boost/boost/$boost_version \
                https://download.ceph.com/qa
+
 build_dashboard_frontend
+generate_rook_ceph_client
 tar --concatenate -f $outfile.all.tar $outfile.version.tar
 tar --concatenate -f $outfile.all.tar $outfile.boost.tar
 tar --concatenate -f $outfile.all.tar $outfile.tar
 tar --concatenate -f $outfile.all.tar dashboard_frontend.tar
+tar --concatenate -f $outfile.all.tar rook_ceph_client.tar
 mv $outfile.all.tar $outfile.tar
 rm $outfile
 rm -f $outfile.version.tar

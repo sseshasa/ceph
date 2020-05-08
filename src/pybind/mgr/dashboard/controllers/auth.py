@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
 
+import logging
 import cherrypy
 
 from . import ApiController, RESTController
-from .. import logger, mgr
+from .. import mgr
 from ..exceptions import DashboardException
 from ..services.auth import AuthManager, JwtManager
+
+
+logger = logging.getLogger('controllers.auth')
 
 
 @ApiController('/auth', secure=False)
@@ -16,7 +20,13 @@ class Auth(RESTController):
     """
 
     def create(self, username, password):
-        user_perms = AuthManager.authenticate(username, password)
+        user_data = AuthManager.authenticate(username, password)
+        user_perms, pwd_expiration_date, pwd_update_required = None, None, None
+        if user_data:
+            user_perms = user_data.get('permissions')
+            pwd_expiration_date = user_data.get('pwdExpirationDate', None)
+            pwd_update_required = user_data.get('pwdUpdateRequired', False)
+
         if user_perms is not None:
             logger.debug('Login successful')
             token = JwtManager.gen_token(username)
@@ -26,7 +36,9 @@ class Auth(RESTController):
                 'token': token,
                 'username': username,
                 'permissions': user_perms,
-                'sso': mgr.SSO_DB.protocol == 'saml2'
+                'pwdExpirationDate': pwd_expiration_date,
+                'sso': mgr.SSO_DB.protocol == 'saml2',
+                'pwdUpdateRequired': pwd_update_required
             }
 
         logger.debug('Login failed')
@@ -59,7 +71,8 @@ class Auth(RESTController):
                 return {
                     'username': user.username,
                     'permissions': user.permissions_dict(),
-                    'sso': mgr.SSO_DB.protocol == 'saml2'
+                    'sso': mgr.SSO_DB.protocol == 'saml2',
+                    'pwdUpdateRequired': user.pwd_update_required
                 }
         return {
             'login_url': self._get_login_url(),

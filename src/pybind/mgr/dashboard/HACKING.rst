@@ -3,6 +3,187 @@ Ceph Dashboard Developer Documentation
 
 .. contents:: Table of Contents
 
+Preliminary Steps
+-----------------
+
+The following documentation chapters expect a running Ceph cluster and at
+least a running ``dashboard`` manager module (with few exceptions). This
+chapter gives an introduction on how to set up such a system for development,
+without the need to set up a full-blown production environment. All options
+introduced in this chapter are based on a so called ``vstart`` environment.
+
+.. note::
+
+  Every ``vstart`` environment needs Ceph `to be compiled`_ from its Github
+  repository, though Docker environments simplify that step by providing a
+  shell script that contains those instructions.
+
+  One exception to this rule are the `build-free`_ capabilities of
+  `ceph-dev`_. See below for more information.
+
+.. _to be compiled: https://docs.ceph.com/docs/master/install/build-ceph/
+
+vstart
+~~~~~~
+
+"vstart" is actually a shell script in the ``src/`` directory of the Ceph
+repository (``src/vstart.sh``). It is used to start a single node Ceph
+cluster on the machine where it is executed. Several required and some
+optional Ceph internal services are started automatically when it is used to
+start a Ceph cluster. vstart is the basis for the three most commonly used
+development environments in Ceph Dashboard.
+
+You can read more about vstart in `Deploying a development cluster`_.
+Additional information for developers can also be found in the `Developer
+Guide`_.
+
+.. _Deploying a development cluster: https://docs.ceph.com/docs/master/dev/dev_cluster_deployement/
+.. _Developer Guide: https://docs.ceph.com/docs/master/dev/quick_guide/
+
+Host-based vs Docker-based Development Environments
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This document introduces you to three different development environments, all
+based on vstart. Those are:
+
+- vstart running on your host system
+
+- vstart running in a Docker environment
+
+  * ceph-dev-docker_
+  * ceph-dev_
+
+  Besides their independent development branches and sometimes slightly
+  different approaches, they also differ with respect to their underlying
+  operating systems.
+
+  ========= ======================  ========
+  Release   ceph-dev-docker         ceph-dev
+  ========= ======================  ========
+  Mimic     openSUSE Leap 15        CentOS 7
+  Nautilus  openSUSE Leap 15        CentOS 7
+  Octopus   openSUSE Leap 15.2      CentOS 8
+  --------- ----------------------  --------
+  Master    openSUSE Tumbleweed     CentOS 8
+  ========= ======================  ========
+
+.. note::
+
+  Independently of which of these environments you will choose, you need to
+  compile Ceph in that environment. If you compiled Ceph on your host system,
+  you would have to recompile it on Docker to be able to switch to a Docker
+  based solution. The same is true vice versa. If you previously used a
+  Docker development environment and compiled Ceph there and you now want to
+  switch to your host system, you will also need to recompile Ceph (or
+  compile Ceph using another separate repository).
+
+  `ceph-dev`_ is an exception to this rule as one of the options it provides
+  is `build-free`_. This is accomplished through a Ceph installation using
+  RPM system packages. You will still be able to work with a local Github
+  repository like you are used to.
+
+
+Development environment on your host system
+...........................................
+
+- No need to learn or have experience with Docker, jump in right away.
+
+- Limited amount of scripts to support automation (like Ceph compilation).
+
+- No pre-configured easy-to-start services (Prometheus, Grafana, etc).
+
+- Limited amount of host operating systems supported, depending on which
+  Ceph version is supposed to be used.
+
+- Dependencies need to be installed on your host.
+
+- You might find yourself in the situation where you need to upgrade your
+  host operating system (for instance due to a change of the GCC version used
+  to compile Ceph).
+
+
+Development environments based on Docker
+........................................
+
+- Some overhead in learning Docker if you are not used to it yet.
+
+- Both Docker projects provide you with scripts that help you getting started
+  and automate recurring tasks.
+
+- Both Docker environments come with partly pre-configured external services
+  which can be used to attach to or complement Ceph Dashboard features, like
+
+  - Prometheus
+  - Grafana
+  - Node-Exporter
+  - Shibboleth
+  - HAProxy
+
+- Works independently of the operating system you use on your host.
+
+
+.. _build-free: https://github.com/rhcs-dashboard/ceph-dev#quick-install-rpm-based
+
+vstart on your host system
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The vstart script is usually called from your `build/` directory like so:
+
+.. code::
+
+  ../src/vstart.sh -n -d
+
+In this case ``-n`` ensures that a new vstart cluster is created and that a
+possibly previously created cluster isn't re-used. ``-d`` enables debug
+messages in log files. There are several more options to chose from. You can
+get a list using the ``--help`` argument.
+
+At the end of the output of vstart, there should be information about the
+dashboard and its URLs::
+
+  vstart cluster complete. Use stop.sh to stop. See out/* (e.g. 'tail -f out/????') for debug output.
+
+  dashboard urls: https://192.168.178.84:41259, https://192.168.178.84:43259, https://192.168.178.84:45259
+    w/ user/pass: admin / admin
+  restful urls: https://192.168.178.84:42259, https://192.168.178.84:44259, https://192.168.178.84:46259
+    w/ user/pass: admin / 598da51f-8cd1-4161-a970-b2944d5ad200
+
+During development (especially in backend development), you also want to
+check on occasions if the dashboard manager module is still running. To do so
+you can call `./bin/ceph mgr services` manually. It will list all the URLs of
+successfully enabled services. Only URLs of services which are available over
+HTTP(S) will be listed there. Ceph Dashboard is one of these services. It
+should look similar to the following output:
+
+.. code::
+
+  $ ./bin/ceph mgr services
+  {
+      "dashboard": "https://home:41931/",
+      "restful": "https://home:42931/"
+  }
+
+By default, this environment uses a randomly chosen port for Ceph Dashboard
+and you need to use this command to find out which one it has become.
+
+Docker
+~~~~~~
+
+Docker development environments usually ship with a lot of useful scripts.
+``ceph-dev-docker`` for instance contains a file called `start-ceph.sh`,
+which cleans up log files, always starts a Rados Gateway service, sets some
+Ceph Dashboard configuration options and automatically runs a frontend proxy,
+all before or after starting up your vstart cluster.
+
+Instructions on how to use those environments are contained in their
+respective repository README files.
+
+- ceph-dev-docker_
+- ceph-dev_
+
+.. _ceph-dev-docker: https://github.com/ricardoasmarques/ceph-dev-docker
+.. _ceph-dev: https://github.com/rhcs-dashboard/ceph-dev
+
 Frontend Development
 --------------------
 
@@ -17,7 +198,7 @@ The build process is based on `Node.js <https://nodejs.org/>`_ and requires the
 Prerequisites
 ~~~~~~~~~~~~~
 
- * Node 8.9.0 or higher
+ * Node 10.0.0 or higher
  * NPM 5.7.0 or higher
 
 nodeenv:
@@ -39,8 +220,20 @@ Angular CLI:
 Package installation
 ~~~~~~~~~~~~~~~~~~~~
 
-Run ``npm install`` in directory ``src/pybind/mgr/dashboard/frontend`` to
+Run ``npm ci`` in directory ``src/pybind/mgr/dashboard/frontend`` to
 install the required packages locally.
+
+Adding or updating packages
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Run the following commands to add/update a package::
+
+  npm install <PACKAGE_NAME>
+  npm run fix:audit
+  npm ci
+
+``fix:audit`` is required because we have some packages that need to be fixed
+to a specific version and npm install tends to overwrite this.
 
 Setting up a Development Server
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -82,6 +275,7 @@ HTML files:
 
 - `codelyzer <http://codelyzer.com/>`_
 - `html-linter <https://github.com/chinchiheather/html-linter>`_
+- `htmllint-cli <https://github.com/htmllint/htmllint-cli>`_
 - `Prettier <https://prettier.io/>`_
 - `TSLint <https://palantir.github.io/tslint/>`_
 
@@ -139,60 +333,104 @@ There are a few ways how you can try to resolve this:
 Running End-to-End (E2E) Tests
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-We use `Protractor <http://www.protractortest.org/>`__ to run our frontend E2E
-tests.
+We use `Cypress <https://www.cypress.io/>`__ to run our frontend E2E tests.
 
-Our ``run-frontend-e2e-tests.sh`` script will check if Chrome or Docker is
-installed and run the tests if either is found.
+E2E Prerequisites
+.................
+
+You need to previously build the frontend.
+
+In some environments, depending on your user permissions and the CYPRESS_CACHE_FOLDER,
+you might need to run ``npm ci`` with the ``--unsafe-perm`` flag.
+
+You might need to install additional packages to be able to run Cypress.
+Please run ``npx cypress verify`` to verify it.
+
+run-frontend-e2e-tests.sh
+.........................
+
+Our ``run-frontend-e2e-tests.sh`` script is the go to solution when you wish to
+do a full scale e2e run.
+It will verify if everything needed is installed, start a new vstart cluster
+and run the full test suite.
 
 Start all frontend E2E tests by running::
 
   $ ./run-frontend-e2e-tests.sh
 
 Report:
-  After running the tests you can find the corresponding report as well as screenshots
-  of failed test cases by opening the following file in your browser:
+  You can follow the e2e report on the terminal and you can find the screenshots
+  of failed test cases by opening the following directory::
 
-    src/pybind/mgr/dashboard/frontend/.protractor-report/index.html
+    src/pybind/mgr/dashboard/frontend/cypress/screenshots/
 
 Device:
   You can force the script to use a specific device with the ``-d`` flag::
 
-    $ ./run-frontend-e2e-tests.sh -d <chrome|docker>
+    $ ./run-frontend-e2e-tests.sh -d <chrome|chromium|electron|docker>
 
 Remote:
+  By default this script will stop and start a new vstart cluster.
   If you want to run the tests outside the ceph environment, you will need to
-  manually define the dashboard url using ``-r``::
+  manually define the dashboard url using ``-r`` and, optionally, credentials
+  (``-u``, ``-p``)::
 
-    $ ./run-frontend-e2e-tests.sh -r <DASHBOARD_URL>
+    $ ./run-frontend-e2e-tests.sh -r <DASHBOARD_URL> -u <E2E_LOGIN_USER> -p <E2E_LOGIN_PWD>
 
 Note:
   When using docker, as your device, you might need to run the script with sudo
   permissions.
 
-When developing E2E tests, it is not necessary to compile the frontend code
-on each change of the test files. When your development environment is
-running (``npm start``), you can point Protractor to just use this
-environment. To attach `Protractor <http://www.protractortest.org/>`__ to
-this process, run ``npm run e2e:ci``.
+Other running options
+.....................
 
-Note::
+During active development, it is not recommended to run the previous script,
+as it is not prepared for constant file changes.
+Instead you should use one of the following commands:
 
-   In case you have a somewhat particular environment, you might need to adapt
-   `protractor.conf.js` to point to the appropriate destination.
+- ``npm run e2e`` - This will run ``ng serve`` and open the Cypress Test Runner.
+- ``npm run e2e:ci`` - This will run ``ng serve`` and run the Cypress Test Runner once.
+- ``npx cypress run`` - This calls cypress directly and will run the Cypress Test Runner.
+  You need to have a running frontend server.
+- ``npx cypress open`` - This calls cypress directly and will open the Cypress Test Runner.
+  You need to have a running frontend server.
+
+Calling Cypress directly has the advantage that you can use any of the available
+`flags <https://docs.cypress.io/guides/guides/command-line.html#cypress-run>`__
+to customize your test run and you don't need to start a frontend server each time.
+
+Using one of the ``open`` commands, will open a cypress application where you
+can see all the test files you have and run each individually.
+This is going to be run in watch mode, so if you make any changes to test files,
+it will retrigger the test run.
+This cannot be used inside docker, as it requires X11 environment to be able to open.
+
+By default Cypress will look for the web page at ``https://localhost:4200/``.
+If you are serving it in a different URL you will need to configure it by
+exporting the environment variable CYPRESS_BASE_URL with the new value.
+E.g.: ``CYPRESS_BASE_URL=https://localhost:41076/ npx cypress open``
+
+CYPRESS_CACHE_FOLDER
+.....................
+
+When installing cypress via npm, a binary of the cypress app will also be
+downloaded and stored in a cache folder.
+This removes the need to download it every time you run ``npm ci`` or even when
+using cypress in a separate project.
+
+By default Cypress uses ~/.cache to store the binary.
+To prevent changes to the user home directory, we have changed this folder to
+``/ceph/build/src/pybind/mgr/dashboard/cypress``, so when you build ceph or run
+``run-frontend-e2e-tests.sh`` this is the directory Cypress will use.
+
+When using any other command to install or run cypress,
+it will go back to the default directory. It is recommended that you export the
+CYPRESS_CACHE_FOLDER environment variable with a fixed directory, so you always
+use the same directory no matter which command you use.
+
 
 Writing End-to-End Tests
 ~~~~~~~~~~~~~~~~~~~~~~~~
-
-To be used methods
-..................
-
-For clicking checkboxes, the ``clickCheckbox`` method is supposed to be used.
-Due an adaption of the ``<input type="checkbox">`` tag, the original checkbox
-is hidden and unclickable. Instead, a fancier replacement is shown. When the
-developer tries to use `ElementFinder::click()` on such a checkbox, it will
-raise an error. The ``clickCheckbox`` method prevents that by clicking the
-label of the checkbox, like a regular user would do.
 
 The PagerHelper class
 .....................
@@ -202,9 +440,11 @@ can be used on various pages or suites.
 
 Examples are
 
-- ``getTableCellByContent()`` - returns a table cell by its content
+- ``navigateTo()`` - Navigates to a specific page and waits for it to load
+- ``getFirstTableCell()`` - returns the first table cell. You can also pass a
+  string with the desired content and it will return the first cell that
+  contains it.
 - ``getTabsCount()`` - returns the amount of tabs
-- ``clickCheckbox()`` - clicks a checkbox
 
 Every method that could be useful on several pages belongs there. Also, methods
 which enhance the derived classes of the PageHelper belong there. A good
@@ -224,113 +464,183 @@ talking about the pool suite, such methods would be ``create()``, ``exist()``
 and ``delete()``. These methods are specific to a pool but are useful for other
 suites.
 
-Methods that return HTML elements (for instance of type ``ElementFinder`` or
-``ElementArrayFinder``, but also ``Promise<ElementFinder>``) which can only
-be found on a specific page, should be either implemented in the helper
-methods of the subclass of PageHelper or as own methods of the subclass of
-PageHelper.
-
-Registering a new PageHelper
-""""""""""""""""""""""""""""
-
-If you have to create a new Helper class derived from the ``PageHelper``,
-please also ensure that it is instantiated in the constructor of the
-``Helper`` class. That way it can automatically be used by all other suites.
-
-.. code:: TypeScript
-
-  class Helper {
-     // ...
-     pools: PoolPageHelper;
-
-     constructor() {
-        this.pools = new PoolPageHelper();
-     }
-
-     // ...
-  }
+Methods that return HTML elements which can only be found on a specific page,
+should be either implemented in the helper methods of the subclass of PageHelper
+or as own methods of the subclass of PageHelper.
 
 Using PageHelpers
 """""""""""""""""
 
-In any suite, an instance of the ``Helper`` class should be used to call
-various ``PageHelper`` objects and their methods. This makes all methods of all
-PageHelpers available to all suites.
+In any suite, an instance of the specific ``Helper`` class should be
+instantiated and called directly.
 
 .. code:: TypeScript
 
+  const pools = new PoolPageHelper();
+
   it('should create a pool', () => {
-    helper.pools.exist(poolName, false).then(() => {
-      helper.pools.navigateTo('create');
-      helper.pools.create(poolName).then(() => {
-        helper.pools.navigateTo();
-        helper.pools.exist(poolName, true);
-      });
-    });
+    pools.exist(poolName, false);
+    pools.navigateTo('create');
+    pools.create(poolName, 8);
+    pools.exist(poolName, true);
   });
 
 Code Style
 ..........
 
-Please refer to the official `Protractor style-guide
-<https://www.protractortest.org/#/style-guide>`__ for a better insight on how
-to write and structure tests as well as what exactly should be covered by
-end-to-end tests.
+Please refer to the official `Cypress Core Concepts
+<https://docs.cypress.io/guides/core-concepts/introduction-to-cypress.html#Cypress-Can-Be-Simple-Sometimes>`__
+for a better insight on how to write and structure tests.
 
 ``describe()`` vs ``it()``
 """"""""""""""""""""""""""
 
-Both ``describe()`` and ``it()`` are function blocks, meaning that any executable
-code necessary for the test can be contained in either block. However, Typescript
-scoping rules still apply, therefore any variables declared in a ``describe`` are available
-to the ``it()`` blocks inside of it.
+Both ``describe()`` and ``it()`` are function blocks, meaning that any
+executable code necessary for the test can be contained in either block.
+However, Typescript scoping rules still apply, therefore any variables declared
+in a ``describe`` are available to the ``it()`` blocks inside of it.
 
-``describe()`` typically are containers for tests, allowing you to break tests into
-multiple parts. Likewise, any setup that must be made before your tests are run can be
-initialized within the ``describe()`` block. Here is an example:
+``describe()`` typically are containers for tests, allowing you to break tests
+into multiple parts. Likewise, any setup that must be made before your tests are
+run can be initialized within the ``describe()`` block. Here is an example:
 
 .. code:: TypeScript
 
   describe('create, edit & delete image test', () => {
     const poolName = 'e2e_images_pool';
 
-    beforeAll(() => {
-      pools.navigateTo('create'); // Need pool for image testing
-      pools.create(poolName, 8, 'rbd').then(() => {
-        pools.navigateTo();
-        pools.exist(poolName, true);
-      });
+    before(() => {
+      cy.login();
+      pools.navigateTo('create');
+      pools.create(poolName, 8, 'rbd');
+      pools.exist(poolName, true);
+    });
+
+    beforeEach(() => {
+      cy.login();
       images.navigateTo();
     });
 
-As shown, we can initiate the variable ``poolName`` as well as run commands
-before our test suite begins (creating a pool). ``describe()`` block messages should
-include what the test suite is.
+    //...
 
-``it()`` blocks typically are parts of an overarching test. They contain the functionality of
-the test suite, each performing individual roles. Here is an example:
+  });
+
+As shown, we can initiate the variable ``poolName`` as well as run commands
+before our test suite begins (creating a pool). ``describe()`` block messages
+should include what the test suite is.
+
+``it()`` blocks typically are parts of an overarching test. They contain the
+functionality of the test suite, each performing individual roles.
+Here is an example:
 
 .. code:: TypeScript
 
- describe('create, edit & delete image test', () => {
-  it('should create image', () => {
-    images.createImage(imageName, poolName, '1');
-    expect(images.getTableCell(imageName).isPresent()).toBe(true);
-  });
-  it('should edit image', () => {
-    images.editImage(imageName, poolName, newImageName, '2');
-    expect(images.getTableCell(newImageName).isPresent()).toBe(true);
-  });
-  //...
- });
+  describe('create, edit & delete image test', () => {
+    //...
 
-As shown from the previous example, our ``describe()`` test suite is to create, edit
-and delete an image. Therefore, each ``it()`` completes one of these steps, one for creating,
-one for editing, and so on. Likewise, every ``it()`` blocks message should be in lowercase
-and written so long as "it" can be the prefix of the message. For example, ``it('edits the test image' () => ...)``
-vs. ``it('image edit test' () => ...)``. As shown, the first example makes grammatical sense with ``it()`` as the
-prefix whereas the second message does not.``it()`` should describe what the individual test is doing and
-what it expects to happen.
+    it('should create image', () => {
+      images.createImage(imageName, poolName, '1');
+      images.getFirstTableCell(imageName).should('exist');
+    });
+
+    it('should edit image', () => {
+      images.editImage(imageName, poolName, newImageName, '2');
+      images.getFirstTableCell(newImageName).should('exist');
+    });
+
+    //...
+  });
+
+As shown from the previous example, our ``describe()`` test suite is to create,
+edit and delete an image. Therefore, each ``it()`` completes one of these steps,
+one for creating, one for editing, and so on. Likewise, every ``it()`` blocks
+message should be in lowercase and written so long as "it" can be the prefix of
+the message. For example, ``it('edits the test image' () => ...)`` vs.
+``it('image edit test' () => ...)``. As shown, the first example makes
+grammatical sense with ``it()`` as the prefix whereas the second message does
+not. ``it()`` should describe what the individual test is doing and what it
+expects to happen.
+
+Differences between Frontend Unit Tests and End-to-End (E2E) Tests / FAQ
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+General introduction about testing and E2E/unit tests
+
+
+What are E2E/unit tests designed for?
+.....................................
+
+E2E test:
+
+It requires a fully functional system and tests the interaction of all components
+of the application (Ceph, back-end, front-end).
+E2E tests are designed to mimic the behavior of the user when interacting with the application
+- for example when it comes to workflows like creating/editing/deleting an item.
+Also the tests should verify that certain items are displayed as a user would see them
+when clicking through the UI (for example a menu entry or a pool that has been
+created during a test and the pool and its properties should be displayed in the table).
+
+Angular Unit Tests:
+
+Unit tests, as the name suggests, are tests for smaller units of the code.
+Those tests are designed for testing all kinds of Angulars' components (e.g. services, pipes etc.).
+They do not require a connection to the backend, hence those tests are independent of it.
+The expected data of the backend is mocked in the frontend and by using this data
+the functionality of the frontend can be tested without having to have real data from the backend.
+As previously mentioned, data is either mocked or, in a simple case, contains a static input,
+a function call and an expected static output.
+More complex examples include the state of a component (attributes of the component class),
+that define how the output changes according to the given input.
+
+Which E2E/unit tests are considered to be valid?
+................................................
+
+This is not easy to answer, but new tests that are written in the same way as already existing
+dashboard tests should generally be considered valid.
+Unit tests should focus on the component to be tested.
+This is either an Angular component, directive, service, pipe, etc.
+
+E2E tests should focus on testing the functionality of the whole application.
+Approximately a third of the overall E2E tests should verify the correctness
+of user visible elements.
+
+How should an E2E/unit test look like?
+......................................
+
+Unit tests should focus on the described purpose
+and shouldn't try to test other things in the same `it` block.
+
+E2E tests should contain a description that either verifies
+the correctness of a user visible element or a complete process
+like for example the creation/validation/deletion of a pool.
+
+What should an E2E/unit test cover?
+...................................
+
+E2E tests should mostly, but not exclusively, cover interaction with the backend.
+This way the interaction with the backend is utilized to write integration tests.
+
+A unit test should mostly cover critical or complex functionality
+of a component (Angular Components, Services, Pipes, Directives, etc).
+
+What should an E2E/unit test NOT cover?
+.......................................
+
+Avoid duplicate testing: do not write E2E tests for what's already
+been covered as frontend-unit tests and vice versa.
+It may not be possible to completely avoid an overlap.
+
+Unit tests should not be used to extensively click through components and E2E tests
+shouldn't be used to extensively test a single component of Angular.
+
+Best practices/guideline
+........................
+
+As a general guideline we try to follow the 70/20/10 approach - 70% unit tests,
+20% integration tests and 10% end-to-end tests.
+For further information please refer to `this document
+<https://testing.googleblog.com/2015/04/just-say-no-to-more-end-to-end-tests.html>`__
+and the included "Testing Pyramid".
 
 Further Help
 ~~~~~~~~~~~~
@@ -656,7 +966,7 @@ To run the tests, run ``src/script/run_tox.sh`` in the dashboard directory (wher
   $ ../../../script/run_tox.sh --tox-env py3,lint,check
 
   ## Run Python 3 arbitrary command (e.g. 1 single test):
-  $ WITH_PYTHON2=OFF ../../../script/run_tox.sh --tox-env py3 "" tests/test_rgw_client.py::RgwClientTest::test_ssl_verify
+  $ ../../../script/run_tox.sh --tox-env py3 "" tests/test_rgw_client.py::RgwClientTest::test_ssl_verify
 
 You can also run tox instead of ``run_tox.sh``::
 
@@ -836,7 +1146,7 @@ parameter.
 For ``POST`` and ``PUT`` methods, all method parameters are considered
 body parameters by default. To override this default, one can use the
 ``path_params`` and ``query_params`` to specify which method parameters are
-path and query parameters respectivelly.
+path and query parameters respectively.
 Body parameters are decoded from the request body, either from a form format, or
 from a dictionary in JSON format.
 
@@ -1090,16 +1400,18 @@ How to access the manager module instance from a controller?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 We provide the manager module instance as a global variable that can be
-imported in any module. We also provide a logger instance in the same way.
+imported in any module.
 
 Example:
 
 .. code-block:: python
 
+  import logging
   import cherrypy
-  from .. import logger, mgr
+  from .. import mgr
   from ..tools import ApiController, RESTController
 
+  logger = logging.getLogger(__name__)
 
   @ApiController('servers')
   class Servers(RESTController):
@@ -1667,9 +1979,11 @@ API endpoints.However, by default it is not very detailed. There are two
 decorators that can be used to add more information:
 
 * ``@EndpointDoc()`` for documentation of endpoints. It has four optional arguments
-  (explained below): ``description``, ``group``, ``parameters`` and``responses``.
+  (explained below): ``description``, ``group``, ``parameters`` and
+  ``responses``.
 * ``@ControllerDoc()`` for documentation of controller or group associated with
-  the endpoints. It only takes the two first arguments: ``description`` and``group``.
+  the endpoints. It only takes the two first arguments: ``description`` and
+  ``group``.
 
 
 ``description``: A a string with a short (1-2 sentences) description of the object.
@@ -1844,19 +2158,39 @@ In order to create a new plugin, the following steps are required:
 
 #. Add a new file under ``src/pybind/mgr/dashboard/plugins``.
 #. Import the ``PLUGIN_MANAGER`` instance and the ``Interfaces``.
-#. Create a class extending the desired interfaces. The plug-in library will check if all the methods of the interfaces have been properly overridden.
+#. Create a class extending the desired interfaces. The plug-in library will
+   check if all the methods of the interfaces have been properly overridden.
 #. Register the plugin in the ``PLUGIN_MANAGER`` instance.
-#. Import the plug-in from within the Ceph Dashboard ``module.py`` (currently no dynamic loading is implemented).
+#. Import the plug-in from within the Ceph Dashboard ``module.py`` (currently no
+   dynamic loading is implemented).
 
-The available interfaces are the following:
+The available Mixins (helpers) are:
 
 - ``CanMgr``: provides the plug-in with access to the ``mgr`` instance under ``self.mgr``.
-- ``CanLog``: provides the plug-in with access to the Ceph Dashboard logger under ``self.log``.
-- ``Setupable``: requires overriding ``setup()`` hook. This method is run in the Ceph Dashboard ``serve()`` method, right after CherryPy has been configured, but before it is started. It's a placeholder for the plug-in initialization logic.
-- ``HasOptions``: requires overriding ``get_options()`` hook by returning a list of ``Options()``. The options returned here are added to the ``MODULE_OPTIONS``.
-- ``HasCommands``: requires overriding ``register_commands()`` hook by defining the commands the plug-in can handle and decorating them with ``@CLICommand``. The commands can be optionally returned, so that they can be invoked externally (which makes unit testing easier).
-- ``HasControllers``: requires overriding ``get_controllers()`` hook by defining and returning the controllers as usual.
-- ``FilterRequest.BeforeHandler``: requires overriding ``filter_request_before_handler()`` hook. This method receives a ``cherrypy.request`` object for processing. A usual implementation of this method will allow some requests to pass or will raise a ``cherrypy.HTTPError` based on the ``request`` metadata and other conditions.
+
+The available Interfaces are:
+
+- ``Initializable``: requires overriding ``init()`` hook. This method is run at
+  the very beginning of the dashboard module, right after all imports have been
+  performed.
+- ``Setupable``: requires overriding ``setup()`` hook. This method is run in the
+  Ceph Dashboard ``serve()`` method, right after CherryPy has been configured,
+  but before it is started. It's a placeholder for the plug-in initialization
+  logic.
+- ``HasOptions``: requires overriding ``get_options()`` hook by returning a list
+  of ``Options()``. The options returned here are added to the
+  ``MODULE_OPTIONS``.
+- ``HasCommands``: requires overriding ``register_commands()`` hook by defining
+  the commands the plug-in can handle and decorating them with ``@CLICommand``.
+  The commands can be optionally returned, so that they can be invoked
+  externally (which makes unit testing easier).
+- ``HasControllers``: requires overriding ``get_controllers()`` hook by defining
+  and returning the controllers as usual.
+- ``FilterRequest.BeforeHandler``: requires overriding
+  ``filter_request_before_handler()`` hook. This method receives a
+  ``cherrypy.request`` object for processing. A usual implementation of this
+  method will allow some requests to pass or will raise a ``cherrypy.HTTPError``
+  based on the ``request`` metadata and other conditions.
 
 New interfaces and hooks should be added as soon as they are required to
 implement new functionality. The above list only comprises the hooks needed for
@@ -1875,23 +2209,22 @@ A sample plugin implementation would look like this:
   import cherrypy
 
   @PM.add_plugin
-  class Mute(I.CanMgr, I.CanLog, I.Setupable, I.HasOptions,
-                       I.HasCommands, I.FilterRequest.BeforeHandler,
-                       I.HasControllers):
+  class Mute(I.CanMgr, I.Setupable, I.HasOptions, I.HasCommands,
+                       I.FilterRequest.BeforeHandler, I.HasControllers):
     @PM.add_hook
     def get_options(self):
       return [Option('mute', default=False, type='bool')]
 
     @PM.add_hook
     def setup(self):
-      self.mute = self.mgr.get_module_options('mute')
+      self.mute = self.mgr.get_module_option('mute')
 
     @PM.add_hook
     def register_commands(self):
       @CLICommand("dashboard mute")
       def _(mgr):
         self.mute = True
-        self.mgr.set_module_options('mute', True)
+        self.mgr.set_module_option('mute', True)
         return 0
 
     @PM.add_hook
@@ -1908,4 +2241,54 @@ A sample plugin implementation would look like this:
         def get(_):
           return self.mute
 
-      return [FeatureTogglesEndpoint]
+      return [MuteController]
+
+
+Additionally, a helper for creating plugins ``SimplePlugin`` is provided. It
+facilitates the basic tasks (Options, Commands, and common Mixins). The previous
+plugin could be rewritten like this:
+
+.. code-block:: python
+
+  from . import PLUGIN_MANAGER as PM
+  from . import interfaces as I
+  from .plugin import SimplePlugin as SP
+
+  import cherrypy
+
+  @PM.add_plugin
+  class Mute(SP, I.Setupable, I.FilterRequest.BeforeHandler, I.HasControllers):
+    OPTIONS = [
+        SP.Option('mute', default=False, type='bool')
+    ]
+
+    def shut_up(self):
+      self.set_option('mute', True)
+      self.mute = True
+      return 0
+
+    COMMANDS = [
+        SP.Command("dashboard mute", handler=shut_up)
+    ]
+
+    @PM.add_hook
+    def setup(self):
+      self.mute = self.get_option('mute')
+
+    @PM.add_hook
+    def filter_request_before_handler(self, request):
+      if self.mute:
+        raise cherrypy.HTTPError(500, "I'm muted :-x")
+
+    @PM.add_hook
+    def get_controllers(self):
+      from ..controllers import ApiController, RESTController
+
+      @ApiController('/mute')
+      class MuteController(RESTController):
+        def get(_):
+          return self.mute
+
+      return [MuteController]
+
+

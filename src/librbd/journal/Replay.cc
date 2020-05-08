@@ -42,7 +42,8 @@ struct ExecuteOp : public Context {
     image_ctx.operations->execute_snap_create(event.snap_namespace,
 					      event.snap_name,
                                               on_op_complete,
-                                              event.op_tid, false);
+                                              event.op_tid, false,
+                                              no_op_progress_callback);
   }
 
   void execute(const journal::SnapRemoveEvent &_) {
@@ -178,6 +179,7 @@ Replay<I>::Replay(I &image_ctx)
 
 template <typename I>
 Replay<I>::~Replay() {
+  std::lock_guard locker{m_lock};
   ceph_assert(m_in_flight_aio_flush == 0);
   ceph_assert(m_in_flight_aio_modify == 0);
   ceph_assert(m_aio_modify_unsafe_contexts.empty());

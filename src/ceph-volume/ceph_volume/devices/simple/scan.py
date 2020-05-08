@@ -98,11 +98,17 @@ class Scan(object):
             raise RuntimeError(
                 'OSD files not found, required "keyring" file is not present at: %s' % path
             )
-        for _file in os.listdir(path):
-            file_path = os.path.join(path, _file)
+        for file_ in os.listdir(path):
+            file_path = os.path.join(path, file_)
+            file_json_key = file_
+            if file_.endswith('_dmcrypt'):
+                file_json_key = file_.rstrip('_dmcrypt')
+                logger.info(
+                    'reading file {}, stripping _dmcrypt suffix'.format(file_)
+                )
             if os.path.islink(file_path):
                 if os.path.exists(file_path):
-                    osd_metadata[_file] = self.scan_device(file_path)
+                    osd_metadata[file_json_key] = self.scan_device(file_path)
                 else:
                     msg = 'broken symlink found %s -> %s' % (file_path, os.path.realpath(file_path))
                     terminal.warning(msg)
@@ -126,9 +132,9 @@ class Scan(object):
                 if 'keyring' in file_path:
                     content = parse_keyring(content)
                 try:
-                    osd_metadata[_file] = int(content)
+                    osd_metadata[file_json_key] = int(content)
                 except ValueError:
-                    osd_metadata[_file] = content
+                    osd_metadata[file_json_key] = content
 
         # we must scan the paths again because this might be a temporary mount
         path_mounts = system.get_mounts(paths=True)
@@ -294,7 +300,7 @@ class Scan(object):
         For an OSD ID of 0 with fsid of ``a9d50838-e823-43d6-b01f-2f8d0a77afc2``
         that could mean a scan command that looks like::
 
-            ceph-volume lvm scan /var/lib/ceph/osd/ceph-0
+            ceph-volume simple scan /var/lib/ceph/osd/ceph-0
 
         Which would store the metadata in a JSON file at::
 

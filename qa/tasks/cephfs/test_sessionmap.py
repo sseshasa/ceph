@@ -1,4 +1,3 @@
-from StringIO import StringIO
 import time
 import json
 import logging
@@ -32,7 +31,7 @@ class TestSessionMap(CephFSTestCase):
     def _get_connection_count(self, status=None):
         perf = self.fs.rank_asok(["perf", "dump"], status=status)
         conn = 0
-        for module, dump in perf.iteritems():
+        for module, dump in perf.items():
             if "AsyncMessenger::Worker" in module:
                 conn += dump['msgr_active_connections']
         return conn
@@ -63,8 +62,7 @@ class TestSessionMap(CephFSTestCase):
 
         status = self.fs.status()
         s = self._get_connection_count(status=status)
-        self.mount_a.mount()
-        self.mount_a.wait_until_mounted()
+        self.mount_a.mount_wait()
         self.assertGreater(self._get_connection_count(status=status), s)
         self.mount_a.umount_wait()
         e = self._get_connection_count(status=status)
@@ -77,26 +75,17 @@ class TestSessionMap(CephFSTestCase):
         split into multiple versions to obey mds_sessionmap_keys_per_op
         """
 
-        # Start umounted
         self.mount_a.umount_wait()
         self.mount_b.umount_wait()
 
         # Configure MDS to write one OMAP key at once
         self.set_conf('mds', 'mds_sessionmap_keys_per_op', 1)
         self.fs.mds_fail_restart()
-        self.fs.wait_for_daemons()
-
-        # I would like two MDSs, so that I can do an export dir later
-        self.fs.set_max_mds(2)
-        self.fs.wait_for_daemons()
-
-        status = self.fs.status()
+        status = self.fs.wait_for_daemons()
 
         # Bring the clients back
-        self.mount_a.mount()
-        self.mount_b.mount()
-        self.mount_a.create_files()  # Kick the client into opening sessions
-        self.mount_b.create_files()
+        self.mount_a.mount_wait()
+        self.mount_b.mount_wait()
 
         # See that they've got sessions
         self.assert_session_count(2, mds_id=self.fs.get_rank(status=status)['name'])
@@ -110,8 +99,11 @@ class TestSessionMap(CephFSTestCase):
 
         # Now, induce a "force_open_sessions" event by exporting a dir
         self.mount_a.run_shell(["mkdir", "bravo"])
-        self.mount_a.run_shell(["touch", "bravo/file"])
-        self.mount_b.run_shell(["ls", "-l", "bravo/file"])
+        self.mount_a.run_shell(["touch", "bravo/file_a"])
+        self.mount_b.run_shell(["touch", "bravo/file_b"])
+
+        self.fs.set_max_mds(2)
+        status = self.fs.wait_for_daemons()
 
         def get_omap_wrs():
             return self.fs.rank_asok(['perf', 'dump', 'objecter'], rank=1, status=status)['objecter']['omap_wr']
@@ -185,8 +177,7 @@ class TestSessionMap(CephFSTestCase):
         # Configure a client that is limited to /foo/bar
         self._configure_auth(self.mount_b, "badguy", "allow rw path=/foo/bar")
         # Check he can mount that dir and do IO
-        self.mount_b.mount(mount_path="/foo/bar")
-        self.mount_b.wait_until_mounted()
+        self.mount_b.mount_wait(mount_path="/foo/bar")
         self.mount_b.create_destroy()
         self.mount_b.umount_wait()
 
@@ -195,7 +186,7 @@ class TestSessionMap(CephFSTestCase):
         # Try to mount the client, see that it fails
         with self.assert_cluster_log("client session with non-allowable root '/baz' denied"):
             with self.assertRaises(CommandFailedError):
-                self.mount_b.mount(mount_path="/foo/bar")
+                self.mount_b.mount_wait(mount_path="/foo/bar")
 
     def test_session_evict_blacklisted(self):
         """
@@ -232,5 +223,4 @@ class TestSessionMap(CephFSTestCase):
         self.assert_session_count(1, mds_id=self.fs.get_rank(rank=1, status=status)['name'])
 
         self.mount_a.kill_cleanup()
-        self.mount_a.mount()
-        self.mount_a.wait_until_mounted()
+        self.mount_a.mount_wait()

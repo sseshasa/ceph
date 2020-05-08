@@ -147,8 +147,8 @@ extern const char *ceph_osd_state_name(int s);
 /*
  * osd map flag bits
  */
-#define CEPH_OSDMAP_NEARFULL         (1<<0)  /* sync writes (near ENOSPC) */
-#define CEPH_OSDMAP_FULL             (1<<1)  /* no data writes (ENOSPC) */
+#define CEPH_OSDMAP_NEARFULL         (1<<0)  /* sync writes (near ENOSPC), deprecated since mimic*/
+#define CEPH_OSDMAP_FULL             (1<<1)  /* no data writes (ENOSPC), deprecated since mimic */
 #define CEPH_OSDMAP_PAUSERD          (1<<2)  /* pause all reads */
 #define CEPH_OSDMAP_PAUSEWR          (1<<3)  /* pause all writes */
 #define CEPH_OSDMAP_PAUSEREC         (1<<4)  /* pause recovery */
@@ -201,7 +201,8 @@ extern const char *ceph_osd_state_name(int s);
 #define CEPH_RELEASE_MIMIC      13
 #define CEPH_RELEASE_NAUTILUS   14
 #define CEPH_RELEASE_OCTOPUS    15
-#define CEPH_RELEASE_MAX        16  /* highest + 1 */
+#define CEPH_RELEASE_PACIFIC    16
+#define CEPH_RELEASE_MAX        17  /* highest + 1 */
 
 /*
  * The error code to return when an OSD can't handle a write
@@ -297,6 +298,7 @@ extern const char *ceph_osd_state_name(int s);
 									    \
 	/* tiering */							    \
 	f(COPY_FROM,	__CEPH_OSD_OP(WR, DATA, 26),	"copy-from")	    \
+	f(COPY_FROM2,	__CEPH_OSD_OP(WR, DATA, 45),	"copy-from2")	    \
 	/* was copy-get-classic */					\
 	f(UNDIRTY,	__CEPH_OSD_OP(WR, DATA, 28),	"undirty")	    \
 	f(ISDIRTY,	__CEPH_OSD_OP(RD, DATA, 29),	"isdirty")	    \
@@ -469,6 +471,7 @@ enum {
 	CEPH_OSD_FLAG_FULL_TRY =    0x800000,  /* try op despite full flag */
 	CEPH_OSD_FLAG_FULL_FORCE = 0x1000000,  /* force op despite full flag */
 	CEPH_OSD_FLAG_IGNORE_REDIRECT = 0x2000000,  /* ignore redirection */
+	CEPH_OSD_FLAG_RETURNVEC = 0x4000000, /* allow overall result >= 0, and return >= 0 and buffer for each op in opvec */
 };
 
 enum {
@@ -508,7 +511,16 @@ enum {
 	CEPH_OSD_COPY_FROM_FLAG_MAP_SNAP_CLONE = 8, /* map snap direct to
 						     * cloneid */
 	CEPH_OSD_COPY_FROM_FLAG_RWORDERED = 16, /* order with write */
+	CEPH_OSD_COPY_FROM_FLAG_TRUNCATE_SEQ = 32, /* use provided truncate_{seq,size} (copy-from2 only) */
 };
+
+#define CEPH_OSD_COPY_FROM_FLAGS			\
+	(CEPH_OSD_COPY_FROM_FLAG_FLUSH |		\
+	 CEPH_OSD_COPY_FROM_FLAG_IGNORE_OVERLAY |	\
+	 CEPH_OSD_COPY_FROM_FLAG_IGNORE_CACHE |		\
+	 CEPH_OSD_COPY_FROM_FLAG_MAP_SNAP_CLONE |	\
+	 CEPH_OSD_COPY_FROM_FLAG_RWORDERED |		\
+	 CEPH_OSD_COPY_FROM_FLAG_TRUNCATE_SEQ)
 
 enum {
 	CEPH_OSD_TMAP2OMAP_NULLOK = 1,
@@ -641,7 +653,7 @@ struct ceph_osd_op {
 			__le32 chunk_size;
 			__u8 type;              /* CEPH_OSD_CHECKSUM_OP_TYPE_* */
 		} __attribute__ ((packed)) checksum;
-	};
+	} __attribute__ ((packed));
 	__le32 payload_len;
 } __attribute__ ((packed));
 

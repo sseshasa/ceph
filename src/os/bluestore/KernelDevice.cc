@@ -33,16 +33,27 @@
 #include "common/numa.h"
 
 #include "global/global_context.h"
+#include "ceph_io_uring.h"
 
 #define dout_context cct
 #define dout_subsys ceph_subsys_bdev
 #undef dout_prefix
 #define dout_prefix *_dout << "bdev(" << this << " " << path << ") "
 
+using std::list;
+using std::map;
+using std::string;
+using std::vector;
+
+using ceph::bufferlist;
+using ceph::bufferptr;
+using ceph::make_timespan;
+using ceph::mono_clock;
+using ceph::operator <<;
+
 KernelDevice::KernelDevice(CephContext* cct, aio_callback_t cb, void *cbpriv, aio_callback_t d_cb, void *d_cbpriv)
   : BlockDevice(cct, cb, cbpriv),
     aio(false), dio(false),
-    aio_queue(cct->_conf->bdev_aio_max_queue_depth),
     discard_callback(d_cb),
     discard_callback_priv(d_cbpriv),
     aio_stop(false),
@@ -54,6 +65,21 @@ KernelDevice::KernelDevice(CephContext* cct, aio_callback_t cb, void *cbpriv, ai
 {
   fd_directs.resize(WRITE_LIFE_MAX, -1);
   fd_buffereds.resize(WRITE_LIFE_MAX, -1);
+
+  bool use_ioring = cct->_conf.get_val<bool>("bluestore_ioring");
+  unsigned int iodepth = cct->_conf->bdev_aio_max_queue_depth;
+
+  if (use_ioring && ioring_queue_t::supported()) {
+    io_queue = std::make_unique<ioring_queue_t>(iodepth);
+  } else {
+    static bool once;
+    if (use_ioring && !once) {
+      derr << "WARNING: io_uring API is not supported! Fallback to libaio!"
+           << dendl;
+      once = true;
+    }
+    io_queue = std::make_unique<aio_queue_t>(iodepth);
+  }
 }
 
 int KernelDevice::_lock()
@@ -326,9 +352,6 @@ int KernelDevice::collect_metadata(const string& prefix, map<string,string> *pm)
     blkdev.serial(buffer, sizeof(buffer));
     (*pm)[prefix + "serial"] = buffer;
 
-    if (blkdev.is_nvme())
-      (*pm)[prefix + "type"] = "nvme";
-
     // numa
     int node;
     r = blkdev.get_numa_node(&node);
@@ -417,7 +440,7 @@ int KernelDevice::_aio_start()
 {
   if (aio) {
     dout(10) << __func__ << dendl;
-    int r = aio_queue.init();
+    int r = io_queue->init(fd_directs);
     if (r < 0) {
       if (r == -EAGAIN) {
 	derr << __func__ << " io_setup(2) failed with EAGAIN; "
@@ -439,7 +462,7 @@ void KernelDevice::_aio_stop()
     aio_stop = true;
     aio_thread.join();
     aio_stop = false;
-    aio_queue.shutdown();
+    io_queue->shutdown();
   }
 }
 
@@ -499,7 +522,7 @@ void KernelDevice::_aio_thread()
     dout(40) << __func__ << " polling" << dendl;
     int max = cct->_conf->bdev_aio_reap_max;
     aio_t *aio[max];
-    int r = aio_queue.get_next_completed(cct->_conf->bdev_aio_poll_ms,
+    int r = io_queue->get_next_completed(cct->_conf->bdev_aio_poll_ms,
 					 aio, max);
     if (r < 0) {
       derr << __func__ << " got " << cpp_strerror(r) << dendl;
@@ -764,7 +787,7 @@ void KernelDevice::aio_submit(IOContext *ioc)
 
   void *priv = static_cast<void*>(ioc);
   int r, retries = 0;
-  r = aio_queue.submit_batch(ioc->running_aios.begin(), e,
+  r = io_queue->submit_batch(ioc->running_aios.begin(), e,
 			     pending, priv, &retries);
 
   if (retries)
@@ -882,7 +905,7 @@ int KernelDevice::aio_write(
       ioc->pending_aios.push_back(aio_t(ioc, choose_fd(false, write_hint)));
       ++ioc->num_pending;
       auto& aio = ioc->pending_aios.back();
-      bufferptr p = buffer::create_small_page_aligned(len);
+      bufferptr p = ceph::buffer::create_small_page_aligned(len);
       aio.bl.append(std::move(p));
       aio.bl.prepare_iov(&aio.iov);
       aio.preadv(off, len);
@@ -966,7 +989,7 @@ int KernelDevice::read(uint64_t off, uint64_t len, bufferlist *pbl,
 
   auto start1 = mono_clock::now();
 
-  auto p = buffer::ptr_node::create(buffer::create_small_page_aligned(len));
+  auto p = ceph::buffer::ptr_node::create(ceph::buffer::create_small_page_aligned(len));
   int r = ::pread(buffered ? fd_buffereds[WRITE_LIFE_NOT_SET] : fd_directs[WRITE_LIFE_NOT_SET],
 		  p->c_str(), len, off);
   auto age = cct->_conf->bdev_debug_aio_log_age;
@@ -1016,7 +1039,7 @@ int KernelDevice::aio_read(
     ioc->pending_aios.push_back(aio_t(ioc, fd_directs[WRITE_LIFE_NOT_SET]));
     ++ioc->num_pending;
     aio_t& aio = ioc->pending_aios.back();
-    bufferptr p = buffer::create_small_page_aligned(len);
+    bufferptr p = ceph::buffer::create_small_page_aligned(len);
     aio.bl.append(std::move(p));
     aio.bl.prepare_iov(&aio.iov);
     aio.preadv(off, len);
@@ -1037,7 +1060,7 @@ int KernelDevice::direct_read_unaligned(uint64_t off, uint64_t len, char *buf)
 {
   uint64_t aligned_off = p2align(off, block_size);
   uint64_t aligned_len = p2roundup(off+len, block_size) - aligned_off;
-  bufferptr p = buffer::create_small_page_aligned(aligned_len);
+  bufferptr p = ceph::buffer::create_small_page_aligned(aligned_len);
   int r = 0;
 
   auto start1 = mono_clock::now();
@@ -1126,7 +1149,7 @@ int KernelDevice::read_random(uint64_t off, uint64_t len, char *buf,
     if (r < 0) {
       r = -errno;
       derr << __func__ << " direct_aligned_read" << " 0x" << std::hex
-        << off << "~" << left << std::dec << " error: " << cpp_strerror(r)
+	   << off << "~" << std::left << std::dec << " error: " << cpp_strerror(r)
         << dendl;
       goto out;
     }

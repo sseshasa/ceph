@@ -9,14 +9,8 @@ macro(build_spdk)
     find_package(aio REQUIRED)
     find_package(uuid REQUIRED)
   endif()
-
-  find_program (MAKE_EXECUTABLE NAMES make gmake)
-  if(CMAKE_MAKE_PROGRAM MATCHES "make")
-    # try to inherit command line arguments passed by parent "make" job
-    set(make_cmd "$(MAKE)")
-  else()
-    set(make_cmd "${MAKE_EXECUTABLE}")
-  endif()
+  include(FindMake)
+  find_make("MAKE_EXECUTABLE" "make_cmd")
 
   set(spdk_CFLAGS "-fPIC")
   include(CheckCCompilerFlag)

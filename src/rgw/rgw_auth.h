@@ -85,6 +85,12 @@ inline std::ostream& operator<<(std::ostream& out,
 }
 
 
+std::unique_ptr<rgw::auth::Identity>
+transform_old_authinfo(CephContext* const cct,
+                       const rgw_user& auth_id,
+                       const int perm_mask,
+                       const bool is_admin,
+                       const uint32_t type);
 std::unique_ptr<Identity> transform_old_authinfo(const req_state* const s);
 
 
@@ -485,6 +491,7 @@ public:
       is_admin(acct_privilege_t::IS_ADMIN_ACCT == level),
       acct_type(acct_type) {
     }
+    bool is_anon() const {return (acct_name.compare(RGW_USER_ANON_ID) == 0);}
   };
 
   using aclspec_t = rgw::auth::Identity::aclspec_t;

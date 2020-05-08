@@ -7,6 +7,10 @@ add_library(common_texttable_obj OBJECT
 add_library(common_prioritycache_obj OBJECT
   PriorityCache.cc)
 
+if(WIN32)
+  add_library(dlfcn_win32 STATIC dlfcn_win32.cc)
+endif()
+
 set(common_srcs
   AsyncOpTracker.cc
   BackTrace.cc
@@ -84,6 +88,7 @@ set(common_srcs
   perf_histogram.cc
   pick_address.cc
   rabin.cc
+  random_string.cc
   reverse.c
   run_cmd.cc
   scrub_types.cc
@@ -95,10 +100,10 @@ set(common_srcs
   strtol.cc
   types.cc
   url_escape.cc
+  pretty_binary.cc
   utf8.c
   util.cc
-  version.cc
-  xattr.c)
+  version.cc)
 
 set_source_files_properties(${CMAKE_SOURCE_DIR}/src/common/version.cc
   APPEND PROPERTY OBJECT_DEPENDS ${CMAKE_BINARY_DIR}/src/include/ceph_ver.h)
@@ -120,14 +125,16 @@ elseif(AIX)
   list(APPEND common_srcs aix_errno.cc)
 endif()
 
-if(WITH_LTTNG AND WITH_EVENTTRACE)
-  message(STATUS " Using EventTrace class.")
-  add_definitions("-DWITH_EVENTTRACE")
+if(WITH_EVENTTRACE)
   list(APPEND common_srcs EventTrace.cc)
 endif()
 
 add_library(common-common-objs OBJECT
   ${common_srcs})
+# Let's not rely on the default system headers and point Cmake to the
+# retrieved OpenSSL location. This is especially important when cross
+# compiling (e.g. targeting Windows).
+target_include_directories(common-common-objs PRIVATE ${OPENSSL_INCLUDE_DIR})
 # for options.cc
 target_compile_definitions(common-common-objs PRIVATE
   "CEPH_LIBDIR=\"${CMAKE_INSTALL_FULL_LIBDIR}\""
@@ -179,7 +186,7 @@ target_link_libraries(crc32
 
 add_library(common_utf8 STATIC utf8.c)
 
-if(WITH_LIBCEPHFS OR WITH_KRBD)
+if(HAVE_KEYUTILS)
   set(parse_secret_srcs
     secret.c)
   add_library(parse_secret_objs OBJECT ${parse_secret_srcs})

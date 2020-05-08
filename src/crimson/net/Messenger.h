@@ -23,26 +23,26 @@
 
 class AuthAuthorizer;
 
-namespace ceph::auth {
+namespace crimson::auth {
 class AuthClient;
 class AuthServer;
 }
 
-namespace ceph::net {
+namespace crimson::net {
 
 #ifdef UNIT_TESTS_BUILT
 class Interceptor;
 #endif
 
-using Throttle = ceph::thread::Throttle;
+using Throttle = crimson::thread::Throttle;
 using SocketPolicy = ceph::net::Policy<Throttle>;
 
 class Messenger {
   entity_name_t my_name;
   entity_addrvec_t my_addrs;
   uint32_t crc_flags = 0;
-  ceph::auth::AuthClient* auth_client = nullptr;
-  ceph::auth::AuthServer* auth_server = nullptr;
+  crimson::auth::AuthClient* auth_client = nullptr;
+  crimson::auth::AuthServer* auth_server = nullptr;
   bool require_authorizer = true;
 
 public:
@@ -76,9 +76,15 @@ public:
 
   /// either return an existing connection to the peer,
   /// or a new pending connection
-  virtual seastar::future<ConnectionXRef>
+  virtual ConnectionRef
   connect(const entity_addr_t& peer_addr,
-          const entity_type_t& peer_type) = 0;
+          const entity_name_t& peer_name) = 0;
+
+  ConnectionRef
+  connect(const entity_addr_t& peer_addr,
+          const entity_type_t& peer_type) {
+    return connect(peer_addr, entity_name_t(peer_type, -1));
+  }
 
   // wait for messenger shutdown
   virtual seastar::future<> wait() = 0;
@@ -97,18 +103,13 @@ public:
     crc_flags |= MSG_CRC_HEADER;
   }
 
-  ceph::auth::AuthClient* get_auth_client() const { return auth_client; }
-  void set_auth_client(ceph::auth::AuthClient *ac) {
+  crimson::auth::AuthClient* get_auth_client() const { return auth_client; }
+  void set_auth_client(crimson::auth::AuthClient *ac) {
     auth_client = ac;
   }
-  ceph::auth::AuthServer* get_auth_server() const { return auth_server; }
-  void set_auth_server(ceph::auth::AuthServer *as) {
+  crimson::auth::AuthServer* get_auth_server() const { return auth_server; }
+  void set_auth_server(crimson::auth::AuthServer *as) {
     auth_server = as;
-  }
-
-  // get the local messenger shard if it is accessed by another core
-  virtual Messenger* get_local_shard() {
-    return this;
   }
 
   virtual void print(ostream& out) const = 0;
@@ -131,11 +132,10 @@ public:
   void set_require_authorizer(bool r) {
     require_authorizer = r;
   }
-  static seastar::future<Messenger*>
+  static MessengerRef
   create(const entity_name_t& name,
          const std::string& lname,
-         const uint64_t nonce,
-         const int master_sid=-1);
+         const uint64_t nonce);
 };
 
 inline ostream& operator<<(ostream& out, const Messenger& msgr) {
@@ -145,4 +145,4 @@ inline ostream& operator<<(ostream& out, const Messenger& msgr) {
   return out;
 }
 
-} // namespace ceph::net
+} // namespace crimson::net

@@ -1577,8 +1577,9 @@ public:
     crush_init_workspace(crush, work);
     crush_choose_arg_map arg_map = choose_args_get_with_fallback(
       choose_args_index);
-    int numrep = crush_do_rule(crush, rule, x, rawout, maxout, &weight[0],
-			       weight.size(), work, arg_map.args);
+    int numrep = crush_do_rule(crush, rule, x, rawout, maxout,
+			       std::data(weight), std::size(weight),
+			       work, arg_map.args);
     if (numrep < 0)
       numrep = 0;
     out.resize(numrep);
@@ -1591,11 +1592,13 @@ public:
     const std::vector<std::pair<int,int>>& stack,
     const std::set<int>& overfull,
     const std::vector<int>& underfull,
+    const std::vector<int>& more_underfull,
     const std::vector<int>& orig,
     std::vector<int>::const_iterator& i,
     std::set<int>& used,
     std::vector<int> *pw,
-    int root_bucket) const;
+    int root_bucket,
+    int rule) const;
 
   int try_remap_rule(
     CephContext *cct,
@@ -1603,6 +1606,7 @@ public:
     int maxout,
     const std::set<int>& overfull,
     const std::vector<int>& underfull,
+    const std::vector<int>& more_underfull,
     const std::vector<int>& orig,
     std::vector<int> *out) const;
 

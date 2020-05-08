@@ -56,6 +56,8 @@ cluster to retrieve configuration stored centrally for the entire
 cluster.  Once a complete view of the configuration is available, the
 daemon or process startup will proceed.
 
+.. _bootstrap-options:
+
 Bootstrap options
 -----------------
 
@@ -144,7 +146,7 @@ These sections include:
               the Ceph Storage Cluster, and override the same setting in
               ``global``.
 
-:Example: ``mds_cache_size = 10G``
+:Example: ``mds_cache_memory_limit = 10G``
 
 ``client``
 

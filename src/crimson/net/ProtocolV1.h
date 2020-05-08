@@ -8,7 +8,7 @@
 class AuthAuthorizer;
 class AuthSessionHandler;
 
-namespace ceph::net {
+namespace crimson::net {
 
 class ProtocolV1 final : public Protocol {
  public:
@@ -18,10 +18,12 @@ class ProtocolV1 final : public Protocol {
   ~ProtocolV1() override;
 
  private:
-  void start_connect(const entity_addr_t& peer_addr,
-                     const entity_type_t& peer_type) override;
+  bool is_connected() const override;
 
-  void start_accept(SocketFRef&& socket,
+  void start_connect(const entity_addr_t& peer_addr,
+                     const entity_name_t& peer_name) override;
+
+  void start_accept(SocketRef&& socket,
                     const entity_addr_t& peer_addr) override;
 
   void trigger_close() override;
@@ -85,7 +87,7 @@ class ProtocolV1 final : public Protocol {
  private:
   // connecting
   void reset_session();
-  seastar::future<stop_t> handle_connect_reply(ceph::net::msgr_tag_t tag);
+  seastar::future<stop_t> handle_connect_reply(crimson::net::msgr_tag_t tag);
   seastar::future<stop_t> repeat_connect();
   ceph::bufferlist get_auth_payload();
 
@@ -110,7 +112,12 @@ class ProtocolV1 final : public Protocol {
   seastar::future<> maybe_throttle();
   seastar::future<> read_message();
   seastar::future<> handle_tags();
-  void execute_open();
+
+  enum class open_t {
+    connected,
+    accepted
+  };
+  void execute_open(open_t type);
 
   // replacing
   // the number of connections initiated in this session, increment when a
@@ -125,4 +132,4 @@ class ProtocolV1 final : public Protocol {
   seastar::future<> fault();
 };
 
-} // namespace ceph::net
+} // namespace crimson::net

@@ -25,7 +25,7 @@ export class MockModule {}
 @Component({
   template: `
     <ng-template #fillTpl>
-      The description of the confirmation modal is mandatory.
+      Template based description.
     </ng-template>
   `
 })
@@ -38,13 +38,14 @@ class MockComponent {
   // Normally private, but public is needed by tests
   constructor(public modalService: BsModalService) {}
 
-  private openModal(extendBaseState: object = {}) {
+  private openModal(extendBaseState = {}) {
     this.modalRef = this.modalService.show(ConfirmationModalComponent, {
       initialState: Object.assign(
         {
           titleText: 'Title is a must have',
           buttonText: 'Action label',
           bodyTpl: this.fillTpl,
+          description: 'String based description.',
           onSubmit: () => {
             this.returnValue = 'The submit action has to hide manually.';
             this.modalRef.hide();
@@ -155,7 +156,8 @@ describe('ConfirmationModalComponent', () => {
     it('has no description defined', () => {
       expectError(
         {
-          bodyTpl: undefined
+          bodyTpl: undefined,
+          description: undefined
         },
         'No description defined'
       );
@@ -197,7 +199,7 @@ describe('ConfirmationModalComponent', () => {
 
     it('should show the description', () => {
       expect(fh.getText('.modal-body')).toBe(
-        'The description of the confirmation modal is mandatory.'
+        'Template based description.  String based description.'
       );
     });
   });

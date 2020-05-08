@@ -200,10 +200,10 @@ static void log_usage(struct req_state *s, const string& op_name)
   if (!bucket_name.empty()) {
     user = s->bucket_owner.get_id();
     if (s->bucket_info.requester_pays) {
-      payer = s->user->user_id;
+      payer = s->user->get_id();
     }
   } else {
-      user = s->user->user_id;
+      user = s->user->get_id();
   }
 
   bool error = s->err.is_err();
@@ -339,7 +339,7 @@ int rgw_log_op(RGWRados *store, RGWREST* const rest, struct req_state *s,
   } else {
     bucket_id = s->bucket.bucket_id;
   }
-  rgw_make_bucket_entry_name(s->bucket_tenant, s->bucket_name, entry.bucket);
+  entry.bucket = rgw_make_bucket_entry_name(s->bucket_tenant, s->bucket_name);
 
   if (check_utf8(entry.bucket.c_str(), entry.bucket.size()) != 0) {
     ldout(s->cct, 5) << "not logging op on bucket with non-utf8 name" << dendl;
@@ -392,7 +392,7 @@ int rgw_log_op(RGWRados *store, RGWREST* const rest, struct req_state *s,
 
   entry.uri = std::move(uri);
 
-  set_param_str(s, "REQUEST_METHOD", entry.op);
+  entry.op = op_name;
 
   /* custom header logging */
   if (rest) {
@@ -406,7 +406,7 @@ int rgw_log_op(RGWRados *store, RGWREST* const rest, struct req_state *s,
     }
   }
 
-  entry.user = s->user->user_id.to_str();
+  entry.user = s->user->get_id().to_str();
   if (s->object_acl)
     entry.object_owner = s->object_acl->get_owner().get_id();
   entry.bucket_owner = s->bucket_owner.get_id();

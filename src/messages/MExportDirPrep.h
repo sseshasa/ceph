@@ -19,24 +19,24 @@
 #include "msg/Message.h"
 #include "include/types.h"
 
-class MExportDirPrep : public Message {
+class MExportDirPrep : public SafeMessage {
 private:
   static const int HEAD_VERSION = 1;
   static const int COMPAT_VERSION = 1;
 
   dirfrag_t dirfrag;
- public:
-  bufferlist basedir;
-  list<dirfrag_t> bounds;
-  list<bufferlist> traces;
+public:
+  ceph::buffer::list basedir;
+  std::list<dirfrag_t> bounds;
+  std::list<ceph::buffer::list> traces;
 private:
-  set<mds_rank_t> bystanders;
+  std::set<mds_rank_t> bystanders;
   bool b_did_assim = false;
 
 public:
   dirfrag_t get_dirfrag() const { return dirfrag; }
-  const list<dirfrag_t>& get_bounds() const { return bounds; }
-  const set<mds_rank_t> &get_bystanders() const { return bystanders; }
+  const std::list<dirfrag_t>& get_bounds() const { return bounds; }
+  const std::set<mds_rank_t> &get_bystanders() const { return bystanders; }
 
   bool did_assim() const { return b_did_assim; }
   void mark_assim() { b_did_assim = true; }
@@ -44,7 +44,7 @@ public:
 protected:
   MExportDirPrep() = default;
   MExportDirPrep(dirfrag_t df, uint64_t tid) :
-    Message{MSG_MDS_EXPORTDIRPREP, HEAD_VERSION, COMPAT_VERSION},
+    SafeMessage{MSG_MDS_EXPORTDIRPREP, HEAD_VERSION, COMPAT_VERSION},
     dirfrag(df)
   {
     set_tid(tid);
@@ -53,14 +53,14 @@ protected:
 
 public:
   std::string_view get_type_name() const override { return "ExP"; }
-  void print(ostream& o) const override {
+  void print(std::ostream& o) const override {
     o << "export_prep(" << dirfrag << ")";
   }
 
   void add_bound(dirfrag_t df) {
     bounds.push_back( df );
   }
-  void add_trace(bufferlist& bl) {
+  void add_trace(ceph::buffer::list& bl) {
     traces.push_back(bl);
   }
   void add_bystander(mds_rank_t who) {

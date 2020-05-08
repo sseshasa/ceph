@@ -26,6 +26,7 @@
 #include <boost/thread/shared_mutex.hpp>
 
 #include "include/ceph_assert.h"
+#include "include/common_fwd.h"
 #include "include/buffer.h"
 #include "include/types.h"
 #include "include/rados/rados_types.hpp"
@@ -57,7 +58,6 @@ class MStatfsReply;
 class MCommandReply;
 class MWatchNotify;
 
-class PerfCounters;
 
 // -----------------------------------------
 
@@ -1004,7 +1004,8 @@ struct ObjectOperation {
   }
 
   void omap_rm_range(std::string_view key_begin, std::string_view key_end) {
-    bufferlist bl;
+    ceph::buffer::list bl;
+    using ceph::encode;
     encode(key_begin, bl);
     encode(key_end, bl);
     add_data(CEPH_OSD_OP_OMAPRMKEYRANGE, 0, bl.length(), bl);
@@ -1104,6 +1105,21 @@ struct ObjectOperation {
     osd_op.op.copy_from.src_fadvise_flags = src_fadvise_flags;
     encode(src, osd_op.indata);
     encode(src_oloc, osd_op.indata);
+  }
+  void copy_from2(object_t src, snapid_t snapid, object_locator_t src_oloc,
+		 version_t src_version, unsigned flags,
+		 uint32_t truncate_seq, uint64_t truncate_size,
+		 unsigned src_fadvise_flags) {
+    using ceph::encode;
+    OSDOp& osd_op = add_op(CEPH_OSD_OP_COPY_FROM2);
+    osd_op.op.copy_from.snapid = snapid;
+    osd_op.op.copy_from.src_version = src_version;
+    osd_op.op.copy_from.flags = flags;
+    osd_op.op.copy_from.src_fadvise_flags = src_fadvise_flags;
+    encode(src, osd_op.indata);
+    encode(src_oloc, osd_op.indata);
+    encode(truncate_seq, osd_op.indata);
+    encode(truncate_size, osd_op.indata);
   }
 
   /**
@@ -1253,8 +1269,8 @@ private:
   std::atomic<unsigned> num_in_flight{0};
   std::atomic<int> global_op_flags{0}; // flags which are applied to each IO op
   bool keep_balanced_budget = false;
-  bool honor_osdmap_full = true;
-  bool osdmap_full_try = false;
+  bool honor_pool_full = true;
+  bool pool_full_try = false;
 
   // If this is true, accumulate a set of blacklisted entities
   // to be drained by consume_blacklist_events.
@@ -1422,6 +1438,12 @@ public:
       return r == 0 || (r > 0 && h < end);
     }
 
+    bool respects_full() const {
+      return
+	(flags & (CEPH_OSD_FLAG_WRITE | CEPH_OSD_FLAG_RWORDERED)) &&
+	!(flags & (CEPH_OSD_FLAG_FULL_TRY | CEPH_OSD_FLAG_FULL_FORCE));
+    }
+
     void dump(ceph::Formatter *f) const;
   };
 
@@ -1519,12 +1541,6 @@ public:
 
     bool operator<(const Op& other) const {
       return tid < other.tid;
-    }
-
-    bool respects_full() const {
-      return
-	(target.flags & (CEPH_OSD_FLAG_WRITE | CEPH_OSD_FLAG_RWORDERED)) &&
-	!(target.flags & (CEPH_OSD_FLAG_FULL_TRY | CEPH_OSD_FLAG_FULL_FORCE));
     }
 
   private:
@@ -1953,6 +1969,7 @@ public:
   bool osdmap_full_flag() const;
   bool osdmap_pool_full(const int64_t pool_id) const;
 
+
  private:
 
   /**
@@ -1962,7 +1979,9 @@ public:
    *         the global full flag is set, else false
    */
   bool _osdmap_pool_full(const int64_t pool_id) const;
-  bool _osdmap_pool_full(const pg_pool_t &p) const;
+  bool _osdmap_pool_full(const pg_pool_t &p) const {
+    return p.has_flag(pg_pool_t::FLAG_FULL) && honor_pool_full;
+  }
   void update_pool_full_map(std::map<int64_t, bool>& pool_full_map);
 
   std::map<uint64_t, LingerOp*> linger_ops;
@@ -2090,7 +2109,7 @@ private:
     return op_budget;
   }
   int take_linger_budget(LingerOp *info);
-  friend class WatchContext; // to invoke put_up_budget_bytes
+  friend struct WatchContext; // to invoke put_up_budget_bytes
   void put_op_budget_bytes(int op_budget) {
     ceph_assert(op_budget >= 0);
     op_throttle_bytes.put(op_budget);
@@ -2139,11 +2158,11 @@ private:
   void set_balanced_budget() { keep_balanced_budget = true; }
   void unset_balanced_budget() { keep_balanced_budget = false; }
 
-  void set_honor_osdmap_full() { honor_osdmap_full = true; }
-  void unset_honor_osdmap_full() { honor_osdmap_full = false; }
+  void set_honor_pool_full() { honor_pool_full = true; }
+  void unset_honor_pool_full() { honor_pool_full = false; }
 
-  void set_osdmap_full_try() { osdmap_full_try = true; }
-  void unset_osdmap_full_try() { osdmap_full_try = false; }
+  void set_pool_full_try() { pool_full_try = true; }
+  void unset_pool_full_try() { pool_full_try = false; }
 
   void _scan_requests(
     OSDSession *s,
@@ -2185,7 +2204,7 @@ private:
   void handle_osd_backoff(class MOSDBackoff *m);
   void handle_watch_notify(class MWatchNotify *m);
   void handle_osd_map(class MOSDMap *m);
-  void wait_for_osd_map();
+  void wait_for_osd_map(epoch_t e=0);
 
   /**
    * Get std::list of entities blacklisted since this was last called,
@@ -2321,6 +2340,8 @@ public:
     o->mtime = mtime;
     o->snapc = snapc;
     o->out_rval.swap(op.out_rval);
+    o->out_bl.swap(op.out_bl);
+    o->out_handler.swap(op.out_handler);
     o->reqid = reqid;
     return o;
   }
@@ -3087,12 +3108,17 @@ public:
 		  0, 0, op_flags);
     } else {
       C_GatherBuilder gcom(cct, oncommit);
+      auto it = bl.cbegin();
       for (auto p = extents.begin(); p != extents.end(); ++p) {
 	ceph::buffer::list cur;
 	for (auto bit = p->buffer_extents.begin();
 	     bit != p->buffer_extents.end();
-	     ++bit)
-	  bl.copy(bit->first, bit->second, cur);
+	     ++bit) {
+	  if (it.get_off() != bit->first) {
+	    it.seek(bit->first);
+	  }
+	  it.copy(bit->second, cur);
+	}
 	ceph_assert(cur.length() == p->length);
 	write_trunc(p->oid, p->oloc, p->offset, p->length,
 	      snapc, cur, mtime, flags, p->truncate_size, trunc_seq,

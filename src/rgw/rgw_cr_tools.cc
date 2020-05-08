@@ -98,8 +98,7 @@ int RGWGetUserInfoCR::Request::_send_request()
 template<>
 int RGWGetBucketInfoCR::Request::_send_request()
 {
-  RGWSysObjectCtx obj_ctx(store->svc()->sysobj->init_obj_ctx());
-  return store->getRados()->get_bucket_info(obj_ctx, params.tenant, params.bucket_name,
+  return store->getRados()->get_bucket_info(store->svc(), params.tenant, params.bucket_name,
                                 result->bucket_info, &result->mtime, null_yield, &result->attrs);
 }
 
@@ -108,7 +107,6 @@ int RGWBucketCreateLocalCR::Request::_send_request()
 {
   CephContext *cct = store->ctx();
   auto& zone_svc = store->svc()->zone;
-  auto& sysobj_svc = store->svc()->sysobj;
 
   const auto& user_info = params.user_info.get();
   const auto& user = user_info->user_id;
@@ -125,11 +123,10 @@ int RGWBucketCreateLocalCR::Request::_send_request()
 
   /* we need to make sure we read bucket info, it's not read before for this
    * specific request */
-  RGWSysObjectCtx sysobj_ctx(sysobj_svc->init_obj_ctx());
   RGWBucketInfo bucket_info;
   map<string, bufferlist> bucket_attrs;
 
-  int ret = store->getRados()->get_bucket_info(sysobj_ctx, user.tenant, bucket_name,
+  int ret = store->getRados()->get_bucket_info(store->svc(), user.tenant, bucket_name,
 				  bucket_info, nullptr, null_yield, &bucket_attrs);
   if (ret < 0 && ret != -ENOENT)
     return ret;
@@ -140,7 +137,7 @@ int RGWBucketCreateLocalCR::Request::_send_request()
   bucket_owner.set_id(user);
   bucket_owner.set_name(user_info->display_name);
   if (bucket_exists) {
-    ret = rgw_op_get_bucket_policy_from_attr(cct, store->ctl()->user, bucket_info,
+    ret = rgw_op_get_bucket_policy_from_attr(cct, store, bucket_info,
                                              bucket_attrs, &old_policy);
     if (ret >= 0)  {
       if (old_policy.get_owner().get_id().compare(user) != 0) {
@@ -272,6 +269,23 @@ int RGWBucketLifecycleConfigCR::Request::_send_request()
   if (ret < 0) {
     lderr(cct) << "ERROR: failed to set lifecycle on bucke: " << cpp_strerror(-ret) << dendl;
     return -ret;
+  }
+
+  return 0;
+}
+
+template<>
+int RGWBucketGetSyncPolicyHandlerCR::Request::_send_request()
+{
+  CephContext *cct = store->ctx();
+
+  int r = store->ctl()->bucket->get_sync_policy_handler(params.zone,
+                                                        params.bucket,
+                                                        &result->policy_handler,
+                                                        null_yield);
+  if (r < 0) {
+    lderr(cct) << "ERROR: " << __func__ << "(): get_sync_policy_handler() returned " << r << dendl;
+    return  r;
   }
 
   return 0;

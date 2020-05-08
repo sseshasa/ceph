@@ -36,7 +36,6 @@
 
 #include "include/linux_fiemap.h"
 
-#include "common/xattr.h"
 #include "chain_xattr.h"
 
 #if defined(__APPLE__) || defined(__FreeBSD__)
@@ -74,7 +73,6 @@
 #include "kv/KeyValueDB.h"
 
 #include "common/ceph_crypto.h"
-using ceph::crypto::SHA1;
 
 #include "include/ceph_assert.h"
 
@@ -109,6 +107,26 @@ using ceph::crypto::SHA1;
 #define XATTR_NO_SPILL_OUT "0"
 #define XATTR_SPILL_OUT "1"
 #define __FUNC__ __func__ << "(" << __LINE__ << ")"
+
+using std::cerr;
+using std::list;
+using std::make_pair;
+using std::map;
+using std::ostream;
+using std::ostringstream;
+using std::set;
+using std::string;
+using std::stringstream;
+using std::vector;
+
+using ceph::crypto::SHA1;
+using ceph::BackTrace;
+using ceph::bufferlist;
+using ceph::bufferptr;
+using ceph::decode;
+using ceph::encode;
+using ceph::Formatter;
+using ceph::JSONFormatter;
 
 //Initial features in new superblock.
 static CompatSet get_fs_initial_compat_set() {
@@ -651,11 +669,11 @@ FileStore::FileStore(CephContext* cct, const std::string &base,
 
 FileStore::~FileStore()
 {
-  for (vector<Finisher*>::iterator it = ondisk_finishers.begin(); it != ondisk_finishers.end(); ++it) {
+  for (auto it = ondisk_finishers.begin(); it != ondisk_finishers.end(); ++it) {
     delete *it;
     *it = nullptr;
   }
-  for (vector<Finisher*>::iterator it = apply_finishers.begin(); it != apply_finishers.end(); ++it) {
+  for (auto it = apply_finishers.begin(); it != apply_finishers.end(); ++it) {
     delete *it;
     *it = nullptr;
   }
@@ -1374,7 +1392,7 @@ int FileStore::write_superblock()
   bufferlist bl;
   encode(superblock, bl);
   return safe_write_file(basedir.c_str(), "superblock",
-      bl.c_str(), bl.length());
+			 bl.c_str(), bl.length(), 0600);
 }
 
 int FileStore::read_superblock()
@@ -1459,7 +1477,7 @@ int FileStore::write_version_stamp()
   encode(target_version, bl);
 
   return safe_write_file(basedir.c_str(), "store_version",
-      bl.c_str(), bl.length());
+			 bl.c_str(), bl.length(), 0600);
 }
 
 int FileStore::upgrade()
@@ -3953,7 +3971,7 @@ int FileStore::_do_copy_range(int from, int to, uint64_t srcoff, uint64_t len, u
 #ifdef CEPH_HAVE_SPLICE
   if (backend->has_splice()) {
     int pipefd[2];
-    if (pipe_cloexec(pipefd) < 0) {
+    if (pipe_cloexec(pipefd, 0) < 0) {
       int e = errno;
       derr << " pipe " << " got " << cpp_strerror(e) << dendl;
       return -e;
@@ -4436,12 +4454,12 @@ int FileStore::_fgetattr(int fd, const char *name, bufferptr& bp)
   char val[CHAIN_XATTR_MAX_BLOCK_LEN];
   int l = chain_fgetxattr(fd, name, val, sizeof(val));
   if (l >= 0) {
-    bp = buffer::create(l);
+    bp = ceph::buffer::create(l);
     memcpy(bp.c_str(), val, l);
   } else if (l == -ERANGE) {
     l = chain_fgetxattr(fd, name, 0, 0);
     if (l > 0) {
-      bp = buffer::create(l);
+      bp = ceph::buffer::create(l);
       l = chain_fgetxattr(fd, name, bp.c_str(), l);
     }
   }

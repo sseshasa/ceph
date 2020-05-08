@@ -1,6 +1,5 @@
 import json
 import logging
-import time
 import os
 from textwrap import dedent
 from tasks.cephfs.cephfs_test_case import CephFSTestCase
@@ -15,15 +14,9 @@ class TestVolumeClient(CephFSTestCase):
     # One for looking at the global filesystem, one for being
     # the VolumeClient, two for mounting the created shares
     CLIENTS_REQUIRED = 4
-    default_py_version = 'python3'
 
     def setUp(self):
         CephFSTestCase.setUp(self)
-        self.py_version = self.ctx.config.get('overrides', {}).\
-                          get('python', TestVolumeClient.default_py_version)
-        log.info("using python version: {python_version}".format(
-            python_version=self.py_version
-        ))
 
     def _volume_client_python(self, client, script, vol_prefix=None, ns_prefix=None):
         # Can't dedent this *and* the script we pass in, because they might have different
@@ -46,8 +39,7 @@ vc.connect()
 {payload}
 vc.disconnect()
         """.format(payload=script, conf_path=client.config_path,
-                   vol_prefix=vol_prefix, ns_prefix=ns_prefix),
-        self.py_version)
+                   vol_prefix=vol_prefix, ns_prefix=ns_prefix))
 
     def _configure_vc_auth(self, mount, id_name):
         """
@@ -202,7 +194,7 @@ vc.disconnect()
         # the volume.
         self._configure_guest_auth(self.mount_b, self.mounts[2], guest_entity,
                                    mount_path, namespace_prefix)
-        self.mounts[2].mount(mount_path=mount_path)
+        self.mounts[2].mount_wait(mount_path=mount_path)
 
         # The kernel client doesn't have the quota-based df behaviour,
         # or quotas at all, so only exercise the client behaviour when
@@ -361,33 +353,8 @@ vc.disconnect()
         :return:
         """
 
-        # Because the teuthology config template sets mon_max_pg_per_osd to
-        # 10000 (i.e. it just tries to ignore health warnings), reset it to something
-        # sane before using volume_client, to avoid creating pools with absurdly large
-        # numbers of PGs.
-        self.set_conf("global", "mon max pg per osd", "300")
-        for mon_daemon_state in self.ctx.daemons.iter_daemons_of_role('mon'):
-            mon_daemon_state.restart()
-
         self.mount_b.umount_wait()
         self._configure_vc_auth(self.mount_b, "manila")
-
-        # Calculate how many PGs we'll expect the new volume pool to have
-        osd_map = json.loads(self.fs.mon_manager.raw_cluster_cmd('osd', 'dump', '--format=json-pretty'))
-        max_per_osd = int(self.fs.get_config('mon_max_pg_per_osd'))
-        osd_count = len(osd_map['osds'])
-        max_overall = osd_count * max_per_osd
-
-        existing_pg_count = 0
-        for p in osd_map['pools']:
-            existing_pg_count += p['pg_num']
-
-        expected_pg_num = (max_overall - existing_pg_count) / 10
-        log.info("max_per_osd {0}".format(max_per_osd))
-        log.info("osd_count {0}".format(osd_count))
-        log.info("max_overall {0}".format(max_overall))
-        log.info("existing_pg_count {0}".format(existing_pg_count))
-        log.info("expected_pg_num {0}".format(expected_pg_num))
 
         pools_a = json.loads(self.fs.mon_manager.raw_cluster_cmd("osd", "dump", "--format=json-pretty"))['pools']
 
@@ -395,7 +362,7 @@ vc.disconnect()
         volume_id = "volid"
         self._volume_client_python(self.mount_b, dedent("""
             vp = VolumePath("{group_id}", "{volume_id}")
-            vc.create_volume(vp, 10, data_isolated=True)
+            vc.create_volume(vp, data_isolated=True)
         """.format(
             group_id=group_id,
             volume_id=volume_id,
@@ -407,12 +374,6 @@ vc.disconnect()
         new_pools = set(p['pool_name'] for p in pools_b) - set([p['pool_name'] for p in pools_a])
         self.assertEqual(len(new_pools), 1)
 
-        # It should have followed the heuristic for PG count
-        # (this is an overly strict test condition, so we may want to remove
-        #  it at some point as/when the logic gets fancier)
-        created_pg_num = self.fs.mon_manager.get_pool_int_property(list(new_pools)[0], "pg_num")
-        self.assertEqual(expected_pg_num, created_pg_num)
-
     def test_15303(self):
         """
         Reproducer for #15303 "Client holds incorrect complete flag on dir
@@ -422,13 +383,13 @@ vc.disconnect()
             m.umount_wait()
 
         # Create a dir on mount A
-        self.mount_a.mount()
+        self.mount_a.mount_wait()
         self.mount_a.run_shell(["mkdir", "parent1"])
         self.mount_a.run_shell(["mkdir", "parent2"])
         self.mount_a.run_shell(["mkdir", "parent1/mydir"])
 
         # Put some files in it from mount B
-        self.mount_b.mount()
+        self.mount_b.mount_wait()
         self.mount_b.run_shell(["touch", "parent1/mydir/afile"])
         self.mount_b.umount_wait()
 
@@ -482,7 +443,7 @@ vc.disconnect()
             # Mount the volume.
             guest_mounts[i].mountpoint_dir_name = 'mnt.{id}.{suffix}'.format(
                 id=guest_entity, suffix=str(i))
-            guest_mounts[i].mount(mount_path=mount_paths[i])
+            guest_mounts[i].mount_wait(mount_path=mount_paths[i])
             guest_mounts[i].write_n_mb("data.bin", 1)
 
 
@@ -614,7 +575,7 @@ vc.disconnect()
                                    mount_path, readonly=False)
 
         # Mount the volume, and write to it.
-        guest_mount.mount(mount_path=mount_path)
+        guest_mount.mount_wait(mount_path=mount_path)
         guest_mount.write_n_mb("data.bin", 1)
 
         # Change the guest auth ID's authorization to read-only mount access.
@@ -633,13 +594,15 @@ vc.disconnect()
         # immediate. The guest sees the change only after a remount of
         # the volume.
         guest_mount.umount_wait()
-        guest_mount.mount(mount_path=mount_path)
+        guest_mount.mount_wait(mount_path=mount_path)
 
         # Read existing content of the volume.
         self.assertListEqual(guest_mount.ls(guest_mount.mountpoint), ["data.bin"])
         # Cannot write into read-only volume.
-        with self.assertRaises(CommandFailedError):
+        try:
             guest_mount.write_n_mb("rogue.bin", 1)
+        except CommandFailedError:
+            pass
 
     def test_get_authorized_ids(self):
         """
@@ -686,12 +649,8 @@ vc.disconnect()
             guest_entity_2=guest_entity_2,
         )))
         # Check the list of authorized IDs and their access levels.
-        if self.py_version == 'python3':
-            expected_result = [('guest1', 'rw'), ('guest2', 'r')]
-        else:
-            expected_result = [(u'guest1', u'rw'), (u'guest2', u'r')]
-
-        self.assertItemsEqual(str(expected_result), auths)
+        expected_result = [('guest1', 'rw'), ('guest2', 'r')]
+        self.assertCountEqual(str(expected_result), auths)
 
         # Disallow both the auth IDs' access to the volume.
         auths = self._volume_client_python(volumeclient_mount, dedent("""
@@ -1092,7 +1051,7 @@ vc.disconnect()
 
         # Mount the volume in the guest using the auth ID to assert that the
         # auth caps are valid
-        guest_mount.mount(mount_path=mount_path)
+        guest_mount.mount_wait(mount_path=mount_path)
 
     def test_volume_without_namespace_isolation(self):
         """
@@ -1109,7 +1068,7 @@ vc.disconnect()
         volume_prefix = "/myprefix"
         group_id = "grpid"
         volume_id = "volid"
-        mount_path = self._volume_client_python(vc_mount, dedent("""
+        self._volume_client_python(vc_mount, dedent("""
             vp = VolumePath("{group_id}", "{volume_id}")
             create_result = vc.create_volume(vp, 1024*1024*10, namespace_isolated=False)
             print(create_result['mount_path'])

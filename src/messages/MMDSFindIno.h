@@ -18,7 +18,7 @@
 #include "msg/Message.h"
 #include "include/filepath.h"
 
-class MMDSFindIno : public Message {
+class MMDSFindIno : public SafeMessage {
   static const int HEAD_VERSION = 1;
   static const int COMPAT_VERSION = 1;
 public:
@@ -26,13 +26,13 @@ public:
   inodeno_t ino;
 
 protected:
-  MMDSFindIno() : Message{MSG_MDS_FINDINO, HEAD_VERSION, COMPAT_VERSION} {}
-  MMDSFindIno(ceph_tid_t t, inodeno_t i) : Message{MSG_MDS_FINDINO, HEAD_VERSION, COMPAT_VERSION}, tid(t), ino(i) {}
+  MMDSFindIno() : SafeMessage{MSG_MDS_FINDINO, HEAD_VERSION, COMPAT_VERSION} {}
+  MMDSFindIno(ceph_tid_t t, inodeno_t i) : SafeMessage{MSG_MDS_FINDINO, HEAD_VERSION, COMPAT_VERSION}, tid(t), ino(i) {}
   ~MMDSFindIno() override {}
 
 public:
   std::string_view get_type_name() const override { return "findino"; }
-  void print(ostream &out) const override {
+  void print(std::ostream &out) const override {
     out << "findino(" << tid << " " << ino << ")";
   }
 
@@ -42,6 +42,7 @@ public:
     encode(ino, payload);
   }
   void decode_payload() override {
+    using ceph::decode;
     auto p = payload.cbegin();
     decode(tid, p);
     decode(ino, p);

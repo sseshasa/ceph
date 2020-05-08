@@ -153,6 +153,9 @@ public:
                            uint64_t nonce,
 			   uint64_t cflags);
 
+  static uint64_t get_random_nonce();
+  static uint64_t get_pid_nonce();
+
   /**
    * create a new messenger
    *
@@ -233,7 +236,7 @@ public:
   }
 
   /**
-   * std::Set the name of the local entity. The name is reported to others and
+   * set the name of the local entity. The name is reported to others and
    * can be changed while the system is running, but doing so at incorrect
    * times may have bad results.
    *
@@ -242,7 +245,7 @@ public:
   void set_myname(const entity_name_t& m) { my_name = m; }
 
   /**
-   * std::Set the unknown address components for this Messenger.
+   * set the unknown address components for this Messenger.
    * This is useful if the Messenger doesn't know its full address just by
    * binding, but another Messenger on the same interface has already learned
    * its full address. This function does not fill in known address elements,
@@ -252,7 +255,7 @@ public:
    */
   virtual bool set_addr_unknowns(const entity_addrvec_t &addrs) = 0;
   /**
-   * std::Set the address for this Messenger. This is useful if the Messenger
+   * set the address for this Messenger. This is useful if the Messenger
    * binds to a specific address but advertises a different address on the
    * the network.
    *
@@ -282,7 +285,7 @@ public:
    * @{
    */
   /**
-   * std::Set the cluster protocol in use by this daemon.
+   * set the cluster protocol in use by this daemon.
    * This is an init-time function and cannot be called after calling
    * start() or bind().
    *
@@ -290,7 +293,7 @@ public:
    */
   virtual void set_cluster_protocol(int p) = 0;
   /**
-   * std::Set a policy which is applied to all peers who do not have a type-specific
+   * set a policy which is applied to all peers who do not have a type-specific
    * Policy.
    * This is an init-time function and cannot be called after calling
    * start() or bind().
@@ -299,7 +302,7 @@ public:
    */
   virtual void set_default_policy(Policy p) = 0;
   /**
-   * std::Set a policy which is applied to all peers of the given type.
+   * set a policy which is applied to all peers of the given type.
    * This is an init-time function and cannot be called after calling
    * start() or bind().
    *
@@ -308,7 +311,7 @@ public:
    */
   virtual void set_policy(int type, Policy p) = 0;
   /**
-   * std::Set the Policy associated with a type of peer.
+   * set the Policy associated with a type of peer.
    *
    * This can be called either on initial setup, or after connections
    * are already established.  However, the policies for existing
@@ -326,7 +329,7 @@ public:
    */
   virtual Policy get_default_policy() = 0;
   /**
-   * std::Set Throttlers applied to all Messages from the given type of peer
+   * set Throttlers applied to all Messages from the given type of peer
    *
    * This is an init-time function and cannot be called after calling
    * start() or bind().
@@ -339,7 +342,7 @@ public:
    */
   virtual void set_policy_throttlers(int type, Throttle *bytes, Throttle *msgs=NULL) = 0;
   /**
-   * std::Set the default send priority
+   * set the default send priority
    *
    * This is an init-time function and must be called *before* calling
    * start().
@@ -351,7 +354,7 @@ public:
     default_send_priority = p;
   }
   /**
-   * std::Set the priority(SO_PRIORITY) for all packets to be sent on this socket.
+   * set the priority(SO_PRIORITY) for all packets to be sent on this socket.
    *
    * Linux uses this value to order the networking queues: packets with a higher
    * priority may be processed first depending on the selected device queueing
@@ -413,6 +416,8 @@ public:
    */
   virtual int bind(const entity_addr_t& bind_addr) = 0;
 
+  virtual int bindv(const entity_addrvec_t& addrs);
+
   /**
    * This function performs a full restart of the Messenger component,
    * whatever that means.  Other entities who connect to this
@@ -429,10 +434,15 @@ public:
    * is true.
    * @param bind_addr The address to bind to.
    * @return 0 on success, or -1 on error, or -errno if
+   * we can be more specific about the failure.
    */
   virtual int client_bind(const entity_addr_t& bind_addr) = 0;
 
-  virtual int bindv(const entity_addrvec_t& addrs);
+  /**
+   * reset the 'client' Messenger. Mark all the existing Connections down
+   * and update 'nonce'.
+   */
+  virtual int client_reset() = 0;
 
 
   virtual bool should_use_msgr2() {
@@ -451,7 +461,7 @@ public:
    * Perform any resource allocation, thread startup, etc
    * that is required before attempting to connect to other
    * Messengers or transmit messages.
-   * Once this function completes, started shall be std::set to true.
+   * Once this function completes, started shall be set to true.
    *
    * @return 0 on success; -errno on failure.
    */
@@ -506,14 +516,6 @@ public:
     Message *m, const entity_addrvec_t& addrs) {
     return send_to(m, CEPH_ENTITY_TYPE_MDS, addrs);
   }
-  int send_to_osd(
-    Message *m, const entity_addrvec_t& addrs) {
-    return send_to(m, CEPH_ENTITY_TYPE_OSD, addrs);
-  }
-  int send_to_mgr(
-    Message *m, const entity_addrvec_t& addrs) {
-    return send_to(m, CEPH_ENTITY_TYPE_MGR, addrs);
-  }
 
   /**
    * @} // Messaging
@@ -532,18 +534,22 @@ public:
    */
   virtual ConnectionRef connect_to(
     int type, const entity_addrvec_t& dest,
-    bool anon=false) = 0;
-  ConnectionRef connect_to_mon(const entity_addrvec_t& dest, bool anon=false) {
-    return connect_to(CEPH_ENTITY_TYPE_MON, dest, anon);
+    bool anon=false, bool not_local_dest=false) = 0;
+  ConnectionRef connect_to_mon(const entity_addrvec_t& dest,
+      bool anon=false, bool not_local_dest=false) {
+	return connect_to(CEPH_ENTITY_TYPE_MON, dest, anon, not_local_dest);
   }
-  ConnectionRef connect_to_mds(const entity_addrvec_t& dest, bool anon=false) {
-    return connect_to(CEPH_ENTITY_TYPE_MDS, dest, anon);
+  ConnectionRef connect_to_mds(const entity_addrvec_t& dest,
+      bool anon=false, bool not_local_dest=false) {
+	return connect_to(CEPH_ENTITY_TYPE_MDS, dest, anon, not_local_dest);
   }
-  ConnectionRef connect_to_osd(const entity_addrvec_t& dest, bool anon=false) {
-    return connect_to(CEPH_ENTITY_TYPE_OSD, dest, anon);
+  ConnectionRef connect_to_osd(const entity_addrvec_t& dest,
+      bool anon=false, bool not_local_dest=false) {
+	return connect_to(CEPH_ENTITY_TYPE_OSD, dest, anon, not_local_dest);
   }
-  ConnectionRef connect_to_mgr(const entity_addrvec_t& dest, bool anon=false) {
-    return connect_to(CEPH_ENTITY_TYPE_MGR, dest, anon);
+  ConnectionRef connect_to_mgr(const entity_addrvec_t& dest,
+      bool anon=false, bool not_local_dest=false) {
+	return connect_to(CEPH_ENTITY_TYPE_MGR, dest, anon, not_local_dest);
   }
 
   /**
@@ -649,7 +655,7 @@ public:
    *
    * @param m The Message we are testing.
    */
-  bool ms_can_fast_dispatch(const cref_t<Message>& m) {
+  bool ms_can_fast_dispatch(const ceph::cref_t<Message>& m) {
     for (const auto &dispatcher : fast_dispatchers) {
       if (dispatcher->ms_can_fast_dispatch2(m))
 	return true;
@@ -663,7 +669,7 @@ public:
    * @param m The Message we are fast dispatching.
    * If none of our Dispatchers can handle it, ceph_abort().
    */
-  void ms_fast_dispatch(const ref_t<Message> &m) {
+  void ms_fast_dispatch(const ceph::ref_t<Message> &m) {
     m->set_dispatch_stamp(ceph_clock_now());
     for (const auto &dispatcher : fast_dispatchers) {
       if (dispatcher->ms_can_fast_dispatch2(m)) {
@@ -674,12 +680,12 @@ public:
     ceph_abort();
   }
   void ms_fast_dispatch(Message *m) {
-    return ms_fast_dispatch(ref_t<Message>(m, false)); /* consume ref */
+    return ms_fast_dispatch(ceph::ref_t<Message>(m, false)); /* consume ref */
   }
   /**
    *
    */
-  void ms_fast_preprocess(const ref_t<Message> &m) {
+  void ms_fast_preprocess(const ceph::ref_t<Message> &m) {
     for (const auto &dispatcher : fast_dispatchers) {
       dispatcher->ms_fast_preprocess2(m);
     }
@@ -691,7 +697,7 @@ public:
    *
    *  @param m The Message to deliver.
    */
-  void ms_deliver_dispatch(const ref_t<Message> &m) {
+  void ms_deliver_dispatch(const ceph::ref_t<Message> &m) {
     m->set_dispatch_stamp(ceph_clock_now());
     for (const auto &dispatcher : dispatchers) {
       if (dispatcher->ms_dispatch2(m))
@@ -702,7 +708,7 @@ public:
     ceph_assert(!cct->_conf->ms_die_on_unhandled_msg);
   }
   void ms_deliver_dispatch(Message *m) {
-    return ms_deliver_dispatch(ref_t<Message>(m, false)); /* consume ref */
+    return ms_deliver_dispatch(ceph::ref_t<Message>(m, false)); /* consume ref */
   }
   /**
    * Notify each Dispatcher of a new Connection. Call

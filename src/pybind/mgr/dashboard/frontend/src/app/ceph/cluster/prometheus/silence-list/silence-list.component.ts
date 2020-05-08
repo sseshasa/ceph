@@ -6,6 +6,7 @@ import { BsModalRef, BsModalService } from 'ngx-bootstrap/modal';
 import { Observable, Subscriber } from 'rxjs';
 
 import { PrometheusService } from '../../../../shared/api/prometheus.service';
+import { ListWithDetails } from '../../../../shared/classes/list-with-details.class';
 import { CriticalConfirmationModalComponent } from '../../../../shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
 import {
   ActionLabelsI18n,
@@ -24,7 +25,7 @@ import { AuthStorageService } from '../../../../shared/services/auth-storage.ser
 import { NotificationService } from '../../../../shared/services/notification.service';
 import { URLBuilderService } from '../../../../shared/services/url-builder.service';
 
-const BASE_URL = 'silence';
+const BASE_URL = 'monitoring/silence';
 
 @Component({
   providers: [{ provide: URLBuilderService, useValue: new URLBuilderService(BASE_URL) }],
@@ -32,7 +33,7 @@ const BASE_URL = 'silence';
   templateUrl: './silence-list.component.html',
   styleUrls: ['./silence-list.component.scss']
 })
-export class SilenceListComponent {
+export class SilenceListComponent extends ListWithDetails {
   silences: AlertmanagerSilence[] = [];
   columns: CdTableColumn[];
   tableActions: CdTableAction[];
@@ -57,6 +58,7 @@ export class SilenceListComponent {
     private actionLabels: ActionLabelsI18n,
     private succeededLabels: SucceededActionLabelsI18n
   ) {
+    super();
     this.permission = this.authStorageService.getPermissions().prometheus;
     const selectionExpired = (selection: CdTableSelection) =>
       selection.first() && selection.first().status && selection.first().status.state === 'expired';
@@ -65,6 +67,7 @@ export class SilenceListComponent {
         permission: 'create',
         icon: Icons.add,
         routerLink: () => this.urlBuilder.getCreate(),
+        preserveFragment: true,
         canBePrimary: (selection: CdTableSelection) => !selection.hasSingleSelection,
         name: this.actionLabels.CREATE
       },
@@ -79,6 +82,7 @@ export class SilenceListComponent {
           !selectionExpired(selection),
         icon: Icons.copy,
         routerLink: () => this.urlBuilder.getRecreate(this.selection.first().id),
+        preserveFragment: true,
         name: this.actionLabels.RECREATE
       },
       {
@@ -92,6 +96,7 @@ export class SilenceListComponent {
           (selection.first().cdExecuting && !selectionExpired(selection)) ||
           selectionExpired(selection),
         routerLink: () => this.urlBuilder.getEdit(this.selection.first().id),
+        preserveFragment: true,
         name: this.actionLabels.EDIT
       },
       {
@@ -165,6 +170,7 @@ export class SilenceListComponent {
     this.modalRef = this.modalService.show(CriticalConfirmationModalComponent, {
       initialState: {
         itemDescription: i18nSilence,
+        itemNames: [id],
         actionDescription: this.actionLabels.EXPIRE,
         submitActionObservable: () =>
           new Observable((observer: Subscriber<any>) => {

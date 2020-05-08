@@ -1,5 +1,6 @@
 import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 import { RouterTestingModule } from '@angular/router/testing';
 
 import { BsDropdownModule } from 'ngx-bootstrap/dropdown';
@@ -19,7 +20,6 @@ import { TableActionsComponent } from '../../../../shared/datatable/table-action
 import { NotificationType } from '../../../../shared/enum/notification-type.enum';
 import { NotificationService } from '../../../../shared/services/notification.service';
 import { SharedModule } from '../../../../shared/shared.module';
-import { PrometheusTabsComponent } from '../prometheus-tabs/prometheus-tabs.component';
 import { SilenceListComponent } from './silence-list.component';
 
 describe('SilenceListComponent', () => {
@@ -29,6 +29,7 @@ describe('SilenceListComponent', () => {
 
   configureTestBed({
     imports: [
+      BrowserAnimationsModule,
       SharedModule,
       BsDropdownModule.forRoot(),
       TabsModule.forRoot(),
@@ -37,7 +38,7 @@ describe('SilenceListComponent', () => {
       RouterTestingModule,
       HttpClientTestingModule
     ],
-    declarations: [SilenceListComponent, PrometheusTabsComponent],
+    declarations: [SilenceListComponent],
     providers: [i18nProviders]
   });
 
@@ -95,10 +96,8 @@ describe('SilenceListComponent', () => {
   });
 
   describe('expire silence', () => {
-    const setSelectedSilence = (silenceName: string) => {
-      component.selection.selected = [{ id: silenceName }];
-      component.selection.update();
-    };
+    const setSelectedSilence = (silenceName: string) =>
+      (component.selection.selected = [{ id: silenceName }]);
 
     const expireSilence = () => {
       component.expireSilence();
@@ -108,7 +107,7 @@ describe('SilenceListComponent', () => {
       deletion.callSubmitAction();
     };
 
-    const expectSilenceToExpire = (silenceId) => {
+    const expectSilenceToExpire = (silenceId: string) => {
       setSelectedSilence(silenceId);
       expireSilence();
       expect(prometheusService.expireSilence).toHaveBeenCalledWith(silenceId);

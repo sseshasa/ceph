@@ -6,6 +6,7 @@ import { BsModalRef, BsModalService } from 'ngx-bootstrap/modal';
 import { Subscription } from 'rxjs';
 
 import { NfsService } from '../../../shared/api/nfs.service';
+import { ListWithDetails } from '../../../shared/classes/list-with-details.class';
 import { CriticalConfirmationModalComponent } from '../../../shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
 import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
 import { TableComponent } from '../../../shared/datatable/table/table.component';
@@ -17,6 +18,7 @@ import { CdTableColumn } from '../../../shared/models/cd-table-column';
 import { CdTableSelection } from '../../../shared/models/cd-table-selection';
 import { FinishedTask } from '../../../shared/models/finished-task';
 import { Permission } from '../../../shared/models/permissions';
+import { Task } from '../../../shared/models/task';
 import { AuthStorageService } from '../../../shared/services/auth-storage.service';
 import { TaskListService } from '../../../shared/services/task-list.service';
 import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
@@ -27,7 +29,7 @@ import { TaskWrapperService } from '../../../shared/services/task-wrapper.servic
   styleUrls: ['./nfs-list.component.scss'],
   providers: [TaskListService]
 })
-export class NfsListComponent implements OnInit, OnDestroy {
+export class NfsListComponent extends ListWithDetails implements OnInit, OnDestroy {
   @ViewChild('nfsState', { static: false })
   nfsState: TemplateRef<any>;
   @ViewChild('nfsFsal', { static: true })
@@ -48,7 +50,7 @@ export class NfsListComponent implements OnInit, OnDestroy {
   modalRef: BsModalRef;
 
   builders = {
-    'nfs/create': (metadata) => {
+    'nfs/create': (metadata: any) => {
       return {
         path: metadata['path'],
         cluster_id: metadata['cluster_id'],
@@ -66,6 +68,7 @@ export class NfsListComponent implements OnInit, OnDestroy {
     private taskWrapper: TaskWrapperService,
     public actionLabels: ActionLabelsI18n
   ) {
+    super();
     this.permission = this.authStorageService.getPermissions().nfs;
     const getNfsUri = () =>
       this.selection.first() &&
@@ -170,8 +173,8 @@ export class NfsListComponent implements OnInit, OnDestroy {
   }
 
   prepareResponse(resp: any): any[] {
-    let result = [];
-    resp.forEach((nfs) => {
+    let result: any[] = [];
+    resp.forEach((nfs: any) => {
       nfs.id = `${nfs.cluster_id}:${nfs.export_id}`;
       nfs.state = 'LOADING';
       result = result.concat(nfs);
@@ -185,14 +188,14 @@ export class NfsListComponent implements OnInit, OnDestroy {
     this.viewCacheStatus = { status: ViewCacheStatus.ValueException };
   }
 
-  itemFilter(entry, task) {
+  itemFilter(entry: any, task: Task) {
     return (
       entry.cluster_id === task.metadata['cluster_id'] &&
       entry.export_id === task.metadata['export_id']
     );
   }
 
-  taskFilter(task) {
+  taskFilter(task: Task) {
     return ['nfs/create', 'nfs/delete', 'nfs/edit'].includes(task.name);
   }
 
@@ -206,7 +209,8 @@ export class NfsListComponent implements OnInit, OnDestroy {
 
     this.modalRef = this.modalService.show(CriticalConfirmationModalComponent, {
       initialState: {
-        itemDescription: this.i18n('NFS'),
+        itemDescription: this.i18n('NFS export'),
+        itemNames: [`${cluster_id}:${export_id}`],
         submitActionObservable: () =>
           this.taskWrapper.wrapTaskAroundCall({
             task: new FinishedTask('nfs/delete', {

@@ -108,6 +108,11 @@ which are as follows:
 :command:`bucket rewrite`
   Rewrite all objects in the specified bucket.
 
+:command:`bucket radoslist`
+  List the rados objects that contain the data for all objects is
+  the designated bucket, if --bucket=<bucket> is specified, or
+  otherwise all buckets.
+
 :command:`bucket reshard`
   Reshard a bucket.
 
@@ -399,13 +404,16 @@ which are as follows:
   Read data log status.
 
 :command:`orphans find`
-  Init and run search for leaked rados objects
+  Init and run search for leaked rados objects.
+  DEPRECATED. See the "rgw-orphan-list" tool.
 
 :command:`orphans finish`
-  Clean up search for leaked rados objects
+  Clean up search for leaked rados objects.
+  DEPRECATED. See the "rgw-orphan-list" tool.
 
 :command:`orphans list-jobs`
   List the current job-ids for the orphans search.
+  DEPRECATED. See the "rgw-orphan-list" tool.
 
 :command:`role create`
   create a new AWS role for use with STS.
@@ -728,6 +736,13 @@ Options
 
    Remove the zones from list of zones to sync from.
 
+.. option:: --bucket-index-max-shards
+
+   Override a zone's or zonegroup's default number of bucket index shards. This
+   option is accepted by the 'zone create', 'zone modify', 'zonegroup add',
+   and 'zonegroup modify' commands, and applies to buckets that are created
+   after the zone/zonegroup changes take effect.
+
 .. option:: --fix
 
 	Besides checking bucket index, will also fix it.
@@ -807,6 +822,13 @@ Options
    When specified with bucket deletion and bypass-gc set to true,
    ignores bucket index consistency.
 
+.. option:: --max-concurrent-ios
+
+        Maximum concurrent ios for bucket operations. Affects operations that
+        scan the bucket index, e.g., listing, deletion, and all scan/search
+        operations such as finding orphans or checking the bucket index.
+        Default is 32.
+
 Quota Options
 =============
 
@@ -838,11 +860,6 @@ Orphans Search Options
 .. option:: --job-id
 
         Set the job id (for orphans find)
-
-.. option:: --max-concurrent-ios
-
-        Maximum concurrent ios for orphans find.
-        Default is 32.
 
 
 Orphans list-jobs options

@@ -19,6 +19,7 @@
 #include "common/Timer.h"
 #include "common/ceph_mutex.h"
 #include "common/ceph_time.h"
+#include "include/common_fwd.h"
 #include "include/rados/librados.h"
 #include "include/rados/librados.hpp"
 #include "mon/MonClient.h"
@@ -29,7 +30,6 @@
 
 struct AuthAuthorizer;
 struct Context;
-class CephContext;
 struct Connection;
 class Message;
 class MLog;
@@ -150,6 +150,10 @@ public:
 	          bufferlist *outbl, string *outs);
   int mgr_command(const vector<string>& cmd, const bufferlist &inbl,
 	          bufferlist *outbl, string *outs);
+  int mgr_command(
+    const string& name,
+    const vector<string>& cmd, const bufferlist &inbl,
+    bufferlist *outbl, string *outs);
   int osd_command(int osd, vector<string>& cmd, const bufferlist& inbl,
                   bufferlist *poutbl, string *prs);
   int pg_command(pg_t pgid, vector<string>& cmd, const bufferlist& inbl,
@@ -162,6 +166,8 @@ public:
   void get();
   bool put();
   void blacklist_self(bool set);
+
+  std::string get_addrs() const;
 
   int service_daemon_register(
     const std::string& service,  ///< service name (e.g., 'rgw')

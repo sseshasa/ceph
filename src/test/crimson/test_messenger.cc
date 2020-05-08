@@ -1,3 +1,4 @@
+#include "common/ceph_argparse.h"
 #include "common/ceph_time.h"
 #include "messages/MPing.h"
 #include "messages/MCommand.h"
@@ -7,7 +8,6 @@
 #include "crimson/auth/DummyAuth.h"
 #include "crimson/common/log.h"
 #include "crimson/net/Connection.h"
-#include "crimson/net/Config.h"
 #include "crimson/net/Dispatcher.h"
 #include "crimson/net/Messenger.h"
 #include "crimson/net/Interceptor.h"
@@ -23,12 +23,15 @@
 #include <seastar/core/reactor.hh>
 #include <seastar/core/sleep.hh>
 
+#include "test_cmds.h"
+
 namespace bpo = boost::program_options;
+using crimson::common::local_conf;
 
 namespace {
 
 seastar::logger& logger() {
-  return ceph::get_logger(ceph_subsys_ms);
+  return crimson::get_logger(ceph_subsys_ms);
 }
 
 static std::random_device rd;
@@ -41,18 +44,11 @@ static seastar::future<> test_echo(unsigned rounds,
 {
   struct test_state {
     struct Server final
-        : public ceph::net::Dispatcher,
-          public seastar::peering_sharded_service<Server> {
-      ceph::net::Messenger *msgr = nullptr;
-      ceph::auth::DummyAuthClientServer dummy_auth;
+        : public crimson::net::Dispatcher {
+      crimson::net::MessengerRef msgr;
+      crimson::auth::DummyAuthClientServer dummy_auth;
 
-      Dispatcher* get_local_shard() override {
-        return &(container().local());
-      }
-      seastar::future<> stop() {
-        return seastar::make_ready_future<>();
-      }
-      seastar::future<> ms_dispatch(ceph::net::Connection* c,
+      seastar::future<> ms_dispatch(crimson::net::Connection* c,
                                     MessageRef m) override {
         if (verbose) {
           logger().info("server got {}", *m);
@@ -65,20 +61,14 @@ static seastar::future<> test_echo(unsigned rounds,
                              const std::string& lname,
                              const uint64_t nonce,
                              const entity_addr_t& addr) {
-        auto&& fut = ceph::net::Messenger::create(name, lname, nonce);
-        return fut.then([this, addr](ceph::net::Messenger *messenger) {
-            return container().invoke_on_all([messenger](auto& server) {
-                server.msgr = messenger->get_local_shard();
-                server.msgr->set_default_policy(ceph::net::SocketPolicy::stateless_server(0));
-                server.msgr->set_require_authorizer(false);
-                server.msgr->set_auth_client(&server.dummy_auth);
-                server.msgr->set_auth_server(&server.dummy_auth);
-              }).then([messenger, addr] {
-                return messenger->bind(entity_addrvec_t{addr});
-              }).then([this, messenger] {
-                return messenger->start(this);
-              });
-          });
+        msgr = crimson::net::Messenger::create(name, lname, nonce);
+        msgr->set_default_policy(crimson::net::SocketPolicy::stateless_server(0));
+        msgr->set_require_authorizer(false);
+        msgr->set_auth_client(&dummy_auth);
+        msgr->set_auth_server(&dummy_auth);
+        return msgr->bind(entity_addrvec_t{addr}).then([this] {
+          return msgr->start(this);
+        });
       }
       seastar::future<> shutdown() {
         ceph_assert(msgr);
@@ -87,9 +77,7 @@ static seastar::future<> test_echo(unsigned rounds,
     };
 
     struct Client final
-        : public ceph::net::Dispatcher,
-          public seastar::peering_sharded_service<Client> {
-
+        : public crimson::net::Dispatcher {
       struct PingSession : public seastar::enable_shared_from_this<PingSession> {
         unsigned count = 0u;
         mono_time connected_time;
@@ -99,16 +87,16 @@ static seastar::future<> test_echo(unsigned rounds,
 
       unsigned rounds;
       std::bernoulli_distribution keepalive_dist;
-      ceph::net::Messenger *msgr = nullptr;
-      std::map<ceph::net::Connection*, seastar::promise<>> pending_conns;
-      std::map<ceph::net::Connection*, PingSessionRef> sessions;
-      ceph::auth::DummyAuthClientServer dummy_auth;
+      crimson::net::MessengerRef msgr;
+      std::map<crimson::net::Connection*, seastar::promise<>> pending_conns;
+      std::map<crimson::net::Connection*, PingSessionRef> sessions;
+      crimson::auth::DummyAuthClientServer dummy_auth;
 
       Client(unsigned rounds, double keepalive_ratio)
         : rounds(rounds),
           keepalive_dist(std::bernoulli_distribution{keepalive_ratio}) {}
 
-      PingSessionRef find_session(ceph::net::Connection* c) {
+      PingSessionRef find_session(crimson::net::Connection* c) {
         auto found = sessions.find(c);
         if (found == sessions.end()) {
           ceph_assert(false);
@@ -116,13 +104,7 @@ static seastar::future<> test_echo(unsigned rounds,
         return found->second;
       }
 
-      Dispatcher* get_local_shard() override {
-        return &(container().local());
-      }
-      seastar::future<> stop() {
-        return seastar::now();
-      }
-      seastar::future<> ms_handle_connect(ceph::net::ConnectionRef conn) override {
+      seastar::future<> ms_handle_connect(crimson::net::ConnectionRef conn) override {
         auto session = seastar::make_shared<PingSession>();
         auto [i, added] = sessions.emplace(conn.get(), session);
         std::ignore = i;
@@ -130,7 +112,7 @@ static seastar::future<> test_echo(unsigned rounds,
         session->connected_time = mono_clock::now();
         return seastar::now();
       }
-      seastar::future<> ms_dispatch(ceph::net::Connection* c,
+      seastar::future<> ms_dispatch(crimson::net::Connection* c,
                                     MessageRef m) override {
         auto session = find_session(c);
         ++(session->count);
@@ -141,30 +123,21 @@ static seastar::future<> test_echo(unsigned rounds,
         if (session->count == rounds) {
           logger().info("{}: finished receiving {} pongs", *c, session->count);
           session->finish_time = mono_clock::now();
-          return container().invoke_on_all([c](auto &client) {
-              auto found = client.pending_conns.find(c);
-              ceph_assert(found != client.pending_conns.end());
-              found->second.set_value();
-            });
-        } else {
-          return seastar::now();
+          auto found = pending_conns.find(c);
+          ceph_assert(found != pending_conns.end());
+          found->second.set_value();
         }
+        return seastar::now();
       }
 
       seastar::future<> init(const entity_name_t& name,
                              const std::string& lname,
                              const uint64_t nonce) {
-        return ceph::net::Messenger::create(name, lname, nonce)
-          .then([this](ceph::net::Messenger *messenger) {
-            return container().invoke_on_all([messenger](auto& client) {
-                client.msgr = messenger->get_local_shard();
-                client.msgr->set_default_policy(ceph::net::SocketPolicy::lossy_client(0));
-                client.msgr->set_auth_client(&client.dummy_auth);
-                client.msgr->set_auth_server(&client.dummy_auth);
-              }).then([this, messenger] {
-                return messenger->start(this);
-              });
-          });
+        msgr = crimson::net::Messenger::create(name, lname, nonce);
+        msgr->set_default_policy(crimson::net::SocketPolicy::lossy_client(0));
+        msgr->set_auth_client(&dummy_auth);
+        msgr->set_auth_server(&dummy_auth);
+        return msgr->start(this);
       }
 
       seastar::future<> shutdown() {
@@ -172,169 +145,130 @@ static seastar::future<> test_echo(unsigned rounds,
         return msgr->shutdown();
       }
 
-      // Note: currently we don't support foreign dispatch a message because:
-      // 1. it is not effecient because each ref-count modification needs
-      //    a cross-core jump, so it should be discouraged.
-      // 2. messenger needs to be modified to hold a wrapper for the sending
-      //    message because it can be a nested seastar smart ptr or not.
-      // 3. in 1:1 mapping OSD, there is no need to do foreign dispatch.
-      seastar::future<> dispatch_pingpong(const entity_addr_t& peer_addr,
-					  bool foreign_dispatch) {
-#ifndef CRIMSON_MSGR_SEND_FOREIGN
-	ceph_assert(!foreign_dispatch);
-#endif
+      seastar::future<> dispatch_pingpong(const entity_addr_t& peer_addr) {
         mono_time start_time = mono_clock::now();
-        return msgr->connect(peer_addr, entity_name_t::TYPE_OSD)
-          .then([this, foreign_dispatch, start_time](auto conn) {
-            return seastar::futurize_apply([this, conn, foreign_dispatch] {
-                if (foreign_dispatch) {
-                  return do_dispatch_pingpong(&**conn);
-                } else {
-                  // NOTE: this could be faster if we don't switch cores in do_dispatch_pingpong().
-                  return container().invoke_on(conn->get()->shard_id(), [conn = &**conn](auto &client) {
-                      return client.do_dispatch_pingpong(conn);
-                    });
-                }
-              }).finally([this, conn, start_time] {
-                return container().invoke_on(conn->get()->shard_id(), [conn, start_time](auto &client) {
-                    auto session = client.find_session(&**conn);
-                    std::chrono::duration<double> dur_handshake = session->connected_time - start_time;
-                    std::chrono::duration<double> dur_pingpong = session->finish_time - session->connected_time;
-                    logger().info("{}: handshake {}, pingpong {}",
-                                  **conn, dur_handshake.count(), dur_pingpong.count());
-                  });
-              });
-          });
+        auto conn = msgr->connect(peer_addr, entity_name_t::TYPE_OSD);
+        return seastar::futurize_invoke([this, conn] {
+          return do_dispatch_pingpong(conn.get());
+        }).finally([this, conn, start_time] {
+          auto session = find_session(conn.get());
+          std::chrono::duration<double> dur_handshake = session->connected_time - start_time;
+          std::chrono::duration<double> dur_pingpong = session->finish_time - session->connected_time;
+          logger().info("{}: handshake {}, pingpong {}",
+                        *conn, dur_handshake.count(), dur_pingpong.count());
+        });
       }
 
      private:
-      seastar::future<> do_dispatch_pingpong(ceph::net::Connection* conn) {
-        return container().invoke_on_all([conn](auto& client) {
-            auto [i, added] = client.pending_conns.emplace(conn, seastar::promise<>());
-            std::ignore = i;
-            ceph_assert(added);
-          }).then([this, conn] {
-            return seastar::do_with(0u, 0u,
-                                    [this, conn](auto &count_ping, auto &count_keepalive) {
-                return seastar::do_until(
-                  [this, conn, &count_ping, &count_keepalive] {
-                    bool stop = (count_ping == rounds);
-                    if (stop) {
-                      logger().info("{}: finished sending {} pings with {} keepalives",
-                                    *conn, count_ping, count_keepalive);
-                    }
-                    return stop;
-                  },
-                  [this, conn, &count_ping, &count_keepalive] {
-                    return seastar::repeat([this, conn, &count_ping, &count_keepalive] {
-                        if (keepalive_dist(rng)) {
-                          return conn->keepalive()
-                            .then([&count_keepalive] {
-                              count_keepalive += 1;
-                              return seastar::make_ready_future<seastar::stop_iteration>(
-                                seastar::stop_iteration::no);
-                            });
-                        } else {
-                          return conn->send(make_message<MPing>())
-                            .then([&count_ping] {
-                              count_ping += 1;
-                              return seastar::make_ready_future<seastar::stop_iteration>(
-                                seastar::stop_iteration::yes);
-                            });
-                        }
+      seastar::future<> do_dispatch_pingpong(crimson::net::Connection* conn) {
+        auto [i, added] = pending_conns.emplace(conn, seastar::promise<>());
+        std::ignore = i;
+        ceph_assert(added);
+        return seastar::do_with(0u, 0u,
+            [this, conn](auto &count_ping, auto &count_keepalive) {
+          return seastar::do_until(
+            [this, conn, &count_ping, &count_keepalive] {
+              bool stop = (count_ping == rounds);
+              if (stop) {
+                logger().info("{}: finished sending {} pings with {} keepalives",
+                              *conn, count_ping, count_keepalive);
+              }
+              return stop;
+            },
+            [this, conn, &count_ping, &count_keepalive] {
+              return seastar::repeat([this, conn, &count_ping, &count_keepalive] {
+                  if (keepalive_dist(rng)) {
+                    return conn->keepalive()
+                      .then([&count_keepalive] {
+                        count_keepalive += 1;
+                        return seastar::make_ready_future<seastar::stop_iteration>(
+                          seastar::stop_iteration::no);
                       });
-                  }).then([this, conn] {
-                    auto found = pending_conns.find(conn);
-                    return found->second.get_future();
-                  });
-              });
-          });
+                  } else {
+                    return conn->send(make_message<MPing>())
+                      .then([&count_ping] {
+                        count_ping += 1;
+                        return seastar::make_ready_future<seastar::stop_iteration>(
+                          seastar::stop_iteration::yes);
+                      });
+                  }
+                });
+            }).then([this, conn] {
+              auto found = pending_conns.find(conn);
+              return found->second.get_future();
+            }
+          );
+        });
       }
     };
   };
 
   logger().info("test_echo(rounds={}, keepalive_ratio={}, v2={}):",
                 rounds, keepalive_ratio, v2);
+  auto server1 = seastar::make_shared<test_state::Server>();
+  auto server2 = seastar::make_shared<test_state::Server>();
+  auto client1 = seastar::make_shared<test_state::Client>(rounds, keepalive_ratio);
+  auto client2 = seastar::make_shared<test_state::Client>(rounds, keepalive_ratio);
+  // start servers and clients
+  entity_addr_t addr1;
+  addr1.parse("127.0.0.1:9010", nullptr);
+  entity_addr_t addr2;
+  addr2.parse("127.0.0.1:9011", nullptr);
+  if (v2) {
+    addr1.set_type(entity_addr_t::TYPE_MSGR2);
+    addr2.set_type(entity_addr_t::TYPE_MSGR2);
+  } else {
+    addr1.set_type(entity_addr_t::TYPE_LEGACY);
+    addr2.set_type(entity_addr_t::TYPE_LEGACY);
+  }
   return seastar::when_all_succeed(
-      ceph::net::create_sharded<test_state::Server>(),
-      ceph::net::create_sharded<test_state::Server>(),
-      ceph::net::create_sharded<test_state::Client>(rounds, keepalive_ratio),
-      ceph::net::create_sharded<test_state::Client>(rounds, keepalive_ratio))
-    .then([rounds, keepalive_ratio, v2](test_state::Server *server1,
-                                        test_state::Server *server2,
-                                        test_state::Client *client1,
-                                        test_state::Client *client2) {
-      // start servers and clients
-      entity_addr_t addr1;
-      addr1.parse("127.0.0.1:9010", nullptr);
-      entity_addr_t addr2;
-      addr2.parse("127.0.0.1:9011", nullptr);
-      if (v2) {
-        addr1.set_type(entity_addr_t::TYPE_MSGR2);
-        addr2.set_type(entity_addr_t::TYPE_MSGR2);
-      } else {
-        addr1.set_type(entity_addr_t::TYPE_LEGACY);
-        addr2.set_type(entity_addr_t::TYPE_LEGACY);
-      }
-      return seastar::when_all_succeed(
-          server1->init(entity_name_t::OSD(0), "server1", 1, addr1),
-          server2->init(entity_name_t::OSD(1), "server2", 2, addr2),
-          client1->init(entity_name_t::OSD(2), "client1", 3),
-          client2->init(entity_name_t::OSD(3), "client2", 4))
-      // dispatch pingpoing
-        .then([client1, client2, server1, server2] {
-          return seastar::when_all_succeed(
-              // test connecting in parallel, accepting in parallel
-#ifdef CRIMSON_MSGR_SEND_FOREIGN
-	      // operate the connection reference from a foreign core
-	      client1->dispatch_pingpong(server1->msgr->get_myaddr(), true),
-	      client2->dispatch_pingpong(server2->msgr->get_myaddr(), true),
-#endif
-	      // operate the connection reference from a local core
-              client1->dispatch_pingpong(server2->msgr->get_myaddr(), false),
-              client2->dispatch_pingpong(server1->msgr->get_myaddr(), false));
-      // shutdown
-        }).finally([client1] {
-          logger().info("client1 shutdown...");
-          return client1->shutdown();
-        }).finally([client2] {
-          logger().info("client2 shutdown...");
-          return client2->shutdown();
-        }).finally([server1] {
-          logger().info("server1 shutdown...");
-          return server1->shutdown();
-        }).finally([server2] {
-          logger().info("server2 shutdown...");
-          return server2->shutdown();
-        }).finally([] {
-          logger().info("test_echo() done!\n");
-        });
-    });
+      server1->init(entity_name_t::OSD(0), "server1", 1, addr1),
+      server2->init(entity_name_t::OSD(1), "server2", 2, addr2),
+      client1->init(entity_name_t::OSD(2), "client1", 3),
+      client2->init(entity_name_t::OSD(3), "client2", 4)
+  // dispatch pingpoing
+  ).then([client1, client2, server1, server2] {
+    return seastar::when_all_succeed(
+        // test connecting in parallel, accepting in parallel
+        client1->dispatch_pingpong(server2->msgr->get_myaddr()),
+        client2->dispatch_pingpong(server1->msgr->get_myaddr()));
+  // shutdown
+  }).finally([client1] {
+    logger().info("client1 shutdown...");
+    return client1->shutdown();
+  }).finally([client2] {
+    logger().info("client2 shutdown...");
+    return client2->shutdown();
+  }).finally([server1] {
+    logger().info("server1 shutdown...");
+    return server1->shutdown();
+  }).finally([server2] {
+    logger().info("server2 shutdown...");
+    return server2->shutdown();
+  }).finally([server1, server2, client1, client2] {
+    logger().info("test_echo() done!\n");
+  });
 }
 
 static seastar::future<> test_concurrent_dispatch(bool v2)
 {
   struct test_state {
     struct Server final
-      : public ceph::net::Dispatcher,
-        public seastar::peering_sharded_service<Server> {
-      ceph::net::Messenger *msgr = nullptr;
+      : public crimson::net::Dispatcher {
+      crimson::net::MessengerRef msgr;
       int count = 0;
       seastar::promise<> on_second; // satisfied on second dispatch
       seastar::promise<> on_done; // satisfied when first dispatch unblocks
-      ceph::auth::DummyAuthClientServer dummy_auth;
+      crimson::auth::DummyAuthClientServer dummy_auth;
 
-      seastar::future<> ms_dispatch(ceph::net::Connection* c,
+      seastar::future<> ms_dispatch(crimson::net::Connection* c,
                                     MessageRef m) override {
         switch (++count) {
         case 1:
           // block on the first request until we reenter with the second
-          return on_second.get_future()
-            .then([this] {
-              return container().invoke_on_all([](Server& server) {
-                  server.on_done.set_value();
-                });
-            });
+          return on_second.get_future().then([this] {
+            on_done.set_value();
+          });
         case 2:
           on_second.set_value();
           return seastar::now();
@@ -349,108 +283,75 @@ static seastar::future<> test_concurrent_dispatch(bool v2)
                              const std::string& lname,
                              const uint64_t nonce,
                              const entity_addr_t& addr) {
-        return ceph::net::Messenger::create(name, lname, nonce, 0)
-          .then([this, addr](ceph::net::Messenger *messenger) {
-            return container().invoke_on_all([messenger](auto& server) {
-                server.msgr = messenger->get_local_shard();
-                server.msgr->set_default_policy(ceph::net::SocketPolicy::stateless_server(0));
-                server.msgr->set_auth_client(&server.dummy_auth);
-                server.msgr->set_auth_server(&server.dummy_auth);
-              }).then([messenger, addr] {
-                return messenger->bind(entity_addrvec_t{addr});
-              }).then([this, messenger] {
-                return messenger->start(this);
-              });
-          });
-      }
-
-      Dispatcher* get_local_shard() override {
-        return &(container().local());
-      }
-      seastar::future<> stop() {
-        return seastar::make_ready_future<>();
+        msgr = crimson::net::Messenger::create(name, lname, nonce);
+        msgr->set_default_policy(crimson::net::SocketPolicy::stateless_server(0));
+        msgr->set_auth_client(&dummy_auth);
+        msgr->set_auth_server(&dummy_auth);
+        return msgr->bind(entity_addrvec_t{addr}).then([this] {
+          return msgr->start(this);
+        });
       }
     };
 
     struct Client final
-      : public ceph::net::Dispatcher,
-        public seastar::peering_sharded_service<Client> {
-      ceph::net::Messenger *msgr = nullptr;
-      ceph::auth::DummyAuthClientServer dummy_auth;
+      : public crimson::net::Dispatcher {
+      crimson::net::MessengerRef msgr;
+      crimson::auth::DummyAuthClientServer dummy_auth;
 
       seastar::future<> init(const entity_name_t& name,
                              const std::string& lname,
                              const uint64_t nonce) {
-        return ceph::net::Messenger::create(name, lname, nonce, 0)
-          .then([this](ceph::net::Messenger *messenger) {
-            return container().invoke_on_all([messenger](auto& client) {
-                client.msgr = messenger->get_local_shard();
-                client.msgr->set_default_policy(ceph::net::SocketPolicy::lossy_client(0));
-                client.msgr->set_auth_client(&client.dummy_auth);
-                client.msgr->set_auth_server(&client.dummy_auth);
-              }).then([this, messenger] {
-                return messenger->start(this);
-              });
-          });
-      }
-
-      Dispatcher* get_local_shard() override {
-        return &(container().local());
-      }
-      seastar::future<> stop() {
-        return seastar::make_ready_future<>();
+        msgr = crimson::net::Messenger::create(name, lname, nonce);
+        msgr->set_default_policy(crimson::net::SocketPolicy::lossy_client(0));
+        msgr->set_auth_client(&dummy_auth);
+        msgr->set_auth_server(&dummy_auth);
+        return msgr->start(this);
       }
     };
   };
 
   logger().info("test_concurrent_dispatch(v2={}):", v2);
+  auto server = seastar::make_shared<test_state::Server>();
+  auto client = seastar::make_shared<test_state::Client>();
+  entity_addr_t addr;
+  addr.parse("127.0.0.1:9010", nullptr);
+  if (v2) {
+    addr.set_type(entity_addr_t::TYPE_MSGR2);
+  } else {
+    addr.set_type(entity_addr_t::TYPE_LEGACY);
+  }
+  addr.set_family(AF_INET);
   return seastar::when_all_succeed(
-      ceph::net::create_sharded<test_state::Server>(),
-      ceph::net::create_sharded<test_state::Client>())
-    .then([v2](test_state::Server *server,
-             test_state::Client *client) {
-      entity_addr_t addr;
-      addr.parse("127.0.0.1:9010", nullptr);
-      if (v2) {
-        addr.set_type(entity_addr_t::TYPE_MSGR2);
-      } else {
-        addr.set_type(entity_addr_t::TYPE_LEGACY);
-      }
-      addr.set_family(AF_INET);
-      return seastar::when_all_succeed(
-          server->init(entity_name_t::OSD(4), "server3", 5, addr),
-          client->init(entity_name_t::OSD(5), "client3", 6))
-        .then([server, client] {
-          return client->msgr->connect(server->msgr->get_myaddr(),
+      server->init(entity_name_t::OSD(4), "server3", 5, addr),
+      client->init(entity_name_t::OSD(5), "client3", 6)
+  ).then([server, client] {
+    auto conn = client->msgr->connect(server->msgr->get_myaddr(),
                                       entity_name_t::TYPE_OSD);
-        }).then([](ceph::net::ConnectionXRef conn) {
-          // send two messages
-          return (*conn)->send(make_message<MPing>()).then([conn] {
-            return (*conn)->send(make_message<MPing>());
-          });
-        }).then([server] {
-          return server->wait();
-        }).finally([client] {
-          logger().info("client shutdown...");
-          return client->msgr->shutdown();
-        }).finally([server] {
-          logger().info("server shutdown...");
-          return server->msgr->shutdown();
-        }).finally([] {
-          logger().info("test_concurrent_dispatch() done!\n");
-        });
+    // send two messages
+    return conn->send(make_message<MPing>()).then([conn] {
+      return conn->send(make_message<MPing>());
     });
+  }).then([server] {
+    return server->wait();
+  }).finally([client] {
+    logger().info("client shutdown...");
+    return client->msgr->shutdown();
+  }).finally([server] {
+    logger().info("server shutdown...");
+    return server->msgr->shutdown();
+  }).finally([server, client] {
+    logger().info("test_concurrent_dispatch() done!\n");
+  });
 }
 
 seastar::future<> test_preemptive_shutdown(bool v2) {
   struct test_state {
     class Server final
-      : public ceph::net::Dispatcher,
-        public seastar::peering_sharded_service<Server> {
-      ceph::net::Messenger *msgr = nullptr;
-      ceph::auth::DummyAuthClientServer dummy_auth;
+      : public crimson::net::Dispatcher {
+      crimson::net::MessengerRef msgr;
+      crimson::auth::DummyAuthClientServer dummy_auth;
 
-      seastar::future<> ms_dispatch(ceph::net::Connection* c,
+      seastar::future<> ms_dispatch(crimson::net::Connection* c,
                                     MessageRef m) override {
         return c->send(make_message<MPing>());
       }
@@ -460,18 +361,12 @@ seastar::future<> test_preemptive_shutdown(bool v2) {
                              const std::string& lname,
                              const uint64_t nonce,
                              const entity_addr_t& addr) {
-        return ceph::net::Messenger::create(name, lname, nonce, seastar::engine().cpu_id()
-        ).then([this, addr](ceph::net::Messenger *messenger) {
-          return container().invoke_on_all([messenger](auto& server) {
-            server.msgr = messenger->get_local_shard();
-            server.msgr->set_default_policy(ceph::net::SocketPolicy::stateless_server(0));
-            server.msgr->set_auth_client(&server.dummy_auth);
-            server.msgr->set_auth_server(&server.dummy_auth);
-          }).then([messenger, addr] {
-            return messenger->bind(entity_addrvec_t{addr});
-          }).then([this, messenger] {
-            return messenger->start(this);
-          });
+        msgr = crimson::net::Messenger::create(name, lname, nonce);
+        msgr->set_default_policy(crimson::net::SocketPolicy::stateless_server(0));
+        msgr->set_auth_client(&dummy_auth);
+        msgr->set_auth_server(&dummy_auth);
+        return msgr->bind(entity_addrvec_t{addr}).then([this] {
+          return msgr->start(this);
         });
       }
       entity_addr_t get_addr() const {
@@ -480,24 +375,17 @@ seastar::future<> test_preemptive_shutdown(bool v2) {
       seastar::future<> shutdown() {
         return msgr->shutdown();
       }
-      Dispatcher* get_local_shard() override {
-        return &(container().local());
-      }
-      seastar::future<> stop() {
-        return seastar::now();
-      }
     };
 
     class Client final
-      : public ceph::net::Dispatcher,
-        public seastar::peering_sharded_service<Client> {
-      ceph::net::Messenger *msgr = nullptr;
-      ceph::auth::DummyAuthClientServer dummy_auth;
+      : public crimson::net::Dispatcher {
+      crimson::net::MessengerRef msgr;
+      crimson::auth::DummyAuthClientServer dummy_auth;
 
       bool stop_send = false;
       seastar::promise<> stopped_send_promise;
 
-      seastar::future<> ms_dispatch(ceph::net::Connection* c,
+      seastar::future<> ms_dispatch(crimson::net::Connection* c,
                                     MessageRef m) override {
         return seastar::now();
       }
@@ -506,32 +394,24 @@ seastar::future<> test_preemptive_shutdown(bool v2) {
       seastar::future<> init(const entity_name_t& name,
                              const std::string& lname,
                              const uint64_t nonce) {
-        return ceph::net::Messenger::create(name, lname, nonce, seastar::engine().cpu_id()
-        ).then([this](ceph::net::Messenger *messenger) {
-          return container().invoke_on_all([messenger](auto& client) {
-            client.msgr = messenger->get_local_shard();
-            client.msgr->set_default_policy(ceph::net::SocketPolicy::lossy_client(0));
-            client.msgr->set_auth_client(&client.dummy_auth);
-            client.msgr->set_auth_server(&client.dummy_auth);
-          }).then([this, messenger] {
-            return messenger->start(this);
-          });
-        });
+        msgr = crimson::net::Messenger::create(name, lname, nonce);
+        msgr->set_default_policy(crimson::net::SocketPolicy::lossy_client(0));
+        msgr->set_auth_client(&dummy_auth);
+        msgr->set_auth_server(&dummy_auth);
+        return msgr->start(this);
       }
-      seastar::future<> send_pings(const entity_addr_t& addr) {
-        return msgr->connect(addr, entity_name_t::TYPE_OSD
-        ).then([this](ceph::net::ConnectionXRef conn) {
-          // forwarded to stopped_send_promise
-          (void) seastar::do_until(
-            [this] { return stop_send; },
-            [this, conn = &**conn] {
-              return conn->send(make_message<MPing>()).then([] {
-                return seastar::sleep(0ms);
-              });
-            }
-          ).then_wrapped([this, conn] (auto fut) {
-            fut.forward_to(std::move(stopped_send_promise));
-          });
+      void send_pings(const entity_addr_t& addr) {
+        auto conn = msgr->connect(addr, entity_name_t::TYPE_OSD);
+        // forwarded to stopped_send_promise
+        (void) seastar::do_until(
+          [this] { return stop_send; },
+          [this, conn] {
+            return conn->send(make_message<MPing>()).then([] {
+              return seastar::sleep(0ms);
+            });
+          }
+        ).then_wrapped([this, conn] (auto fut) {
+          fut.forward_to(std::move(stopped_send_promise));
         });
       }
       seastar::future<> shutdown() {
@@ -540,60 +420,52 @@ seastar::future<> test_preemptive_shutdown(bool v2) {
           return stopped_send_promise.get_future();
         });
       }
-      Dispatcher* get_local_shard() override {
-        return &(container().local());
-      }
-      seastar::future<> stop() {
-        return seastar::now();
-      }
     };
   };
 
   logger().info("test_preemptive_shutdown(v2={}):", v2);
+  auto server = seastar::make_shared<test_state::Server>();
+  auto client = seastar::make_shared<test_state::Client>();
+  entity_addr_t addr;
+  addr.parse("127.0.0.1:9010", nullptr);
+  if (v2) {
+    addr.set_type(entity_addr_t::TYPE_MSGR2);
+  } else {
+    addr.set_type(entity_addr_t::TYPE_LEGACY);
+  }
+  addr.set_family(AF_INET);
   return seastar::when_all_succeed(
-    ceph::net::create_sharded<test_state::Server>(),
-    ceph::net::create_sharded<test_state::Client>()
-  ).then([v2](test_state::Server *server,
-             test_state::Client *client) {
-    entity_addr_t addr;
-    addr.parse("127.0.0.1:9010", nullptr);
-    if (v2) {
-      addr.set_type(entity_addr_t::TYPE_MSGR2);
-    } else {
-      addr.set_type(entity_addr_t::TYPE_LEGACY);
-    }
-    addr.set_family(AF_INET);
-    return seastar::when_all_succeed(
-      server->init(entity_name_t::OSD(6), "server4", 7, addr),
-      client->init(entity_name_t::OSD(7), "client4", 8)
-    ).then([server, client] {
-      return client->send_pings(server->get_addr());
-    }).then([] {
-      return seastar::sleep(100ms);
-    }).then([client] {
-      logger().info("client shutdown...");
-      return client->shutdown();
-    }).finally([server] {
-      logger().info("server shutdown...");
-      return server->shutdown();
-    }).finally([] {
-      logger().info("test_preemptive_shutdown() done!\n");
-    });
+    server->init(entity_name_t::OSD(6), "server4", 7, addr),
+    client->init(entity_name_t::OSD(7), "client4", 8)
+  ).then([server, client] {
+    client->send_pings(server->get_addr());
+    return seastar::sleep(100ms);
+  }).then([client] {
+    logger().info("client shutdown...");
+    return client->shutdown();
+  }).finally([server] {
+    logger().info("server shutdown...");
+    return server->shutdown();
+  }).finally([server, client] {
+    logger().info("test_preemptive_shutdown() done!\n");
   });
 }
 
 using ceph::msgr::v2::Tag;
-using ceph::net::bp_action_t;
-using ceph::net::bp_type_t;
-using ceph::net::Breakpoint;
-using ceph::net::Connection;
-using ceph::net::ConnectionRef;
-using ceph::net::custom_bp_t;
-using ceph::net::Dispatcher;
-using ceph::net::Interceptor;
-using ceph::net::Messenger;
-using ceph::net::SocketPolicy;
-using ceph::net::tag_bp_t;
+using crimson::net::bp_action_t;
+using crimson::net::bp_type_t;
+using crimson::net::Breakpoint;
+using crimson::net::Connection;
+using crimson::net::ConnectionRef;
+using crimson::net::custom_bp_t;
+using crimson::net::Dispatcher;
+using crimson::net::Interceptor;
+using crimson::net::Messenger;
+using crimson::net::MessengerRef;
+using crimson::net::SocketPolicy;
+using crimson::net::tag_bp_t;
+using ceph::net::test::cmd_t;
+using ceph::net::test::policy_t;
 
 struct counter_t { unsigned counter = 0; };
 
@@ -875,26 +747,6 @@ struct TestInterceptor : public Interceptor {
   }
 };
 
-enum class cmd_t : char {
-  none = '\0',
-  shutdown,
-  suite_start,
-  suite_stop,
-  suite_connect_me,
-  suite_send_me,
-  suite_recv_op
-};
-
-enum class policy_t : char {
-  none = '\0',
-  stateful_server,
-  stateless_server,
-  lossless_peer,
-  lossless_peer_reuse,
-  lossy_client,
-  lossless_client
-};
-
 SocketPolicy to_socket_policy(policy_t policy) {
   switch (policy) {
    case policy_t::stateful_server:
@@ -916,8 +768,8 @@ SocketPolicy to_socket_policy(policy_t policy) {
 }
 
 class FailoverSuite : public Dispatcher {
-  ceph::auth::DummyAuthClientServer dummy_auth;
-  Messenger& test_msgr;
+  crimson::auth::DummyAuthClientServer dummy_auth;
+  MessengerRef test_msgr;
   const entity_addr_t test_peer_addr;
   TestInterceptor interceptor;
 
@@ -959,7 +811,9 @@ class FailoverSuite : public Dispatcher {
       ceph_abort();
     }
 
-    if (tracked_conn && tracked_conn != conn) {
+    if (tracked_conn &&
+        !tracked_conn->is_closed() &&
+        tracked_conn != conn) {
       logger().error("[{}] {} got accepted, but there's already traced_conn [{}] {}",
                      result->index, *conn, tracked_index, *tracked_conn);
       ceph_abort();
@@ -993,7 +847,7 @@ class FailoverSuite : public Dispatcher {
     return seastar::now();
   }
 
-  seastar::future<> ms_handle_reset(ConnectionRef conn) override {
+  seastar::future<> ms_handle_reset(ConnectionRef conn, bool is_replace) override {
     auto result = interceptor.find_result(conn);
     if (result == nullptr) {
       logger().error("Untracked reset connection: {}", *conn);
@@ -1037,18 +891,20 @@ class FailoverSuite : public Dispatcher {
 
  private:
   seastar::future<> init(entity_addr_t addr, SocketPolicy policy) {
-    test_msgr.set_default_policy(policy);
-    test_msgr.set_auth_client(&dummy_auth);
-    test_msgr.set_auth_server(&dummy_auth);
-    test_msgr.interceptor = &interceptor;
-    return test_msgr.bind(entity_addrvec_t{addr}).then([this] {
-      return test_msgr.start(this);
+    test_msgr->set_default_policy(policy);
+    test_msgr->set_auth_client(&dummy_auth);
+    test_msgr->set_auth_server(&dummy_auth);
+    test_msgr->interceptor = &interceptor;
+    return test_msgr->bind(entity_addrvec_t{addr}).then([this] {
+      return test_msgr->start(this);
     });
   }
 
-  seastar::future<> send_op() {
+  seastar::future<> send_op(bool expect_reply=true) {
     ceph_assert(tracked_conn);
-    ++pending_peer_receive;
+    if (expect_reply) {
+      ++pending_peer_receive;
+    }
     pg_t pgid;
     object_locator_t oloc;
     hobject_t hobj(object_t(), oloc.key, CEPH_NOSNAP, pgid.ps(),
@@ -1077,7 +933,7 @@ class FailoverSuite : public Dispatcher {
     unsigned pending_establish = 0;
     unsigned replaced_conns = 0;
     for (auto& result : interceptor.results) {
-      if (result.conn->is_closed()) {
+      if (result.conn->is_closed_clean()) {
         if (result.state == conn_state_t::replaced) {
           ++replaced_conns;
         }
@@ -1149,15 +1005,19 @@ class FailoverSuite : public Dispatcher {
 
  // called by FailoverTest
  public:
-  FailoverSuite(Messenger& test_msgr,
+  FailoverSuite(MessengerRef test_msgr,
                 entity_addr_t test_peer_addr,
                 const TestInterceptor& interceptor)
     : test_msgr(test_msgr),
       test_peer_addr(test_peer_addr),
       interceptor(interceptor) { }
 
+  entity_addr_t get_addr() const {
+    return test_msgr->get_myaddr();
+  }
+
   seastar::future<> shutdown() {
-    return test_msgr.shutdown();
+    return test_msgr->shutdown();
   }
 
   void needs_receive() {
@@ -1201,17 +1061,12 @@ class FailoverSuite : public Dispatcher {
          SocketPolicy test_policy,
          entity_addr_t test_peer_addr,
          const TestInterceptor& interceptor) {
-    return Messenger::create(entity_name_t::OSD(2), "Test", 2, 0
-    ).then([test_addr,
-            test_policy,
-            test_peer_addr,
-            interceptor] (Messenger* test_msgr) {
-      auto suite = std::make_unique<FailoverSuite>(
-          *test_msgr, test_peer_addr, interceptor);
-      return suite->init(test_addr, test_policy
-      ).then([suite = std::move(suite)] () mutable {
-        return std::move(suite);
-      });
+    auto suite = std::make_unique<FailoverSuite>(
+        Messenger::create(entity_name_t::OSD(2), "Test", 2),
+        test_peer_addr, interceptor);
+    return suite->init(test_addr, test_policy
+    ).then([suite = std::move(suite)] () mutable {
+      return std::move(suite);
     });
   }
 
@@ -1219,19 +1074,26 @@ class FailoverSuite : public Dispatcher {
  public:
   seastar::future<> connect_peer() {
     logger().info("[Test] connect_peer({})", test_peer_addr);
-    ceph_assert(!tracked_conn);
-    return test_msgr.connect(test_peer_addr, entity_name_t::TYPE_OSD
-    ).then([this] (auto xconn) {
-      ceph_assert(!tracked_conn);
+    auto conn = test_msgr->connect(test_peer_addr, entity_name_t::TYPE_OSD);
+    auto result = interceptor.find_result(conn);
+    ceph_assert(result != nullptr);
 
-      auto conn = xconn->release();
-      auto result = interceptor.find_result(conn);
-      ceph_assert(result != nullptr);
+    if (tracked_conn) {
+      if (tracked_conn->is_closed()) {
+        ceph_assert(tracked_conn != conn);
+        logger().info("[Test] this is a new session replacing an closed one");
+      } else {
+        ceph_assert(tracked_index == result->index);
+        ceph_assert(tracked_conn == conn);
+        logger().info("[Test] this is not a new session");
+      }
+    } else {
+      logger().info("[Test] this is a new session");
+    }
+    tracked_index = result->index;
+    tracked_conn = conn;
 
-      tracked_index = result->index;
-      tracked_conn = conn;
-      return flush_pending_send();
-    });
+    return flush_pending_send();
   }
 
   seastar::future<> send_peer() {
@@ -1244,6 +1106,25 @@ class FailoverSuite : public Dispatcher {
       logger().info("[Test] send_peer() (pending {})", pending_send);
       return seastar::now();
     }
+  }
+
+  seastar::future<> keepalive_peer() {
+    logger().info("[Test] keepalive_peer()");
+    ceph_assert(tracked_conn);
+    return tracked_conn->keepalive();
+  }
+
+  seastar::future<> try_send_peer() {
+    logger().info("[Test] try_send_peer()");
+    ceph_assert(tracked_conn);
+    return send_op(false);
+  }
+
+  seastar::future<> markdown() {
+    logger().info("[Test] markdown()");
+    ceph_assert(tracked_conn);
+    tracked_conn->mark_down();
+    return seastar::now();
   }
 
   seastar::future<> wait_blocked() {
@@ -1273,11 +1154,16 @@ class FailoverSuite : public Dispatcher {
       return std::reference_wrapper<ConnResults>(interceptor.results);
     });
   }
+
+  bool is_standby() {
+    ceph_assert(tracked_conn);
+    return !(tracked_conn->is_connected() || tracked_conn->is_closed());
+  }
 };
 
 class FailoverTest : public Dispatcher {
-  ceph::auth::DummyAuthClientServer dummy_auth;
-  Messenger& cmd_msgr;
+  crimson::auth::DummyAuthClientServer dummy_auth;
+  MessengerRef cmd_msgr;
   ConnectionRef cmd_conn;
   const entity_addr_t test_addr;
   const entity_addr_t test_peer_addr;
@@ -1350,19 +1236,18 @@ class FailoverTest : public Dispatcher {
   }
 
   seastar::future<> init(entity_addr_t cmd_peer_addr) {
-    cmd_msgr.set_default_policy(SocketPolicy::lossy_client(0));
-    cmd_msgr.set_auth_client(&dummy_auth);
-    cmd_msgr.set_auth_server(&dummy_auth);
-    return cmd_msgr.start(this).then([this, cmd_peer_addr] {
-      return cmd_msgr.connect(cmd_peer_addr, entity_name_t::TYPE_OSD);
-    }).then([this] (auto conn) {
-      cmd_conn = conn->release();
+    cmd_msgr->set_default_policy(SocketPolicy::lossy_client(0));
+    cmd_msgr->set_auth_client(&dummy_auth);
+    cmd_msgr->set_auth_server(&dummy_auth);
+    return cmd_msgr->start(this).then([this, cmd_peer_addr] {
+      logger().info("CmdCli connect to CmdSrv({}) ...", cmd_peer_addr);
+      cmd_conn = cmd_msgr->connect(cmd_peer_addr, entity_name_t::TYPE_OSD);
       return pingpong();
     });
   }
 
  public:
-  FailoverTest(Messenger& cmd_msgr,
+  FailoverTest(MessengerRef cmd_msgr,
                entity_addr_t test_addr,
                entity_addr_t test_peer_addr)
     : cmd_msgr(cmd_msgr),
@@ -1377,24 +1262,23 @@ class FailoverTest : public Dispatcher {
     return cmd_conn->send(m).then([this] {
       return seastar::sleep(200ms);
     }).finally([this] {
-      return cmd_msgr.shutdown();
+      return cmd_msgr->shutdown();
     });
   }
 
   static seastar::future<seastar::lw_shared_ptr<FailoverTest>>
   create(entity_addr_t cmd_peer_addr, entity_addr_t test_addr) {
-    assert(cmd_peer_addr.is_msgr2());
-    return Messenger::create(entity_name_t::OSD(1), "CmdCli", 1, 0
-    ).then([cmd_peer_addr, test_addr] (Messenger* cmd_msgr) {
-      entity_addr_t test_peer_addr = cmd_peer_addr;
-      test_peer_addr.set_port(cmd_peer_addr.get_port() + 1);
-      test_peer_addr.set_nonce(4);
-      auto test = seastar::make_lw_shared<FailoverTest>(
-          *cmd_msgr, test_addr, test_peer_addr);
-      return test->init(cmd_peer_addr).then([test] {
-        logger().info("CmdCli ready");
-        return test;
-      });
+    test_addr.set_nonce(2);
+    cmd_peer_addr.set_nonce(3);
+    entity_addr_t test_peer_addr = cmd_peer_addr;
+    test_peer_addr.set_port(cmd_peer_addr.get_port() + 1);
+    test_peer_addr.set_nonce(4);
+    auto test = seastar::make_lw_shared<FailoverTest>(
+        Messenger::create(entity_name_t::OSD(1), "CmdCli", 1),
+        test_addr, test_peer_addr);
+    return test->init(cmd_peer_addr).then([test] {
+      logger().info("CmdCli ready");
+      return test;
     });
   }
 
@@ -1412,6 +1296,7 @@ class FailoverTest : public Dispatcher {
     return FailoverSuite::create(
         test_addr, test_policy_, test_peer_addr, interceptor
     ).then([this, peer_policy, f = std::move(f)] (auto suite) mutable {
+      ceph_assert(suite->get_addr() == test_addr);
       test_suite.swap(suite);
       return start_peer(peer_policy).then([this, f = std::move(f)] {
         return f(*test_suite);
@@ -1447,18 +1332,38 @@ class FailoverTest : public Dispatcher {
     return prepare_cmd(cmd_t::suite_send_me);
   }
 
+  seastar::future<> try_peer_send_me() {
+    logger().info("[Test] try_peer_send_me()");
+    ceph_assert(test_suite);
+    return prepare_cmd(cmd_t::suite_send_me);
+  }
+
   seastar::future<> send_bidirectional() {
     ceph_assert(test_suite);
     return test_suite->send_peer().then([this] {
       return peer_send_me();
     });
   }
+
+  seastar::future<> peer_keepalive_me() {
+    logger().info("[Test] peer_keepalive_me()");
+    ceph_assert(test_suite);
+    return prepare_cmd(cmd_t::suite_keepalive_me);
+  }
+
+  seastar::future<> markdown_peer() {
+    logger().info("[Test] markdown_peer()");
+    return prepare_cmd(cmd_t::suite_markdown).then([] {
+      // sleep awhile for peer markdown propagated
+      return seastar::sleep(100ms);
+    });
+  }
 };
 
 class FailoverSuitePeer : public Dispatcher {
   using cb_t = std::function<seastar::future<>()>;
-  ceph::auth::DummyAuthClientServer dummy_auth;
-  Messenger& peer_msgr;
+  crimson::auth::DummyAuthClientServer dummy_auth;
+  MessengerRef peer_msgr;
   cb_t op_callback;
 
   ConnectionRef tracked_conn;
@@ -1472,12 +1377,16 @@ class FailoverSuitePeer : public Dispatcher {
   }
 
   seastar::future<> ms_handle_accept(ConnectionRef conn) override {
-    ceph_assert(!tracked_conn || tracked_conn == conn);
+    logger().info("[TestPeer] got accept from Test");
+    ceph_assert(!tracked_conn ||
+                tracked_conn->is_closed() ||
+                tracked_conn == conn);
     tracked_conn = conn;
     return flush_pending_send();
   }
 
-  seastar::future<> ms_handle_reset(ConnectionRef conn) override {
+  seastar::future<> ms_handle_reset(ConnectionRef conn, bool is_replace) override {
+    logger().info("[TestPeer] got reset from Test");
     ceph_assert(tracked_conn == conn);
     tracked_conn = nullptr;
     return seastar::now();
@@ -1485,11 +1394,11 @@ class FailoverSuitePeer : public Dispatcher {
 
  private:
   seastar::future<> init(entity_addr_t addr, SocketPolicy policy) {
-    peer_msgr.set_default_policy(policy);
-    peer_msgr.set_auth_client(&dummy_auth);
-    peer_msgr.set_auth_server(&dummy_auth);
-    return peer_msgr.bind(entity_addrvec_t{addr}).then([this] {
-      return peer_msgr.start(this);
+    peer_msgr->set_default_policy(policy);
+    peer_msgr->set_auth_client(&dummy_auth);
+    peer_msgr->set_auth_server(&dummy_auth);
+    return peer_msgr->bind(entity_addrvec_t{addr}).then([this] {
+      return peer_msgr->start(this);
     });
   }
 
@@ -1517,22 +1426,30 @@ class FailoverSuitePeer : public Dispatcher {
   }
 
  public:
-  FailoverSuitePeer(Messenger& peer_msgr, cb_t op_callback)
+  FailoverSuitePeer(MessengerRef peer_msgr, cb_t op_callback)
     : peer_msgr(peer_msgr), op_callback(op_callback) { }
 
   seastar::future<> shutdown() {
-    return peer_msgr.shutdown();
+    return peer_msgr->shutdown();
   }
 
   seastar::future<> connect_peer(entity_addr_t addr) {
     logger().info("[TestPeer] connect_peer({})", addr);
-    ceph_assert(!tracked_conn);
-    return peer_msgr.connect(addr, entity_name_t::TYPE_OSD
-    ).then([this] (auto xconn) {
-      ceph_assert(!tracked_conn);
-      tracked_conn = xconn->release();
-      return flush_pending_send();
-    });
+    auto new_tracked_conn = peer_msgr->connect(addr, entity_name_t::TYPE_OSD);
+    if (tracked_conn) {
+      if (tracked_conn->is_closed()) {
+        ceph_assert(tracked_conn != new_tracked_conn);
+        logger().info("[TestPeer] this is a new session"
+                      " replacing an closed one");
+      } else {
+        ceph_assert(tracked_conn == new_tracked_conn);
+        logger().info("[TestPeer] this is not a new session");
+      }
+    } else {
+      logger().info("[TestPeer] this is a new session");
+    }
+    tracked_conn = new_tracked_conn;
+    return flush_pending_send();
   }
 
   seastar::future<> send_peer() {
@@ -1546,23 +1463,35 @@ class FailoverSuitePeer : public Dispatcher {
     }
   }
 
+  seastar::future<> keepalive_peer() {
+    logger().info("[TestPeer] keepalive_peer()");
+    ceph_assert(tracked_conn);
+    return tracked_conn->keepalive();
+  }
+
+  seastar::future<> markdown() {
+    logger().info("[TestPeer] markdown()");
+    ceph_assert(tracked_conn);
+    tracked_conn->mark_down();
+    return seastar::now();
+  }
+
   static seastar::future<std::unique_ptr<FailoverSuitePeer>>
   create(entity_addr_t addr, const SocketPolicy& policy, cb_t op_callback) {
-    return Messenger::create(entity_name_t::OSD(4), "TestPeer", 4, 0
-    ).then([addr, policy, op_callback] (Messenger* peer_msgr) {
-      auto suite = std::make_unique<FailoverSuitePeer>(*peer_msgr, op_callback);
-      return suite->init(addr, policy
-      ).then([suite = std::move(suite)] () mutable {
-        return std::move(suite);
-      });
+    auto suite = std::make_unique<FailoverSuitePeer>(
+        Messenger::create(entity_name_t::OSD(4), "TestPeer", 4), op_callback);
+    return suite->init(addr, policy
+    ).then([suite = std::move(suite)] () mutable {
+      return std::move(suite);
     });
   }
 };
 
 class FailoverTestPeer : public Dispatcher {
-  ceph::auth::DummyAuthClientServer dummy_auth;
-  Messenger& cmd_msgr;
+  crimson::auth::DummyAuthClientServer dummy_auth;
+  MessengerRef cmd_msgr;
   ConnectionRef cmd_conn;
+  const entity_addr_t test_peer_addr;
   std::unique_ptr<FailoverSuitePeer> test_suite;
 
   seastar::future<> ms_dispatch(Connection* c, MessageRef m) override {
@@ -1576,7 +1505,7 @@ class FailoverTestPeer : public Dispatcher {
       if (cmd == cmd_t::shutdown) {
         logger().info("CmdSrv shutdown...");
         // forwarded to FailoverTestPeer::wait()
-        (void) cmd_msgr.shutdown();
+        (void) cmd_msgr->shutdown();
         return seastar::now();
       }
       return handle_cmd(cmd, m_cmd).then([c] {
@@ -1606,9 +1535,6 @@ class FailoverTestPeer : public Dispatcher {
     switch (cmd) {
      case cmd_t::suite_start: {
       ceph_assert(!test_suite);
-      // suite bind to cmd_addr, with port + 1
-      auto test_peer_addr = get_addr();
-      test_peer_addr.set_port(get_addr().get_port() + 1);
       auto policy = to_socket_policy(static_cast<policy_t>(m_cmd->cmd[1][0]));
       return FailoverSuitePeer::create(test_peer_addr, policy,
                                        [this] { return notify_recv_op(); }
@@ -1630,6 +1556,12 @@ class FailoverTestPeer : public Dispatcher {
      case cmd_t::suite_send_me:
       ceph_assert(test_suite);
       return test_suite->send_peer();
+     case cmd_t::suite_keepalive_me:
+      ceph_assert(test_suite);
+      return test_suite->keepalive_peer();
+     case cmd_t::suite_markdown:
+      ceph_assert(test_suite);
+      return test_suite->markdown();
      default:
       logger().error("TestPeer got unexpected command {} from Test", m_cmd);
       ceph_abort();
@@ -1637,38 +1569,36 @@ class FailoverTestPeer : public Dispatcher {
     }
   }
 
-  seastar::future<> init(entity_addr_t cmd_addr) {
-    cmd_msgr.set_default_policy(SocketPolicy::stateless_server(0));
-    cmd_msgr.set_auth_client(&dummy_auth);
-    cmd_msgr.set_auth_server(&dummy_auth);
-    return cmd_msgr.bind(entity_addrvec_t{cmd_addr}).then([this] {
-      return cmd_msgr.start(this);
+  seastar::future<> init(entity_addr_t cmd_peer_addr) {
+    cmd_msgr->set_default_policy(SocketPolicy::stateless_server(0));
+    cmd_msgr->set_auth_client(&dummy_auth);
+    cmd_msgr->set_auth_server(&dummy_auth);
+    return cmd_msgr->bind(entity_addrvec_t{cmd_peer_addr}).then([this] {
+      return cmd_msgr->start(this);
     });
   }
 
  public:
-  FailoverTestPeer(Messenger& cmd_msgr)
-    : cmd_msgr(cmd_msgr) { }
-
-  entity_addr_t get_addr() const {
-    return cmd_msgr.get_myaddr();
-  }
+  FailoverTestPeer(MessengerRef cmd_msgr,
+                   entity_addr_t test_peer_addr)
+    : cmd_msgr(cmd_msgr),
+      test_peer_addr(test_peer_addr) { }
 
   seastar::future<> wait() {
-    return cmd_msgr.wait();
+    return cmd_msgr->wait();
   }
 
-  static seastar::future<std::unique_ptr<FailoverTestPeer>> create() {
-    return Messenger::create(entity_name_t::OSD(3), "CmdSrv", 3, 0
-    ).then([] (Messenger* cmd_msgr) {
-      entity_addr_t cmd_addr;
-      cmd_addr.parse("v2:127.0.0.1:9011", nullptr);
-      auto test_peer = std::make_unique<FailoverTestPeer>(*cmd_msgr);
-      return test_peer->init(cmd_addr
-      ).then([test_peer = std::move(test_peer)] () mutable {
-        logger().info("CmdSrv ready");
-        return std::move(test_peer);
-      });
+  static seastar::future<std::unique_ptr<FailoverTestPeer>>
+  create(entity_addr_t cmd_peer_addr) {
+    // suite bind to cmd_peer_addr, with port + 1
+    entity_addr_t test_peer_addr = cmd_peer_addr;
+    test_peer_addr.set_port(cmd_peer_addr.get_port() + 1);
+    auto test_peer = std::make_unique<FailoverTestPeer>(
+        Messenger::create(entity_name_t::OSD(3), "CmdSrv", 3), test_peer_addr);
+    return test_peer->init(cmd_peer_addr
+    ).then([test_peer = std::move(test_peer)] () mutable {
+      logger().info("CmdSrv ready");
+      return std::move(test_peer);
     });
   }
 };
@@ -1696,7 +1626,7 @@ test_v2_lossy_early_connect_fault(FailoverTest& test) {
           policy_t::lossy_client,
           policy_t::stateless_server,
           [&test] (FailoverSuite& suite) {
-        return seastar::futurize_apply([&suite] {
+        return seastar::futurize_invoke([&suite] {
           return suite.send_peer();
         }).then([&suite] {
           return suite.connect_peer();
@@ -1728,7 +1658,7 @@ test_v2_lossy_connect_fault(FailoverTest& test) {
           policy_t::lossy_client,
           policy_t::stateless_server,
           [&test] (FailoverSuite& suite) {
-        return seastar::futurize_apply([&suite] {
+        return seastar::futurize_invoke([&suite] {
           return suite.send_peer();
         }).then([&suite] {
           return suite.connect_peer();
@@ -1760,7 +1690,7 @@ test_v2_lossy_connected_fault(FailoverTest& test) {
           policy_t::lossy_client,
           policy_t::stateless_server,
           [&test] (FailoverSuite& suite) {
-        return seastar::futurize_apply([&test] {
+        return seastar::futurize_invoke([&test] {
           return test.send_bidirectional();
         }).then([&suite] {
           return suite.connect_peer();
@@ -1799,7 +1729,7 @@ test_v2_lossy_early_accept_fault(FailoverTest& test) {
           policy_t::stateless_server,
           policy_t::lossy_client,
           [&test] (FailoverSuite& suite) {
-        return seastar::futurize_apply([&test] {
+        return seastar::futurize_invoke([&test] {
           return test.peer_send_me();
         }).then([&test] {
           return test.peer_connect_me();
@@ -1831,7 +1761,7 @@ test_v2_lossy_accept_fault(FailoverTest& test) {
       policy_t::stateless_server,
       policy_t::lossy_client,
       [&test] (FailoverSuite& suite) {
-    return seastar::futurize_apply([&test] {
+    return seastar::futurize_invoke([&test] {
       return test.peer_send_me();
     }).then([&test] {
       return test.peer_connect_me();
@@ -1861,7 +1791,7 @@ test_v2_lossy_establishing_fault(FailoverTest& test) {
       policy_t::stateless_server,
       policy_t::lossy_client,
       [&test] (FailoverSuite& suite) {
-    return seastar::futurize_apply([&test] {
+    return seastar::futurize_invoke([&test] {
       return test.peer_send_me();
     }).then([&test] {
       return test.peer_connect_me();
@@ -1895,7 +1825,7 @@ test_v2_lossy_accepted_fault(FailoverTest& test) {
           policy_t::stateless_server,
           policy_t::lossy_client,
           [&test] (FailoverSuite& suite) {
-        return seastar::futurize_apply([&test] {
+        return seastar::futurize_invoke([&test] {
           return test.send_bidirectional();
         }).then([&test] {
           return test.peer_connect_me();
@@ -1927,7 +1857,7 @@ test_v2_lossless_connect_fault(FailoverTest& test) {
           policy_t::lossless_client,
           policy_t::stateful_server,
           [&test] (FailoverSuite& suite) {
-        return seastar::futurize_apply([&test] {
+        return seastar::futurize_invoke([&test] {
           return test.send_bidirectional();
         }).then([&suite] {
           return suite.connect_peer();
@@ -1959,10 +1889,66 @@ test_v2_lossless_connected_fault(FailoverTest& test) {
           policy_t::lossless_client,
           policy_t::stateful_server,
           [&test] (FailoverSuite& suite) {
-        return seastar::futurize_apply([&test] {
+        return seastar::futurize_invoke([&test] {
           return test.send_bidirectional();
         }).then([&suite] {
           return suite.connect_peer();
+        }).then([&suite] {
+          return suite.wait_results(1);
+        }).then([] (ConnResults& results) {
+          results[0].assert_state_at(conn_state_t::established);
+          results[0].assert_connect(2, 1, 1, 2);
+          results[0].assert_accept(0, 0, 0, 0);
+          results[0].assert_reset(0, 0);
+        });
+      });
+    });
+  });
+}
+
+seastar::future<>
+test_v2_lossless_connected_fault2(FailoverTest& test) {
+  return seastar::do_with(std::vector<Breakpoint>{
+      {Tag::ACK, bp_type_t::READ},
+      {Tag::ACK, bp_type_t::WRITE},
+      {Tag::KEEPALIVE2, bp_type_t::READ},
+      {Tag::KEEPALIVE2, bp_type_t::WRITE},
+      {Tag::KEEPALIVE2_ACK, bp_type_t::READ},
+      {Tag::KEEPALIVE2_ACK, bp_type_t::WRITE},
+  }, [&test] (auto& failure_cases) {
+    return seastar::do_for_each(failure_cases, [&test] (auto bp) {
+      TestInterceptor interceptor;
+      interceptor.make_fault(bp);
+      return test.run_suite(
+          fmt::format("test_v2_lossless_connected_fault2 -- {}", bp),
+          interceptor,
+          policy_t::lossless_client,
+          policy_t::stateful_server,
+          [&test] (FailoverSuite& suite) {
+        return seastar::futurize_invoke([&suite] {
+          return suite.connect_peer();
+        }).then([&suite] {
+          return suite.wait_established();
+        }).then([&suite] {
+          return suite.send_peer();
+        }).then([&suite] {
+          return suite.keepalive_peer();
+        }).then([&suite] {
+          return suite.wait_established();
+        }).then([&test] {
+          return test.peer_send_me();
+        }).then([&test] {
+          return test.peer_keepalive_me();
+        }).then([&suite] {
+          return suite.wait_established();
+        }).then([&suite] {
+          return suite.send_peer();
+        }).then([&suite] {
+          return suite.wait_established();
+        }).then([&test] {
+          return test.peer_send_me();
+        }).then([&suite] {
+          return suite.wait_established();
         }).then([&suite] {
           return suite.wait_results(1);
         }).then([] (ConnResults& results) {
@@ -1995,7 +1981,7 @@ test_v2_lossless_reconnect_fault(FailoverTest& test) {
           policy_t::lossless_client,
           policy_t::stateful_server,
           [&test] (FailoverSuite& suite) {
-        return seastar::futurize_apply([&test] {
+        return seastar::futurize_invoke([&test] {
           return test.send_bidirectional();
         }).then([&suite] {
           return suite.connect_peer();
@@ -2023,7 +2009,7 @@ test_v2_lossless_accept_fault(FailoverTest& test) {
       policy_t::stateful_server,
       policy_t::lossless_client,
       [&test] (FailoverSuite& suite) {
-    return seastar::futurize_apply([&test] {
+    return seastar::futurize_invoke([&test] {
       return test.send_bidirectional();
     }).then([&test] {
       return test.peer_connect_me();
@@ -2053,7 +2039,7 @@ test_v2_lossless_establishing_fault(FailoverTest& test) {
       policy_t::stateful_server,
       policy_t::lossless_client,
       [&test] (FailoverSuite& suite) {
-    return seastar::futurize_apply([&test] {
+    return seastar::futurize_invoke([&test] {
       return test.send_bidirectional();
     }).then([&test] {
       return test.peer_connect_me();
@@ -2087,7 +2073,7 @@ test_v2_lossless_accepted_fault(FailoverTest& test) {
           policy_t::stateful_server,
           policy_t::lossless_client,
           [&test] (FailoverSuite& suite) {
-        return seastar::futurize_apply([&test] {
+        return seastar::futurize_invoke([&test] {
           return test.send_bidirectional();
         }).then([&test] {
           return test.peer_connect_me();
@@ -2127,7 +2113,7 @@ test_v2_lossless_reaccept_fault(FailoverTest& test) {
           policy_t::stateful_server,
           policy_t::lossless_client,
           [&test, bp = bp_pair.second] (FailoverSuite& suite) {
-        return seastar::futurize_apply([&test] {
+        return seastar::futurize_invoke([&test] {
           return test.send_bidirectional();
         }).then([&test] {
           return test.peer_connect_me();
@@ -2175,7 +2161,7 @@ test_v2_peer_connect_fault(FailoverTest& test) {
           policy_t::lossless_peer,
           policy_t::lossless_peer,
           [&test] (FailoverSuite& suite) {
-        return seastar::futurize_apply([&suite] {
+        return seastar::futurize_invoke([&suite] {
           return suite.send_peer();
         }).then([&suite] {
           return suite.connect_peer();
@@ -2203,7 +2189,7 @@ test_v2_peer_accept_fault(FailoverTest& test) {
       policy_t::lossless_peer,
       policy_t::lossless_peer,
       [&test] (FailoverSuite& suite) {
-    return seastar::futurize_apply([&test] {
+    return seastar::futurize_invoke([&test] {
       return test.peer_send_me();
     }).then([&test] {
       return test.peer_connect_me();
@@ -2233,7 +2219,7 @@ test_v2_peer_establishing_fault(FailoverTest& test) {
       policy_t::lossless_peer,
       policy_t::lossless_peer,
       [&test] (FailoverSuite& suite) {
-    return seastar::futurize_apply([&test] {
+    return seastar::futurize_invoke([&test] {
       return test.peer_send_me();
     }).then([&test] {
       return test.peer_connect_me();
@@ -2263,7 +2249,7 @@ test_v2_peer_connected_fault_reconnect(FailoverTest& test) {
       policy_t::lossless_peer,
       policy_t::lossless_peer,
       [&test] (FailoverSuite& suite) {
-    return seastar::futurize_apply([&suite] {
+    return seastar::futurize_invoke([&suite] {
       return suite.send_peer();
     }).then([&suite] {
       return suite.connect_peer();
@@ -2289,7 +2275,7 @@ test_v2_peer_connected_fault_reaccept(FailoverTest& test) {
       policy_t::lossless_peer,
       policy_t::lossless_peer,
       [&test] (FailoverSuite& suite) {
-    return seastar::futurize_apply([&test] {
+    return seastar::futurize_invoke([&test] {
       return test.peer_send_me();
     }).then([&suite] {
       return suite.connect_peer();
@@ -2354,7 +2340,7 @@ test_v2_racing_reconnect_win(FailoverTest& test) {
           policy_t::lossless_peer,
           policy_t::lossless_peer,
           [&test] (FailoverSuite& suite) {
-        return seastar::futurize_apply([&test] {
+        return seastar::futurize_invoke([&test] {
           return test.peer_send_me();
         }).then([&test] {
           return test.peer_connect_me();
@@ -2407,7 +2393,7 @@ test_v2_racing_reconnect_lose(FailoverTest& test) {
           policy_t::lossless_peer,
           policy_t::lossless_peer,
           [&test] (FailoverSuite& suite) {
-        return seastar::futurize_apply([&suite] {
+        return seastar::futurize_invoke([&suite] {
           return suite.send_peer();
         }).then([&suite] {
           return suite.connect_peer();
@@ -2458,7 +2444,7 @@ test_v2_racing_connect_win(FailoverTest& test) {
           policy_t::lossless_peer,
           policy_t::lossless_peer,
           [&test] (FailoverSuite& suite) {
-        return seastar::futurize_apply([&test] {
+        return seastar::futurize_invoke([&test] {
           return test.peer_send_me();
         }).then([&test] {
           return test.peer_connect_me();
@@ -2511,7 +2497,7 @@ test_v2_racing_connect_lose(FailoverTest& test) {
           policy_t::lossless_peer,
           policy_t::lossless_peer,
           [&test] (FailoverSuite& suite) {
-        return seastar::futurize_apply([&suite] {
+        return seastar::futurize_invoke([&suite] {
           return suite.send_peer();
         }).then([&suite] {
           return suite.connect_peer();
@@ -2551,7 +2537,7 @@ test_v2_racing_connect_reconnect_lose(FailoverTest& test) {
                         policy_t::lossless_peer,
                         policy_t::lossless_peer,
                         [&test] (FailoverSuite& suite) {
-    return seastar::futurize_apply([&suite] {
+    return seastar::futurize_invoke([&suite] {
       return suite.send_peer();
     }).then([&suite] {
       return suite.connect_peer();
@@ -2587,7 +2573,7 @@ test_v2_racing_connect_reconnect_win(FailoverTest& test) {
                         policy_t::lossless_peer,
                         policy_t::lossless_peer,
                         [&test] (FailoverSuite& suite) {
-    return seastar::futurize_apply([&test] {
+    return seastar::futurize_invoke([&test] {
       return test.peer_send_me();
     }).then([&suite] {
       return suite.connect_peer();
@@ -2624,7 +2610,7 @@ test_v2_stale_connect(FailoverTest& test) {
       policy_t::lossless_peer,
       policy_t::lossless_peer,
       [&test] (FailoverSuite& suite) {
-    return seastar::futurize_apply([&suite] {
+    return seastar::futurize_invoke([&suite] {
       return suite.connect_peer();
     }).then([&suite] {
       return suite.wait_blocked();
@@ -2660,7 +2646,7 @@ test_v2_stale_reconnect(FailoverTest& test) {
       policy_t::lossless_peer,
       policy_t::lossless_peer,
       [&test] (FailoverSuite& suite) {
-    return seastar::futurize_apply([&suite] {
+    return seastar::futurize_invoke([&suite] {
       return suite.send_peer();
     }).then([&suite] {
       return suite.connect_peer();
@@ -2697,7 +2683,7 @@ test_v2_stale_accept(FailoverTest& test) {
       policy_t::lossless_peer,
       policy_t::lossless_peer,
       [&test] (FailoverSuite& suite) {
-    return seastar::futurize_apply([&test] {
+    return seastar::futurize_invoke([&test] {
       return test.peer_connect_me();
     }).then([&suite] {
       return suite.wait_blocked();
@@ -2732,7 +2718,7 @@ test_v2_stale_establishing(FailoverTest& test) {
       policy_t::lossless_peer,
       policy_t::lossless_peer,
       [&test] (FailoverSuite& suite) {
-    return seastar::futurize_apply([&test] {
+    return seastar::futurize_invoke([&test] {
       return test.peer_connect_me();
     }).then([&suite] {
       return suite.wait_blocked();
@@ -2768,7 +2754,7 @@ test_v2_stale_reaccept(FailoverTest& test) {
       policy_t::lossless_peer,
       policy_t::lossless_peer,
       [&test] (FailoverSuite& suite) {
-    return seastar::futurize_apply([&test] {
+    return seastar::futurize_invoke([&test] {
       return test.peer_send_me();
     }).then([&test] {
       return test.peer_connect_me();
@@ -2799,15 +2785,638 @@ test_v2_stale_reaccept(FailoverTest& test) {
 }
 
 seastar::future<>
-test_v2_protocol(entity_addr_t test_addr = entity_addr_t(),
-                 entity_addr_t cmd_peer_addr = entity_addr_t()) {
-  if (test_addr == entity_addr_t() || cmd_peer_addr == entity_addr_t()) {
+test_v2_lossy_client(FailoverTest& test) {
+  return test.run_suite(
+      "test_v2_lossy_client",
+      TestInterceptor(),
+      policy_t::lossy_client,
+      policy_t::stateless_server,
+      [&test] (FailoverSuite& suite) {
+    return seastar::futurize_invoke([&suite] {
+      logger().info("-- 0 --");
+      logger().info("[Test] setup connection...");
+      return suite.connect_peer();
+    }).then([&test] {
+      return test.send_bidirectional();
+    }).then([&suite] {
+      return suite.wait_results(1);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::established);
+      results[0].assert_connect(1, 1, 0, 1);
+      results[0].assert_accept(0, 0, 0, 0);
+      results[0].assert_reset(0, 0);
+    }).then([&suite] {
+      logger().info("-- 1 --");
+      logger().info("[Test] client markdown...");
+      return suite.markdown();
+    }).then([&suite] {
+      return suite.connect_peer();
+    }).then([&suite] {
+      return suite.send_peer();
+    }).then([&suite] {
+      return suite.wait_results(2);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::closed);
+      results[0].assert_connect(1, 1, 0, 1);
+      results[0].assert_accept(0, 0, 0, 0);
+      results[0].assert_reset(0, 0);
+      results[1].assert_state_at(conn_state_t::established);
+      results[1].assert_connect(1, 1, 0, 1);
+      results[1].assert_accept(0, 0, 0, 0);
+      results[1].assert_reset(0, 0);
+    }).then([&test] {
+      logger().info("-- 2 --");
+      logger().info("[Test] server markdown...");
+      return test.markdown_peer();
+    }).then([&suite] {
+      return suite.wait_results(2);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::closed);
+      results[0].assert_connect(1, 1, 0, 1);
+      results[0].assert_accept(0, 0, 0, 0);
+      results[0].assert_reset(0, 0);
+      results[1].assert_state_at(conn_state_t::closed);
+      results[1].assert_connect(1, 1, 0, 1);
+      results[1].assert_accept(0, 0, 0, 0);
+      results[1].assert_reset(1, 0);
+    }).then([&suite] {
+      logger().info("-- 3 --");
+      logger().info("[Test] client reconnect...");
+      return suite.connect_peer();
+    }).then([&suite] {
+      return suite.send_peer();
+    }).then([&suite] {
+      return suite.wait_results(3);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::closed);
+      results[0].assert_connect(1, 1, 0, 1);
+      results[0].assert_accept(0, 0, 0, 0);
+      results[0].assert_reset(0, 0);
+      results[1].assert_state_at(conn_state_t::closed);
+      results[1].assert_connect(1, 1, 0, 1);
+      results[1].assert_accept(0, 0, 0, 0);
+      results[1].assert_reset(1, 0);
+      results[2].assert_state_at(conn_state_t::established);
+      results[2].assert_connect(1, 1, 0, 1);
+      results[2].assert_accept(0, 0, 0, 0);
+      results[2].assert_reset(0, 0);
+    });
+  });
+}
+
+seastar::future<>
+test_v2_stateless_server(FailoverTest& test) {
+  return test.run_suite(
+      "test_v2_stateless_server",
+      TestInterceptor(),
+      policy_t::stateless_server,
+      policy_t::lossy_client,
+      [&test] (FailoverSuite& suite) {
+    return seastar::futurize_invoke([&test] {
+      logger().info("-- 0 --");
+      logger().info("[Test] setup connection...");
+      return test.peer_connect_me();
+    }).then([&test] {
+      return test.send_bidirectional();
+    }).then([&suite] {
+      return suite.wait_results(1);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::established);
+      results[0].assert_connect(0, 0, 0, 0);
+      results[0].assert_accept(1, 1, 0, 1);
+      results[0].assert_reset(0, 0);
+    }).then([&test] {
+      logger().info("-- 1 --");
+      logger().info("[Test] client markdown...");
+      return test.markdown_peer();
+    }).then([&test] {
+      return test.peer_connect_me();
+    }).then([&test] {
+      return test.peer_send_me();
+    }).then([&suite] {
+      return suite.wait_results(2);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::closed);
+      results[0].assert_connect(0, 0, 0, 0);
+      results[0].assert_accept(1, 1, 0, 1);
+      results[0].assert_reset(1, 0);
+      results[1].assert_state_at(conn_state_t::established);
+      results[1].assert_connect(0, 0, 0, 0);
+      results[1].assert_accept(1, 1, 0, 1);
+      results[1].assert_reset(0, 0);
+    }).then([&suite] {
+      logger().info("-- 2 --");
+      logger().info("[Test] server markdown...");
+      return suite.markdown();
+    }).then([&suite] {
+      return suite.wait_results(2);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::closed);
+      results[0].assert_connect(0, 0, 0, 0);
+      results[0].assert_accept(1, 1, 0, 1);
+      results[0].assert_reset(1, 0);
+      results[1].assert_state_at(conn_state_t::closed);
+      results[1].assert_connect(0, 0, 0, 0);
+      results[1].assert_accept(1, 1, 0, 1);
+      results[1].assert_reset(0, 0);
+    }).then([&test] {
+      logger().info("-- 3 --");
+      logger().info("[Test] client reconnect...");
+      return test.peer_connect_me();
+    }).then([&test] {
+      return test.peer_send_me();
+    }).then([&suite] {
+      return suite.wait_results(3);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::closed);
+      results[0].assert_connect(0, 0, 0, 0);
+      results[0].assert_accept(1, 1, 0, 1);
+      results[0].assert_reset(1, 0);
+      results[1].assert_state_at(conn_state_t::closed);
+      results[1].assert_connect(0, 0, 0, 0);
+      results[1].assert_accept(1, 1, 0, 1);
+      results[1].assert_reset(0, 0);
+      results[2].assert_state_at(conn_state_t::established);
+      results[2].assert_connect(0, 0, 0, 0);
+      results[2].assert_accept(1, 1, 0, 1);
+      results[2].assert_reset(0, 0);
+    });
+  });
+}
+
+seastar::future<>
+test_v2_lossless_client(FailoverTest& test) {
+  return test.run_suite(
+      "test_v2_lossless_client",
+      TestInterceptor(),
+      policy_t::lossless_client,
+      policy_t::stateful_server,
+      [&test] (FailoverSuite& suite) {
+    return seastar::futurize_invoke([&suite] {
+      logger().info("-- 0 --");
+      logger().info("[Test] setup connection...");
+      return suite.connect_peer();
+    }).then([&test] {
+      return test.send_bidirectional();
+    }).then([&suite] {
+      return suite.wait_results(1);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::established);
+      results[0].assert_connect(1, 1, 0, 1);
+      results[0].assert_accept(0, 0, 0, 0);
+      results[0].assert_reset(0, 0);
+    }).then([&suite] {
+      logger().info("-- 1 --");
+      logger().info("[Test] client markdown...");
+      return suite.markdown();
+    }).then([&suite] {
+      return suite.connect_peer();
+    }).then([&suite] {
+      return suite.send_peer();
+    }).then([&suite] {
+      return suite.wait_results(2);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::closed);
+      results[0].assert_connect(1, 1, 0, 1);
+      results[0].assert_accept(0, 0, 0, 0);
+      results[0].assert_reset(0, 0);
+      results[1].assert_state_at(conn_state_t::established);
+      results[1].assert_connect(1, 1, 0, 1);
+      results[1].assert_accept(0, 0, 0, 0);
+      results[1].assert_reset(0, 0);
+    }).then([&test] {
+      logger().info("-- 2 --");
+      logger().info("[Test] server markdown...");
+      return test.markdown_peer();
+    }).then([&suite] {
+      return suite.wait_results(2);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::closed);
+      results[0].assert_connect(1, 1, 0, 1);
+      results[0].assert_accept(0, 0, 0, 0);
+      results[0].assert_reset(0, 0);
+      results[1].assert_state_at(conn_state_t::established);
+      results[1].assert_connect(2, 2, 1, 2);
+      results[1].assert_accept(0, 0, 0, 0);
+      results[1].assert_reset(0, 1);
+    }).then([&suite] {
+      logger().info("-- 3 --");
+      logger().info("[Test] client reconnect...");
+      return suite.connect_peer();
+    }).then([&suite] {
+      return suite.send_peer();
+    }).then([&suite] {
+      return suite.wait_results(2);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::closed);
+      results[0].assert_connect(1, 1, 0, 1);
+      results[0].assert_accept(0, 0, 0, 0);
+      results[0].assert_reset(0, 0);
+      results[1].assert_state_at(conn_state_t::established);
+      results[1].assert_connect(2, 2, 1, 2);
+      results[1].assert_accept(0, 0, 0, 0);
+      results[1].assert_reset(0, 1);
+    });
+  });
+}
+
+seastar::future<>
+test_v2_stateful_server(FailoverTest& test) {
+  return test.run_suite(
+      "test_v2_stateful_server",
+      TestInterceptor(),
+      policy_t::stateful_server,
+      policy_t::lossless_client,
+      [&test] (FailoverSuite& suite) {
+    return seastar::futurize_invoke([&test] {
+      logger().info("-- 0 --");
+      logger().info("[Test] setup connection...");
+      return test.peer_connect_me();
+    }).then([&test] {
+      return test.send_bidirectional();
+    }).then([&suite] {
+      return suite.wait_results(1);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::established);
+      results[0].assert_connect(0, 0, 0, 0);
+      results[0].assert_accept(1, 1, 0, 1);
+      results[0].assert_reset(0, 0);
+    }).then([&test] {
+      logger().info("-- 1 --");
+      logger().info("[Test] client markdown...");
+      return test.markdown_peer();
+    }).then([&test] {
+      return test.peer_connect_me();
+    }).then([&test] {
+      return test.peer_send_me();
+    }).then([&suite] {
+      return suite.wait_results(2);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::established);
+      results[0].assert_connect(0, 0, 0, 0);
+      results[0].assert_accept(1, 1, 0, 2);
+      results[0].assert_reset(0, 1);
+      results[1].assert_state_at(conn_state_t::replaced);
+      results[1].assert_connect(0, 0, 0, 0);
+      results[1].assert_accept(1, 1, 0, 0);
+      results[1].assert_reset(0, 0);
+    }).then([&suite] {
+      logger().info("-- 2 --");
+      logger().info("[Test] server markdown...");
+      return suite.markdown();
+    }).then([&suite] {
+      return suite.wait_results(3);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::closed);
+      results[0].assert_connect(0, 0, 0, 0);
+      results[0].assert_accept(1, 1, 0, 2);
+      results[0].assert_reset(0, 1);
+      results[1].assert_state_at(conn_state_t::replaced);
+      results[1].assert_connect(0, 0, 0, 0);
+      results[1].assert_accept(1, 1, 0, 0);
+      results[1].assert_reset(0, 0);
+      results[2].assert_state_at(conn_state_t::established);
+      results[2].assert_connect(0, 0, 0, 0);
+      results[2].assert_accept(1, 1, 1, 1);
+      results[2].assert_reset(0, 0);
+    }).then([&test] {
+      logger().info("-- 3 --");
+      logger().info("[Test] client reconnect...");
+      return test.peer_connect_me();
+    }).then([&test] {
+      return test.peer_send_me();
+    }).then([&suite] {
+      return suite.wait_results(3);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::closed);
+      results[0].assert_connect(0, 0, 0, 0);
+      results[0].assert_accept(1, 1, 0, 2);
+      results[0].assert_reset(0, 1);
+      results[1].assert_state_at(conn_state_t::replaced);
+      results[1].assert_connect(0, 0, 0, 0);
+      results[1].assert_accept(1, 1, 0, 0);
+      results[1].assert_reset(0, 0);
+      results[2].assert_state_at(conn_state_t::established);
+      results[2].assert_connect(0, 0, 0, 0);
+      results[2].assert_accept(1, 1, 1, 1);
+      results[2].assert_reset(0, 0);
+    });
+  });
+}
+
+seastar::future<>
+test_v2_peer_reuse_connector(FailoverTest& test) {
+  return test.run_suite(
+      "test_v2_peer_reuse_connector",
+      TestInterceptor(),
+      policy_t::lossless_peer_reuse,
+      policy_t::lossless_peer_reuse,
+      [&test] (FailoverSuite& suite) {
+    return seastar::futurize_invoke([&suite] {
+      logger().info("-- 0 --");
+      logger().info("[Test] setup connection...");
+      return suite.connect_peer();
+    }).then([&test] {
+      return test.send_bidirectional();
+    }).then([&suite] {
+      return suite.wait_results(1);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::established);
+      results[0].assert_connect(1, 1, 0, 1);
+      results[0].assert_accept(0, 0, 0, 0);
+      results[0].assert_reset(0, 0);
+    }).then([&suite] {
+      logger().info("-- 1 --");
+      logger().info("[Test] connector markdown...");
+      return suite.markdown();
+    }).then([&suite] {
+      return suite.connect_peer();
+    }).then([&suite] {
+      return suite.send_peer();
+    }).then([&suite] {
+      return suite.wait_results(2);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::closed);
+      results[0].assert_connect(1, 1, 0, 1);
+      results[0].assert_accept(0, 0, 0, 0);
+      results[0].assert_reset(0, 0);
+      results[1].assert_state_at(conn_state_t::established);
+      results[1].assert_connect(1, 1, 0, 1);
+      results[1].assert_accept(0, 0, 0, 0);
+      results[1].assert_reset(0, 0);
+    }).then([&test] {
+      logger().info("-- 2 --");
+      logger().info("[Test] acceptor markdown...");
+      return test.markdown_peer();
+    }).then([] {
+      return seastar::sleep(100ms);
+    }).then([&suite] {
+      ceph_assert(suite.is_standby());
+      logger().info("-- 3 --");
+      logger().info("[Test] connector reconnect...");
+      return suite.connect_peer();
+    }).then([&suite] {
+      return suite.try_send_peer();
+    }).then([&suite] {
+      return suite.wait_results(2);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::closed);
+      results[0].assert_connect(1, 1, 0, 1);
+      results[0].assert_accept(0, 0, 0, 0);
+      results[0].assert_reset(0, 0);
+      results[1].assert_state_at(conn_state_t::established);
+      results[1].assert_connect(2, 2, 1, 2);
+      results[1].assert_accept(0, 0, 0, 0);
+      results[1].assert_reset(0, 1);
+    });
+  });
+}
+
+seastar::future<>
+test_v2_peer_reuse_acceptor(FailoverTest& test) {
+  return test.run_suite(
+      "test_v2_peer_reuse_acceptor",
+      TestInterceptor(),
+      policy_t::lossless_peer_reuse,
+      policy_t::lossless_peer_reuse,
+      [&test] (FailoverSuite& suite) {
+    return seastar::futurize_invoke([&test] {
+      logger().info("-- 0 --");
+      logger().info("[Test] setup connection...");
+      return test.peer_connect_me();
+    }).then([&test] {
+      return test.send_bidirectional();
+    }).then([&suite] {
+      return suite.wait_results(1);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::established);
+      results[0].assert_connect(0, 0, 0, 0);
+      results[0].assert_accept(1, 1, 0, 1);
+      results[0].assert_reset(0, 0);
+    }).then([&test] {
+      logger().info("-- 1 --");
+      logger().info("[Test] connector markdown...");
+      return test.markdown_peer();
+    }).then([&test] {
+      return test.peer_connect_me();
+    }).then([&test] {
+      return test.peer_send_me();
+    }).then([&suite] {
+      return suite.wait_results(2);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::established);
+      results[0].assert_connect(0, 0, 0, 0);
+      results[0].assert_accept(1, 1, 0, 2);
+      results[0].assert_reset(0, 1);
+      results[1].assert_state_at(conn_state_t::replaced);
+      results[1].assert_connect(0, 0, 0, 0);
+      results[1].assert_accept(1, 1, 0, 0);
+      results[1].assert_reset(0, 0);
+    }).then([] {
+      logger().info("-- 2 --");
+      logger().info("[Test] acceptor markdown...");
+      return seastar::sleep(100ms);
+    }).then([&suite] {
+      return suite.markdown();
+    }).then([&suite] {
+      return suite.wait_results(2);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::closed);
+      results[0].assert_connect(0, 0, 0, 0);
+      results[0].assert_accept(1, 1, 0, 2);
+      results[0].assert_reset(0, 1);
+      results[1].assert_state_at(conn_state_t::replaced);
+      results[1].assert_connect(0, 0, 0, 0);
+      results[1].assert_accept(1, 1, 0, 0);
+      results[1].assert_reset(0, 0);
+    }).then([&test] {
+      logger().info("-- 3 --");
+      logger().info("[Test] connector reconnect...");
+      return test.peer_connect_me();
+    }).then([&test] {
+      return test.try_peer_send_me();
+    }).then([&suite] {
+      return suite.wait_results(3);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::closed);
+      results[0].assert_connect(0, 0, 0, 0);
+      results[0].assert_accept(1, 1, 0, 2);
+      results[0].assert_reset(0, 1);
+      results[1].assert_state_at(conn_state_t::replaced);
+      results[1].assert_connect(0, 0, 0, 0);
+      results[1].assert_accept(1, 1, 0, 0);
+      results[1].assert_reset(0, 0);
+      results[2].assert_state_at(conn_state_t::established);
+      results[2].assert_connect(0, 0, 0, 0);
+      results[2].assert_accept(1, 1, 1, 1);
+      results[2].assert_reset(0, 0);
+    });
+  });
+}
+
+seastar::future<>
+test_v2_lossless_peer_connector(FailoverTest& test) {
+  return test.run_suite(
+      "test_v2_lossless_peer_connector",
+      TestInterceptor(),
+      policy_t::lossless_peer,
+      policy_t::lossless_peer,
+      [&test] (FailoverSuite& suite) {
+    return seastar::futurize_invoke([&suite] {
+      logger().info("-- 0 --");
+      logger().info("[Test] setup connection...");
+      return suite.connect_peer();
+    }).then([&test] {
+      return test.send_bidirectional();
+    }).then([&suite] {
+      return suite.wait_results(1);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::established);
+      results[0].assert_connect(1, 1, 0, 1);
+      results[0].assert_accept(0, 0, 0, 0);
+      results[0].assert_reset(0, 0);
+    }).then([&suite] {
+      logger().info("-- 1 --");
+      logger().info("[Test] connector markdown...");
+      return suite.markdown();
+    }).then([&suite] {
+      return suite.connect_peer();
+    }).then([&suite] {
+      return suite.send_peer();
+    }).then([&suite] {
+      return suite.wait_results(2);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::closed);
+      results[0].assert_connect(1, 1, 0, 1);
+      results[0].assert_accept(0, 0, 0, 0);
+      results[0].assert_reset(0, 0);
+      results[1].assert_state_at(conn_state_t::established);
+      results[1].assert_connect(1, 1, 0, 1);
+      results[1].assert_accept(0, 0, 0, 0);
+      results[1].assert_reset(0, 0);
+    }).then([&test] {
+      logger().info("-- 2 --");
+      logger().info("[Test] acceptor markdown...");
+      return test.markdown_peer();
+    }).then([] {
+      return seastar::sleep(100ms);
+    }).then([&suite] {
+      ceph_assert(suite.is_standby());
+      logger().info("-- 3 --");
+      logger().info("[Test] connector reconnect...");
+      return suite.connect_peer();
+    }).then([&suite] {
+      return suite.try_send_peer();
+    }).then([&suite] {
+      return suite.wait_results(2);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::closed);
+      results[0].assert_connect(1, 1, 0, 1);
+      results[0].assert_accept(0, 0, 0, 0);
+      results[0].assert_reset(0, 0);
+      results[1].assert_state_at(conn_state_t::established);
+      results[1].assert_connect(2, 2, 1, 2);
+      results[1].assert_accept(0, 0, 0, 0);
+      results[1].assert_reset(0, 1);
+    });
+  });
+}
+
+seastar::future<>
+test_v2_lossless_peer_acceptor(FailoverTest& test) {
+  return test.run_suite(
+      "test_v2_lossless_peer_acceptor",
+      TestInterceptor(),
+      policy_t::lossless_peer,
+      policy_t::lossless_peer,
+      [&test] (FailoverSuite& suite) {
+    return seastar::futurize_invoke([&test] {
+      logger().info("-- 0 --");
+      logger().info("[Test] setup connection...");
+      return test.peer_connect_me();
+    }).then([&test] {
+      return test.send_bidirectional();
+    }).then([&suite] {
+      return suite.wait_results(1);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::established);
+      results[0].assert_connect(0, 0, 0, 0);
+      results[0].assert_accept(1, 1, 0, 1);
+      results[0].assert_reset(0, 0);
+    }).then([&test] {
+      logger().info("-- 1 --");
+      logger().info("[Test] connector markdown...");
+      return test.markdown_peer();
+    }).then([&test] {
+      return test.peer_connect_me();
+    }).then([&test] {
+      return test.peer_send_me();
+    }).then([&suite] {
+      return suite.wait_results(2);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::established);
+      results[0].assert_connect(0, 0, 0, 0);
+      results[0].assert_accept(1, 1, 0, 2);
+      results[0].assert_reset(0, 0);
+      results[1].assert_state_at(conn_state_t::replaced);
+      results[1].assert_connect(0, 0, 0, 0);
+      results[1].assert_accept(1, 1, 0, 0);
+      results[1].assert_reset(0, 0);
+    }).then([] {
+      logger().info("-- 2 --");
+      logger().info("[Test] acceptor markdown...");
+      return seastar::sleep(100ms);
+    }).then([&suite] {
+      return suite.markdown();
+    }).then([&suite] {
+      return suite.wait_results(2);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::closed);
+      results[0].assert_connect(0, 0, 0, 0);
+      results[0].assert_accept(1, 1, 0, 2);
+      results[0].assert_reset(0, 0);
+      results[1].assert_state_at(conn_state_t::replaced);
+      results[1].assert_connect(0, 0, 0, 0);
+      results[1].assert_accept(1, 1, 0, 0);
+      results[1].assert_reset(0, 0);
+    }).then([&test] {
+      logger().info("-- 3 --");
+      logger().info("[Test] connector reconnect...");
+      return test.peer_connect_me();
+    }).then([&test] {
+      return test.try_peer_send_me();
+    }).then([&suite] {
+      return suite.wait_results(3);
+    }).then([] (ConnResults& results) {
+      results[0].assert_state_at(conn_state_t::closed);
+      results[0].assert_connect(0, 0, 0, 0);
+      results[0].assert_accept(1, 1, 0, 2);
+      results[0].assert_reset(0, 0);
+      results[1].assert_state_at(conn_state_t::replaced);
+      results[1].assert_connect(0, 0, 0, 0);
+      results[1].assert_accept(1, 1, 0, 0);
+      results[1].assert_reset(0, 0);
+      results[2].assert_state_at(conn_state_t::established);
+      results[2].assert_connect(0, 0, 0, 0);
+      results[2].assert_accept(1, 1, 1, 1);
+      results[2].assert_reset(0, 0);
+    });
+  });
+}
+
+seastar::future<>
+test_v2_protocol(entity_addr_t test_addr,
+                 entity_addr_t test_peer_addr,
+                 bool test_peer_islocal) {
+  ceph_assert(test_addr.is_msgr2());
+  ceph_assert(test_peer_addr.is_msgr2());
+
+  if (test_peer_islocal) {
     // initiate crimson test peer locally
-    logger().info("test_v2_protocol: start local TestPeer...");
-    return FailoverTestPeer::create().then([] (auto peer) {
-      entity_addr_t test_addr_;
-      test_addr_.parse("v2:127.0.0.1:9010");
-      return test_v2_protocol(test_addr_, peer->get_addr()
+    logger().info("test_v2_protocol: start local TestPeer at {}...", test_peer_addr);
+    return FailoverTestPeer::create(test_peer_addr
+    ).then([test_addr, test_peer_addr] (auto peer) {
+      return test_v2_protocol(test_addr, test_peer_addr, false
       ).finally([peer = std::move(peer)] () mutable {
         return peer->wait().then([peer = std::move(peer)] {});
       });
@@ -2817,9 +3426,8 @@ test_v2_protocol(entity_addr_t test_addr = entity_addr_t(),
     });
   }
 
-  test_addr.set_nonce(2);
-  return FailoverTest::create(cmd_peer_addr, test_addr).then([] (auto test) {
-    return seastar::futurize_apply([test] {
+  return FailoverTest::create(test_peer_addr, test_addr).then([] (auto test) {
+    return seastar::futurize_invoke([test] {
       return test_v2_lossy_early_connect_fault(*test);
     }).then([test] {
       return test_v2_lossy_connect_fault(*test);
@@ -2837,6 +3445,8 @@ test_v2_protocol(entity_addr_t test_addr = entity_addr_t(),
       return test_v2_lossless_connect_fault(*test);
     }).then([test] {
       return test_v2_lossless_connected_fault(*test);
+    }).then([test] {
+      return test_v2_lossless_connected_fault2(*test);
     }).then([test] {
       return test_v2_lossless_reconnect_fault(*test);
     }).then([test] {
@@ -2861,13 +3471,13 @@ test_v2_protocol(entity_addr_t test_addr = entity_addr_t(),
       return peer_wins(*test);
     }).then([test] (bool peer_wins) {
       if (peer_wins) {
-        return seastar::futurize_apply([test] {
+        return seastar::futurize_invoke([test] {
           return test_v2_racing_connect_lose(*test);
         }).then([test] {
           return test_v2_racing_reconnect_lose(*test);
         });
       } else {
-        return seastar::futurize_apply([test] {
+        return seastar::futurize_invoke([test] {
           return test_v2_racing_connect_win(*test);
         }).then([test] {
           return test_v2_racing_reconnect_win(*test);
@@ -2887,6 +3497,22 @@ test_v2_protocol(entity_addr_t test_addr = entity_addr_t(),
       return test_v2_stale_establishing(*test);
     }).then([test] {
       return test_v2_stale_reaccept(*test);
+    }).then([test] {
+      return test_v2_lossy_client(*test);
+    }).then([test] {
+      return test_v2_stateless_server(*test);
+    }).then([test] {
+      return test_v2_lossless_client(*test);
+    }).then([test] {
+      return test_v2_stateful_server(*test);
+    }).then([test] {
+      return test_v2_peer_reuse_connector(*test);
+    }).then([test] {
+      return test_v2_peer_reuse_acceptor(*test);
+    }).then([test] {
+      return test_v2_lossless_peer_connector(*test);
+    }).then([test] {
+      return test_v2_lossless_peer_acceptor(*test);
     }).finally([test] {
       return test->shutdown().then([test] {});
     });
@@ -2907,27 +3533,58 @@ int main(int argc, char** argv)
     ("rounds", bpo::value<unsigned>()->default_value(512),
      "number of pingpong rounds")
     ("keepalive-ratio", bpo::value<double>()->default_value(0.1),
-     "ratio of keepalive in ping messages");
+     "ratio of keepalive in ping messages")
+    ("v2-test-addr", bpo::value<std::string>()->default_value("v2:127.0.0.1:9012"),
+     "address of v2 failover tests")
+    ("v2-testpeer-addr", bpo::value<std::string>()->default_value("v2:127.0.0.1:9013"),
+     "addresses of v2 failover testpeer"
+     " (CmdSrv address and TestPeer address with port+=1)")
+    ("v2-testpeer-islocal", bpo::value<bool>()->default_value(true),
+     "create a local crimson testpeer, or connect to a remote testpeer");
   return app.run(argc, argv, [&app] {
-    auto&& config = app.configuration();
-    verbose = config["verbose"].as<bool>();
-    auto rounds = config["rounds"].as<unsigned>();
-    auto keepalive_ratio = config["keepalive-ratio"].as<double>();
-    return test_echo(rounds, keepalive_ratio, false)
-    .then([rounds, keepalive_ratio] {
-      return test_echo(rounds, keepalive_ratio, true);
+    std::vector<const char*> args;
+    std::string cluster;
+    std::string conf_file_list;
+    auto init_params = ceph_argparse_early_args(args,
+                                                CEPH_ENTITY_TYPE_CLIENT,
+                                                &cluster,
+                                                &conf_file_list);
+    return crimson::common::sharded_conf().start(init_params.name, cluster)
+    .then([conf_file_list] {
+      return local_conf().parse_config_files(conf_file_list);
+    }).then([&app] {
+      auto&& config = app.configuration();
+      verbose = config["verbose"].as<bool>();
+      auto rounds = config["rounds"].as<unsigned>();
+      auto keepalive_ratio = config["keepalive-ratio"].as<double>();
+      entity_addr_t v2_test_addr;
+      ceph_assert(v2_test_addr.parse(
+          config["v2-test-addr"].as<std::string>().c_str(), nullptr));
+      entity_addr_t v2_testpeer_addr;
+      ceph_assert(v2_testpeer_addr.parse(
+          config["v2-testpeer-addr"].as<std::string>().c_str(), nullptr));
+      auto v2_testpeer_islocal = config["v2-testpeer-islocal"].as<bool>();
+      return test_echo(rounds, keepalive_ratio, false)
+      .then([rounds, keepalive_ratio] {
+        return test_echo(rounds, keepalive_ratio, true);
+      }).then([] {
+        return test_concurrent_dispatch(false);
+      }).then([] {
+        return test_concurrent_dispatch(true);
+      }).then([] {
+        return test_preemptive_shutdown(false);
+      }).then([] {
+        return test_preemptive_shutdown(true);
+      }).then([v2_test_addr, v2_testpeer_addr, v2_testpeer_islocal] {
+        return test_v2_protocol(v2_test_addr, v2_testpeer_addr, v2_testpeer_islocal);
+      }).then([] {
+        std::cout << "All tests succeeded" << std::endl;
+        // Seastar has bugs to have events undispatched during shutdown,
+        // which will result in memory leak and thus fail LeakSanitizer.
+        return seastar::sleep(100ms);
+      });
     }).then([] {
-      return test_concurrent_dispatch(false);
-    }).then([] {
-      return test_concurrent_dispatch(true);
-    }).then([] {
-      return test_preemptive_shutdown(false);
-    }).then([] {
-      return test_preemptive_shutdown(true);
-    }).then([] {
-      return test_v2_protocol();
-    }).then([] {
-      std::cout << "All tests succeeded" << std::endl;
+      return crimson::common::sharded_conf().stop();
     }).handle_exception([] (auto eptr) {
       std::cout << "Test failure" << std::endl;
       return seastar::make_exception_future<>(eptr);

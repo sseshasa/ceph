@@ -18,7 +18,7 @@
 #include "msg/Message.h"
 #include "include/filepath.h"
 
-class MMDSFindInoReply : public Message {
+class MMDSFindInoReply : public SafeMessage {
   static const int HEAD_VERSION = 1;
   static const int COMPAT_VERSION = 1;
 public:
@@ -26,22 +26,23 @@ public:
   filepath path;
 
 protected:
-  MMDSFindInoReply() : Message{MSG_MDS_FINDINOREPLY, HEAD_VERSION, COMPAT_VERSION} {}
-  MMDSFindInoReply(ceph_tid_t t) : Message{MSG_MDS_FINDINOREPLY, HEAD_VERSION, COMPAT_VERSION}, tid(t) {}
+  MMDSFindInoReply() : SafeMessage{MSG_MDS_FINDINOREPLY, HEAD_VERSION, COMPAT_VERSION} {}
+  MMDSFindInoReply(ceph_tid_t t) : SafeMessage{MSG_MDS_FINDINOREPLY, HEAD_VERSION, COMPAT_VERSION}, tid(t) {}
   ~MMDSFindInoReply() override {}
 
 public:
   std::string_view get_type_name() const override { return "findinoreply"; }
-  void print(ostream &out) const override {
+  void print(std::ostream &out) const override {
     out << "findinoreply(" << tid << " " << path << ")";
   }
-  
+
   void encode_payload(uint64_t features) override {
     using ceph::encode;
     encode(tid, payload);
     encode(path, payload);
   }
   void decode_payload() override {
+    using ceph::decode;
     auto p = payload.cbegin();
     decode(tid, p);
     decode(path, p);

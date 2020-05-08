@@ -6,7 +6,9 @@ import { forkJoin } from 'rxjs';
 
 import { RoleService } from '../../../shared/api/role.service';
 import { ScopeService } from '../../../shared/api/scope.service';
+import { ListWithDetails } from '../../../shared/classes/list-with-details.class';
 import { CriticalConfirmationModalComponent } from '../../../shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
+import { FormModalComponent } from '../../../shared/components/form-modal/form-modal.component';
 import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
 import { CellTemplate } from '../../../shared/enum/cell-template.enum';
 import { Icons } from '../../../shared/enum/icons.enum';
@@ -28,7 +30,7 @@ const BASE_URL = 'user-management/roles';
   styleUrls: ['./role-list.component.scss'],
   providers: [{ provide: URLBuilderService, useValue: new URLBuilderService(BASE_URL) }]
 })
-export class RoleListComponent implements OnInit {
+export class RoleListComponent extends ListWithDetails implements OnInit {
   permission: Permission;
   tableActions: CdTableAction[];
   columns: CdTableColumn[];
@@ -49,12 +51,20 @@ export class RoleListComponent implements OnInit {
     private urlBuilder: URLBuilderService,
     public actionLabels: ActionLabelsI18n
   ) {
+    super();
     this.permission = this.authStorageService.getPermissions().user;
     const addAction: CdTableAction = {
       permission: 'create',
       icon: Icons.add,
       routerLink: () => this.urlBuilder.getCreate(),
       name: this.actionLabels.CREATE
+    };
+    const cloneAction: CdTableAction = {
+      permission: 'create',
+      icon: Icons.clone,
+      name: this.actionLabels.CLONE,
+      disable: () => !this.selection.hasSingleSelection,
+      click: () => this.cloneRole()
     };
     const editAction: CdTableAction = {
       permission: 'update',
@@ -71,7 +81,7 @@ export class RoleListComponent implements OnInit {
       click: () => this.deleteRoleModal(),
       name: this.actionLabels.DELETE
     };
-    this.tableActions = [addAction, editAction, deleteAction];
+    this.tableActions = [addAction, cloneAction, editAction, deleteAction];
   }
 
   ngOnInit() {
@@ -131,7 +141,39 @@ export class RoleListComponent implements OnInit {
     this.modalRef = this.modalService.show(CriticalConfirmationModalComponent, {
       initialState: {
         itemDescription: 'Role',
+        itemNames: [name],
         submitAction: () => this.deleteRole(name)
+      }
+    });
+  }
+
+  cloneRole() {
+    const name = this.selection.first().name;
+    this.modalRef = this.modalService.show(FormModalComponent, {
+      initialState: {
+        fields: [
+          {
+            type: 'text',
+            name: 'newName',
+            value: `${name}_clone`,
+            label: this.i18n('New name'),
+            required: true
+          }
+        ],
+        titleText: this.i18n('Clone Role'),
+        submitButtonText: this.i18n('Clone Role'),
+        onSubmit: (values: object) => {
+          this.roleService.clone(name, values['newName']).subscribe(() => {
+            this.getRoles();
+            this.notificationService.show(
+              NotificationType.success,
+              this.i18n(`Cloned role '{{dst_name}}' from '{{src_name}}'`, {
+                src_name: name,
+                dst_name: values['newName']
+              })
+            );
+          });
+        }
       }
     });
   }

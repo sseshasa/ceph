@@ -158,9 +158,15 @@ public:
 
   void expect_open(MockImageCtx &mock_image_ctx, int r) {
     EXPECT_CALL(*mock_image_ctx.state, open(true, _))
-      .WillOnce(WithArg<1>(Invoke([this, r](Context* ctx) {
+      .WillOnce(WithArg<1>(Invoke([this, &mock_image_ctx, r](Context* ctx) {
+                             EXPECT_EQ(0U, mock_image_ctx.read_only_mask &
+                                             IMAGE_READ_ONLY_FLAG_NON_PRIMARY);
                              image_ctx->op_work_queue->queue(ctx, r);
                            })));
+    if (r == 0) {
+      EXPECT_CALL(mock_image_ctx, test_features(_))
+        .WillOnce(Return(false));
+    }
   }
 
   void expect_close(MockImageCtx &mock_image_ctx, int r) {

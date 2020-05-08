@@ -1,120 +1,102 @@
 import { Component, Input, OnChanges, OnInit, ViewChild } from '@angular/core';
 import { I18n } from '@ngx-translate/i18n-polyfill';
 
+import { CephServiceService } from '../../../shared/api/ceph-service.service';
 import { OrchestratorService } from '../../../shared/api/orchestrator.service';
+import { ListWithDetails } from '../../../shared/classes/list-with-details.class';
 import { TableComponent } from '../../../shared/datatable/table/table.component';
+import { CellTemplate } from '../../../shared/enum/cell-template.enum';
 import { CdTableColumn } from '../../../shared/models/cd-table-column';
 import { CdTableFetchDataContext } from '../../../shared/models/cd-table-fetch-data-context';
-import { CephReleaseNamePipe } from '../../../shared/pipes/ceph-release-name.pipe';
-import { SummaryService } from '../../../shared/services/summary.service';
-import { Service } from './services.model';
+import { CdTableSelection } from '../../../shared/models/cd-table-selection';
+import { Permissions } from '../../../shared/models/permissions';
+import { CephServiceSpec } from '../../../shared/models/service.interface';
+import { AuthStorageService } from '../../../shared/services/auth-storage.service';
 
 @Component({
   selector: 'cd-services',
   templateUrl: './services.component.html',
   styleUrls: ['./services.component.scss']
 })
-export class ServicesComponent implements OnChanges, OnInit {
+export class ServicesComponent extends ListWithDetails implements OnChanges, OnInit {
   @ViewChild(TableComponent, { static: false })
   table: TableComponent;
 
-  @Input() hostname = '';
+  @Input() hostname: string;
+
+  // Do not display these columns
+  @Input() hiddenColumns: string[] = [];
+
+  permissions: Permissions;
 
   checkingOrchestrator = true;
-  orchestratorExist = false;
+  hasOrchestrator = false;
   docsUrl: string;
 
   columns: Array<CdTableColumn> = [];
-  services: Array<Service> = [];
+  services: Array<CephServiceSpec> = [];
   isLoadingServices = false;
+  selection = new CdTableSelection();
 
   constructor(
-    private cephReleaseNamePipe: CephReleaseNamePipe,
+    private authStorageService: AuthStorageService,
     private i18n: I18n,
     private orchService: OrchestratorService,
-    private summaryService: SummaryService
-  ) {}
+    private cephServiceService: CephServiceService
+  ) {
+    super();
+    this.permissions = this.authStorageService.getPermissions();
+  }
 
   ngOnInit() {
-    this.columns = [
-      {
-        name: this.i18n('Service type'),
-        prop: 'service_type',
-        flexGrow: 1
-      },
+    const columns = [
       {
         name: this.i18n('Service'),
-        prop: 'service',
+        prop: 'service_name',
         flexGrow: 1
       },
       {
-        name: this.i18n('Service instance'),
-        prop: 'service_instance',
-        flexGrow: 1
-      },
-      {
-        name: this.i18n('Container id'),
-        prop: 'container_id',
+        name: this.i18n('Container image name'),
+        prop: 'status.container_image_name',
         flexGrow: 3
       },
       {
-        name: this.i18n('Version'),
-        prop: 'version',
+        name: this.i18n('Container image ID'),
+        prop: 'status.container_image_id',
+        flexGrow: 3,
+        cellTransformation: CellTemplate.truncate,
+        customTemplateConfig: {
+          length: 12
+        }
+      },
+      {
+        name: this.i18n('Running'),
+        prop: 'status.running',
         flexGrow: 1
       },
       {
-        name: this.i18n('Rados config location'),
-        prop: 'rados_config_location',
+        name: this.i18n('Size'),
+        prop: 'status.size',
         flexGrow: 1
       },
       {
-        name: this.i18n('Service URL'),
-        prop: 'service_url',
-        flexGrow: 2
-      },
-      {
-        name: this.i18n('Status'),
-        prop: 'status',
-        flexGrow: 1
-      },
-      {
-        name: this.i18n('Status Description'),
-        prop: 'status_desc',
+        name: this.i18n('Last Refreshed'),
+        prop: 'status.last_refresh',
         flexGrow: 1
       }
     ];
 
-    if (!this.hostname) {
-      const hostnameColumn = {
-        name: this.i18n('Hostname'),
-        prop: 'nodename',
-        flexGrow: 2
-      };
-      this.columns.splice(0, 0, hostnameColumn);
-    }
-
-    // duplicated code with grafana
-    const subs = this.summaryService.subscribe((summary: any) => {
-      if (!summary) {
-        return;
-      }
-
-      const releaseName = this.cephReleaseNamePipe.transform(summary.version);
-      this.docsUrl = `http://docs.ceph.com/docs/${releaseName}/mgr/orchestrator_cli/`;
-
-      setTimeout(() => {
-        subs.unsubscribe();
-      }, 0);
+    this.columns = columns.filter((col: any) => {
+      return !this.hiddenColumns.includes(col.prop);
     });
 
-    this.orchService.status().subscribe((data: { available: boolean }) => {
-      this.orchestratorExist = data.available;
-      this.checkingOrchestrator = false;
+    this.orchService.status().subscribe((status) => {
+      this.hasOrchestrator = status.available;
     });
   }
 
   ngOnChanges() {
-    if (this.orchestratorExist) {
+    if (this.hasOrchestrator) {
       this.services = [];
       this.table.reloadData();
     }
@@ -125,13 +107,8 @@ export class ServicesComponent implements OnChanges, OnInit {
       return;
     }
     this.isLoadingServices = true;
-    this.orchService.serviceList(this.hostname).subscribe(
-      (data: Service[]) => {
-        const services: Service[] = [];
-        data.forEach((service: Service) => {
-          service.uid = `${service.nodename}-${service.service_type}-${service.service}-${service.service_instance}`;
-          services.push(service);
-        });
+    this.cephServiceService.list().subscribe(
+      (services: CephServiceSpec[]) => {
         this.services = services;
         this.isLoadingServices = false;
       },

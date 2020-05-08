@@ -4,14 +4,13 @@ Deploy and configure Barbican for Teuthology
 import argparse
 import contextlib
 import logging
-import string
-import httplib
-from urlparse import urlparse
+import six
+from six.moves import http_client
+from six.moves.urllib.parse import urlparse
 import json
 
 from teuthology import misc as teuthology
 from teuthology import contextutil
-from teuthology import safepath
 from teuthology.orchestra import run
 from teuthology.exceptions import ConfigError
 
@@ -105,7 +104,7 @@ def assign_ports(ctx, config, initial_port):
     """
     port = initial_port
     role_endpoints = {}
-    for remote, roles_for_host in ctx.cluster.remotes.iteritems():
+    for remote, roles_for_host in ctx.cluster.remotes.items():
         for role in roles_for_host:
             if role in config:
                 role_endpoints[role] = (remote.name.split('@')[1], port)
@@ -174,7 +173,7 @@ def configure_barbican(ctx, config):
     Configure barbican paste-api and barbican-api.
     """
     assert isinstance(config, dict)
-    (cclient, cconfig) = config.items()[0]
+    (cclient, cconfig) = next(iter(config.items()))
 
     keystone_role = cconfig.get('use-keystone-role', None)
     if keystone_role is None:
@@ -196,12 +195,11 @@ def run_barbican(ctx, config):
     log.info('Running barbican...')
 
     for (client, _) in config.items():
-        (remote,) = ctx.cluster.only(client).remotes.iterkeys()
+        (remote,) = ctx.cluster.only(client).remotes.keys()
         cluster_name, _, client_id = teuthology.split_role(client)
 
         # start the public endpoint
         client_public_with_id = 'barbican.public' + '.' + client_id
-        client_public_with_cluster = cluster_name + '.' + client_public_with_id
 
         run_cmd = ['cd', get_barbican_dir(ctx), run.Raw('&&'),
                    '.', '.barbicanenv/bin/activate', run.Raw('&&'),
@@ -242,25 +240,18 @@ def create_secrets(ctx, config):
     Create a main and an alternate s3 user.
     """
     assert isinstance(config, dict)
-    (cclient, cconfig) = config.items()[0]
+    (cclient, cconfig) = next(iter(config.items()))
 
     rgw_user = cconfig['rgw_user']
-    ctx.barbican.token[cclient] = {
-        "username": rgw_user["username"],
-        "password": rgw_user["password"],
-        "tenant": rgw_user["tenantName"]
-    }
 
     keystone_role = cconfig.get('use-keystone-role', None)
     keystone_host, keystone_port = ctx.keystone.public_endpoints[keystone_role]
-    keystone_url = 'http://{host}:{port}/v2.0'.format(host=keystone_host,
-                                                      port=keystone_port)
     barbican_host, barbican_port = ctx.barbican.endpoints[cclient]
     barbican_url = 'http://{host}:{port}'.format(host=barbican_host,
                                                  port=barbican_port)
     log.info("barbican_url=%s", barbican_url)
     #fetching user_id of user that gets secrets for radosgw
-    token_req = httplib.HTTPConnection(keystone_host, keystone_port, timeout=30)
+    token_req = http_client.HTTPConnection(keystone_host, keystone_port, timeout=30)
     token_req.request(
         'POST',
         '/v2.0/tokens',
@@ -281,7 +272,7 @@ def create_secrets(ctx, config):
             rgw_access_user_resp.status < 300):
         raise Exception("Cannot authenticate user "+rgw_user["username"]+" for secret creation")
     #    baru_resp = json.loads(baru_req.data)
-    rgw_access_user_data = json.loads(rgw_access_user_resp.read())
+    rgw_access_user_data = json.loads(six.ensure_str(rgw_access_user_resp.read()))
     rgw_user_id = rgw_access_user_data['access']['user']['id']
 
     if 'secrets' in cconfig:
@@ -297,7 +288,7 @@ def create_secrets(ctx, config):
             if 'password' not in secret:
                 raise ConfigError('barbican.secrets must have "password" field')
 
-            token_req = httplib.HTTPConnection(keystone_host, keystone_port, timeout=30)
+            token_req = http_client.HTTPConnection(keystone_host, keystone_port, timeout=30)
             token_req.request(
                 'POST',
                 '/v2.0/tokens',
@@ -319,7 +310,7 @@ def create_secrets(ctx, config):
                     token_resp.status < 300):
                 raise Exception("Cannot authenticate user "+secret["username"]+" for secret creation")
 
-            token_data = json.loads(token_resp.read())
+            token_data = json.loads(six.ensure_str(token_resp.read()))
             token_id = token_data['access']['token']['id']
 
             key1_json = json.dumps(
@@ -334,7 +325,7 @@ def create_secrets(ctx, config):
                     "payload_content_encoding": "base64"
                 })
 
-            sec_req = httplib.HTTPConnection(barbican_host, barbican_port, timeout=30)
+            sec_req = http_client.HTTPConnection(barbican_host, barbican_port, timeout=30)
             try:
                 sec_req.request(
                     'POST',
@@ -352,7 +343,7 @@ def create_secrets(ctx, config):
             if not (barbican_sec_resp.status >= 200 and
                     barbican_sec_resp.status < 300):
                 raise Exception("Cannot create secret")
-            barbican_data = json.loads(barbican_sec_resp.read())
+            barbican_data = json.loads(six.ensure_str(barbican_sec_resp.read()))
             if 'secret_ref' not in barbican_data:
                 raise ValueError("Malformed secret creation response")
             secret_ref = barbican_data["secret_ref"]
@@ -365,7 +356,7 @@ def create_secrets(ctx, config):
                         "project-access": True
                     }
                 })
-            acl_req = httplib.HTTPConnection(secret_url_parsed.netloc, timeout=30)
+            acl_req = http_client.HTTPConnection(secret_url_parsed.netloc, timeout=30)
             acl_req.request(
                 'PUT',
                 secret_url_parsed.path+'/acl',
@@ -487,11 +478,10 @@ def task(ctx, config):
         config = all_clients
     if isinstance(config, list):
         config = dict.fromkeys(config)
-    clients = config.keys()
 
     overrides = ctx.config.get('overrides', {})
     # merge each client section, not the top level.
-    for client in config.iterkeys():
+    for client in config.keys():
         if not config[client]:
             config[client] = {}
         teuthology.deep_merge(config[client], overrides.get('barbican', {}))
@@ -504,7 +494,6 @@ def task(ctx, config):
 
     ctx.barbican = argparse.Namespace()
     ctx.barbican.endpoints = assign_ports(ctx, config, 9311)
-    ctx.barbican.token = {}
     ctx.barbican.keys = {}
     
     with contextutil.nested(

@@ -1,3 +1,6 @@
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// vim: ts=8 sw=2 smarttab
+
 #include "pg_meta.h"
 
 #include <string_view>
@@ -7,7 +10,7 @@
 
 // prefix pgmeta_oid keys with _ so that PGLog::read_log_and_missing() can
 // easily skip them
-using ceph::os::FuturizedStore;
+using crimson::os::FuturizedStore;
 
 PGMeta::PGMeta(FuturizedStore* store, spg_t pgid)
   : store{store},
@@ -63,7 +66,7 @@ seastar::future<pg_info_t, PastIntervals> PGMeta::load()
                                  string{info_key},
                                  string{biginfo_key},
                                  string{fastinfo_key}});
-  }).then([this](auto&& values) {
+  }).then([](auto&& values) {
     {
       // sanity check
       auto infover = find_value<__u8>(values, infover_key);

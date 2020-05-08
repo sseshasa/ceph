@@ -10,7 +10,7 @@
 #include "Fwd.h"
 #include "msg/async/frames_v2.h"
 
-namespace ceph::net {
+namespace crimson::net {
 
 enum class custom_bp_t : uint8_t {
   BANNER_WRITE = 0,
@@ -62,7 +62,7 @@ class socket_blocker {
       return seastar::now();
     } else {
       p_blocked = seastar::abort_source();
-      return seastar::sleep_abortable(10s, *p_blocked).then([this] {
+      return seastar::sleep_abortable(10s, *p_blocked).then([] {
         throw std::runtime_error(
             "Timeout (10s) in socket_blocker::wait_blocked()");
       }).handle_exception_type([] (const seastar::sleep_aborted& e) {
@@ -78,7 +78,7 @@ class socket_blocker {
     }
     ceph_assert(!p_unblocked);
     p_unblocked = seastar::abort_source();
-    return seastar::sleep_abortable(10s, *p_unblocked).then([this] {
+    return seastar::sleep_abortable(10s, *p_unblocked).then([] {
       ceph_abort("Timeout (10s) in socket_blocker::block()");
     }).handle_exception_type([] (const seastar::sleep_aborted& e) {
       // wait done!
@@ -162,4 +162,4 @@ struct Interceptor {
   virtual bp_action_t intercept(Connection& conn, Breakpoint bp) = 0;
 };
 
-} // namespace ceph::net
+} // namespace crimson::net

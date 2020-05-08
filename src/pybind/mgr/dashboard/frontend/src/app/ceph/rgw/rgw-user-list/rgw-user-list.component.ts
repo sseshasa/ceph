@@ -1,10 +1,11 @@
-import { Component, ViewChild } from '@angular/core';
+import { Component, NgZone, ViewChild } from '@angular/core';
 
 import { I18n } from '@ngx-translate/i18n-polyfill';
 import { BsModalService } from 'ngx-bootstrap/modal';
 import { forkJoin as observableForkJoin, Observable, Subscriber } from 'rxjs';
 
 import { RgwUserService } from '../../../shared/api/rgw-user.service';
+import { ListWithDetails } from '../../../shared/classes/list-with-details.class';
 import { CriticalConfirmationModalComponent } from '../../../shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
 import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
 import { TableComponent } from '../../../shared/datatable/table/table.component';
@@ -26,15 +27,16 @@ const BASE_URL = 'rgw/user';
   styleUrls: ['./rgw-user-list.component.scss'],
   providers: [{ provide: URLBuilderService, useValue: new URLBuilderService(BASE_URL) }]
 })
-export class RgwUserListComponent {
+export class RgwUserListComponent extends ListWithDetails {
   @ViewChild(TableComponent, { static: true })
   table: TableComponent;
-
   permission: Permission;
   tableActions: CdTableAction[];
   columns: CdTableColumn[] = [];
   users: object[] = [];
   selection: CdTableSelection = new CdTableSelection();
+  isStale = false;
+  staleTimeout: number;
 
   constructor(
     private authStorageService: AuthStorageService,
@@ -42,8 +44,10 @@ export class RgwUserListComponent {
     private bsModalService: BsModalService,
     private i18n: I18n,
     private urlBuilder: URLBuilderService,
-    public actionLabels: ActionLabelsI18n
+    public actionLabels: ActionLabelsI18n,
+    private ngZone: NgZone
   ) {
+    super();
     this.permission = this.authStorageService.getPermissions().rgw;
     this.columns = [
       {
@@ -71,7 +75,12 @@ export class RgwUserListComponent {
       {
         name: this.i18n('Max. buckets'),
         prop: 'max_buckets',
-        flexGrow: 1
+        flexGrow: 1,
+        cellTransformation: CellTemplate.map,
+        customTemplateConfig: {
+          '-1': this.i18n('Disabled'),
+          0: this.i18n('Unlimited')
+        }
       }
     ];
     const getUserUri = () =>
@@ -80,7 +89,8 @@ export class RgwUserListComponent {
       permission: 'create',
       icon: Icons.add,
       routerLink: () => this.urlBuilder.getCreate(),
-      name: this.actionLabels.CREATE
+      name: this.actionLabels.CREATE,
+      canBePrimary: (selection: CdTableSelection) => !selection.hasSelection
     };
     const editAction: CdTableAction = {
       permission: 'update',
@@ -92,12 +102,28 @@ export class RgwUserListComponent {
       permission: 'delete',
       icon: Icons.destroy,
       click: () => this.deleteAction(),
-      name: this.actionLabels.DELETE
+      disable: () => !this.selection.hasSelection,
+      name: this.actionLabels.DELETE,
+      canBePrimary: (selection: CdTableSelection) => selection.hasMultiSelection
     };
     this.tableActions = [addAction, editAction, deleteAction];
+    this.timeConditionReached();
+  }
+
+  timeConditionReached() {
+    clearTimeout(this.staleTimeout);
+    this.ngZone.runOutsideAngular(() => {
+      this.staleTimeout = window.setTimeout(() => {
+        this.ngZone.run(() => {
+          this.isStale = true;
+        });
+      }, 10000);
+    });
   }
 
   getUserList(context: CdTableFetchDataContext) {
+    this.isStale = false;
+    this.timeConditionReached();
     this.rgwUserService.list().subscribe(
       (resp: object[]) => {
         this.users = resp;
@@ -116,6 +142,7 @@ export class RgwUserListComponent {
     this.bsModalService.show(CriticalConfirmationModalComponent, {
       initialState: {
         itemDescription: this.selection.hasSingleSelection ? this.i18n('user') : this.i18n('users'),
+        itemNames: this.selection.selected.map((user: any) => user['uid']),
         submitActionObservable: (): Observable<any> => {
           return new Observable((observer: Subscriber<any>) => {
             // Delete all selected data table rows.

@@ -13,6 +13,7 @@ set(libos_srcs
   filestore/IndexManager.cc
   filestore/LFNIndex.cc
   filestore/WBThrottle.cc
+  filestore/os_xattr.c
   memstore/MemStore.cc
   kstore/KStore.cc
   kstore/kstore_types.cc
@@ -32,6 +33,9 @@ if(WITH_BLUESTORE)
     bluestore/FreelistManager.cc
     bluestore/StupidAllocator.cc
     bluestore/BitmapAllocator.cc
+    bluestore/AvlAllocator.cc
+    bluestore/HybridAllocator.cc
+    bluestore/io_uring.cc
   )
 endif(WITH_BLUESTORE)
 
@@ -89,8 +93,7 @@ if(HAVE_LIBAIO)
 endif(HAVE_LIBAIO)
 
 if(WITH_FUSE)
-  target_include_directories(os SYSTEM PRIVATE ${FUSE_INCLUDE_DIRS})
-  target_link_libraries(os ${FUSE_LIBRARIES})
+  target_link_libraries(os FUSE::FUSE)
 endif()
 
 if(HAVE_LIBZFS)
@@ -104,6 +107,7 @@ endif()
 
 if(WITH_LTTNG)
   add_dependencies(os objectstore-tp)
+  add_dependencies(os bluestore-tp)
 endif()
 
 target_link_libraries(os kv)
@@ -125,6 +129,16 @@ if(WITH_BLUESTORE_PMEM)
   target_link_libraries(os pmem::pmem)
 endif()
 
-if(WITH_LTTNG AND WITH_EVENTTRACE)
+if(WITH_EVENTTRACE)
   add_dependencies(os eventtrace_tp)
+endif()
+
+if(WITH_LIBURING)
+  if(WITH_SYSTEM_LIBURING)
+    find_package(uring REQUIRED)
+  else()
+    include(Builduring)
+    build_uring()
+  endif()
+  target_link_libraries(os uring::uring)
 endif()

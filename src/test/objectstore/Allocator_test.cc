@@ -14,7 +14,6 @@
 #include "include/Context.h"
 #include "os/bluestore/Allocator.h"
 
-#include <boost/random/uniform_int.hpp>
 typedef boost::mt11213b gen_type;
 
 class AllocTest : public ::testing::TestWithParam<const char*> {
@@ -66,6 +65,7 @@ TEST_P(AllocTest, test_alloc_min_alloc)
    * Allocate extent and make sure all comes in single extent.
    */   
   {
+    init_alloc(capacity, block_size);
     alloc->init_add_free(0, block_size * 4);
     PExtentVector extents;
     EXPECT_EQ(4*block_size,
@@ -79,6 +79,7 @@ TEST_P(AllocTest, test_alloc_min_alloc)
    * Allocate extent and make sure we get two different extents.
    */
   {
+    init_alloc(capacity, block_size);
     alloc->init_add_free(0, block_size * 2);
     alloc->init_add_free(3 * block_size, block_size * 2);
     PExtentVector extents;
@@ -105,6 +106,7 @@ TEST_P(AllocTest, test_alloc_min_max_alloc)
    * min_alloc_size == max_alloc_size
    */
   {
+    init_alloc(capacity, block_size);
     alloc->init_add_free(0, block_size * 4);
     PExtentVector extents;
     EXPECT_EQ(4*block_size,
@@ -122,6 +124,7 @@ TEST_P(AllocTest, test_alloc_min_max_alloc)
    * when max alloc size > min_alloc size
    */
   {
+    init_alloc(capacity, block_size);
     alloc->init_add_free(0, block_size * 4);
     PExtentVector extents;
     EXPECT_EQ(4*block_size,
@@ -137,6 +140,7 @@ TEST_P(AllocTest, test_alloc_min_max_alloc)
    * Make sure allocations are of min_alloc_size when min_alloc_size > block_size.
    */
   {
+    init_alloc(capacity, block_size);
     alloc->init_add_free(0, block_size * 1024);
     PExtentVector extents;
     EXPECT_EQ(1024 * block_size,
@@ -153,6 +157,7 @@ TEST_P(AllocTest, test_alloc_min_max_alloc)
    * Allocate and free.
    */
   {
+    init_alloc(capacity, block_size);
     alloc->init_add_free(0, block_size * 16);
     PExtentVector extents;
     EXPECT_EQ(16 * block_size,
@@ -171,8 +176,8 @@ TEST_P(AllocTest, test_alloc_failure)
   int64_t block_size = 1024;
   int64_t capacity = 4 * 1024 * block_size;
 
-  init_alloc(capacity, block_size);
   {
+    init_alloc(capacity, block_size);
     alloc->init_add_free(0, block_size * 256);
     alloc->init_add_free(block_size * 512, block_size * 256);
 
@@ -258,7 +263,16 @@ TEST_P(AllocTest, test_alloc_fragmentation)
       EXPECT_EQ(0.0, alloc->get_fragmentation());
     }
   }
+  tmp.clear();
   EXPECT_EQ(-ENOSPC, alloc->allocate(want_size, alloc_unit, 0, 0, &tmp));
+
+  if (GetParam() == string("avl")) {
+    // AVL allocator uses a different allocating strategy
+    GTEST_SKIP() << "skipping for AVL allocator";
+  } else if (GetParam() == string("hybrid")) {
+    // AVL allocator uses a different allocating strategy
+    GTEST_SKIP() << "skipping for Hybrid allocator";
+  }
 
   for (size_t i = 0; i < allocated.size(); i += 2)
   {
@@ -412,6 +426,7 @@ TEST_P(AllocTest, test_alloc_big2)
   EXPECT_EQ(need,
       alloc->allocate(need, mas, 0, &extents));
   need = block_size * blocks / 4; // 2GB
+  extents.clear();
   EXPECT_EQ(need,
       alloc->allocate(need, mas, 0, &extents));
   EXPECT_TRUE(extents[0].length > 0);
@@ -435,7 +450,37 @@ TEST_P(AllocTest, test_alloc_big3)
   EXPECT_TRUE(extents[0].length > 0);
 }
 
+TEST_P(AllocTest, test_alloc_contiguous)
+{
+  int64_t block_size = 0x1000;
+  int64_t capacity = block_size * 1024 * 1024;
+
+  {
+    init_alloc(capacity, block_size);
+
+    alloc->init_add_free(0, capacity);
+    PExtentVector extents;
+    uint64_t need = 4 * block_size;
+    EXPECT_EQ(need,
+      alloc->allocate(need, need,
+        0, (int64_t)0, &extents));
+    EXPECT_EQ(1u, extents.size());
+    EXPECT_EQ(extents[0].offset, 0);
+    EXPECT_EQ(extents[0].length, 4 * block_size);
+
+    extents.clear();
+    EXPECT_EQ(need,
+      alloc->allocate(need, need,
+        0, (int64_t)0, &extents));
+    EXPECT_EQ(1u, extents.size());
+    EXPECT_EQ(extents[0].offset, 4 * block_size);
+    EXPECT_EQ(extents[0].length, 4 * block_size);
+  }
+
+  alloc->shutdown();
+}
+
 INSTANTIATE_TEST_SUITE_P(
   Allocator,
   AllocTest,
-  ::testing::Values("stupid", "bitmap"));
+  ::testing::Values("stupid", "bitmap", "avl", "hybrid"));

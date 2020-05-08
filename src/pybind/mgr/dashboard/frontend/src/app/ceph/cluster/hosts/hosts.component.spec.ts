@@ -1,26 +1,27 @@
 import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { async, ComponentFixture, TestBed } from '@angular/core/testing';
+import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 import { RouterTestingModule } from '@angular/router/testing';
 
 import { BsDropdownModule } from 'ngx-bootstrap/dropdown';
 import { TabsModule } from 'ngx-bootstrap/tabs';
-
 import { ToastrModule } from 'ngx-toastr';
 import { of } from 'rxjs';
+
 import { configureTestBed, i18nProviders } from '../../../../testing/unit-test-helper';
+import { CoreModule } from '../../../core/core.module';
 import { HostService } from '../../../shared/api/host.service';
 import { Permissions } from '../../../shared/models/permissions';
 import { AuthStorageService } from '../../../shared/services/auth-storage.service';
 import { SharedModule } from '../../../shared/shared.module';
-import { InventoryComponent } from '../inventory/inventory.component';
-import { ServicesComponent } from '../services/services.component';
-import { HostDetailsComponent } from './host-details/host-details.component';
+import { CephModule } from '../../ceph.module';
+import { CephSharedModule } from '../../shared/ceph-shared.module';
 import { HostsComponent } from './hosts.component';
 
 describe('HostsComponent', () => {
   let component: HostsComponent;
   let fixture: ComponentFixture<HostsComponent>;
-  let hostListSpy;
+  let hostListSpy: jasmine.Spy;
 
   const fakeAuthStorageService = {
     getPermissions: () => {
@@ -30,15 +31,19 @@ describe('HostsComponent', () => {
 
   configureTestBed({
     imports: [
+      BrowserAnimationsModule,
+      CephSharedModule,
       SharedModule,
       HttpClientTestingModule,
       TabsModule.forRoot(),
       BsDropdownModule.forRoot(),
       RouterTestingModule,
-      ToastrModule.forRoot()
+      ToastrModule.forRoot(),
+      CephModule,
+      CoreModule
     ],
     providers: [{ provide: AuthStorageService, useValue: fakeAuthStorageService }, i18nProviders],
-    declarations: [HostsComponent, HostDetailsComponent, InventoryComponent, ServicesComponent]
+    declarations: []
   });
 
   beforeEach(() => {

@@ -6,8 +6,10 @@ import collections
 import importlib
 import inspect
 import json
+import logging
 import os
 import pkgutil
+import re
 import sys
 
 import six
@@ -16,12 +18,16 @@ from six.moves.urllib.parse import unquote
 # pylint: disable=wrong-import-position
 import cherrypy
 
-from .. import logger
 from ..security import Scope, Permission
 from ..tools import wraps, getargspec, TaskManager, get_request_body_params
 from ..exceptions import ScopeNotValid, PermissionNotValid
 from ..services.auth import AuthManager, JwtManager
 from ..plugins import PLUGIN_MANAGER
+
+try:
+    from typing import Any, List, Optional
+except ImportError:
+    pass  # For typing only
 
 
 def EndpointDoc(description="", group="", parameters=None, responses=None):  # noqa: N802
@@ -85,14 +91,14 @@ def EndpointDoc(description="", group="", parameters=None, responses=None):  # n
         return splitted
 
     def _split_list(data, nested):
-        splitted = []
+        splitted = []  # type: List[Any]
         for item in data:
             splitted.extend(_split_parameters(item, nested))
         return splitted
 
     # nested = True means parameters are inside a dict or array
     def _split_parameters(data, nested=False):
-        param_list = []
+        param_list = []  # type: List[Any]
         if isinstance(data, dict):
             param_list.extend(_split_dict(data, nested))
         elif isinstance(data, (list, tuple)):
@@ -132,8 +138,6 @@ class ControllerDoc(object):
 class Controller(object):
     def __init__(self, path, base_url=None, security_scope=None, secure=True):
         if security_scope and not Scope.valid_scope(security_scope):
-            logger.debug("Invalid security scope name: %s\n Possible values: "
-                         "%s", security_scope, Scope.all_scopes())
             raise ScopeNotValid(security_scope)
         self.path = path
         self.base_url = base_url
@@ -253,19 +257,20 @@ def Proxy(path=None):  # noqa: N802
 
 
 def load_controllers():
+    logger = logging.getLogger('controller.load')
     # setting sys.path properly when not running under the mgr
     controllers_dir = os.path.dirname(os.path.realpath(__file__))
     dashboard_dir = os.path.dirname(controllers_dir)
     mgr_dir = os.path.dirname(dashboard_dir)
-    logger.debug("LC: controllers_dir=%s", controllers_dir)
-    logger.debug("LC: dashboard_dir=%s", dashboard_dir)
-    logger.debug("LC: mgr_dir=%s", mgr_dir)
+    logger.debug("controllers_dir=%s", controllers_dir)
+    logger.debug("dashboard_dir=%s", dashboard_dir)
+    logger.debug("mgr_dir=%s", mgr_dir)
     if mgr_dir not in sys.path:
         sys.path.append(mgr_dir)
 
     controllers = []
     mods = [mod for _, mod, _ in pkgutil.iter_modules([controllers_dir])]
-    logger.debug("LC: mods=%s", mods)
+    logger.debug("mods=%s", mods)
     for mod_name in mods:
         mod = importlib.import_module('.controllers.{}'.format(mod_name),
                                       package='dashboard')
@@ -286,31 +291,40 @@ def load_controllers():
     return controllers
 
 
-ENDPOINT_MAP = collections.defaultdict(list)
+ENDPOINT_MAP = collections.defaultdict(list)  # type: dict
 
 
 def generate_controller_routes(endpoint, mapper, base_url):
     inst = endpoint.inst
     ctrl_class = endpoint.ctrl
-    endp_base_url = None
 
     if endpoint.proxy:
         conditions = None
     else:
         conditions = dict(method=[endpoint.method])
 
+    # base_url can be empty or a URL path that starts with "/"
+    # we will remove the trailing "/" if exists to help with the
+    # concatenation with the endpoint url below
+    if base_url.endswith("/"):
+        base_url = base_url[:-1]
+
     endp_url = endpoint.url
-    if base_url == "/":
-        base_url = ""
-    if endp_url == "/" and base_url:
-        endp_url = ""
+
+    if endp_url.find("/", 1) == -1:
+        parent_url = "{}{}".format(base_url, endp_url)
+    else:
+        parent_url = "{}{}".format(base_url, endp_url[:endp_url.find("/", 1)])
+
+    # parent_url might be of the form "/.../{...}" where "{...}" is a path parameter
+    # we need to remove the path parameter definition
+    parent_url = re.sub(r'(?:/\{[^}]+\})$', '', parent_url)
+    if not parent_url:  # root path case
+        parent_url = "/"
+
     url = "{}{}".format(base_url, endp_url)
 
-    if '/' in url[len(base_url)+1:]:
-        endp_base_url = url[:len(base_url)+1+endp_url[1:].find('/')]
-    else:
-        endp_base_url = url
-
+    logger = logging.getLogger('controller')
     logger.debug("Mapped [%s] to %s:%s restricted to %s",
                  url, ctrl_class.__name__, endpoint.action,
                  endpoint.method)
@@ -327,7 +341,7 @@ def generate_controller_routes(endpoint, mapper, base_url):
     mapper.connect(name, url, controller=inst, action=endpoint.action,
                    conditions=conditions)
 
-    return endp_base_url
+    return parent_url
 
 
 def generate_routes(url_prefix):
@@ -348,6 +362,7 @@ def generate_routes(url_prefix):
         parent_urls.add(generate_controller_routes(endpoint, mapper,
                                                    "{}".format(url_prefix)))
 
+    logger = logging.getLogger('controller')
     logger.debug("list of parent paths: %s", parent_urls)
     return mapper, parent_urls
 
@@ -500,10 +515,13 @@ class BaseController(object):
 
         @property
         def url(self):
+            ctrl_path = self.ctrl.get_path()
+            if ctrl_path == "/":
+                ctrl_path = ""
             if self.config['path'] is not None:
-                url = "{}{}".format(self.ctrl.get_path(), self.config['path'])
+                url = "{}{}".format(ctrl_path, self.config['path'])
             else:
-                url = "{}/{}".format(self.ctrl.get_path(), self.func.__name__)
+                url = "{}/{}".format(ctrl_path, self.func.__name__)
 
             ctrl_path_params = self.ctrl.get_path_param_names(
                 self.config['path'])
@@ -574,11 +592,13 @@ class BaseController(object):
                                                  self.action)
 
     def __init__(self):
+        logger = logging.getLogger('controller')
         logger.info('Initializing controller: %s -> %s',
-                    self.__class__.__name__, self._cp_path_)
+                    self.__class__.__name__, self._cp_path_)  # type: ignore
+        super(BaseController, self).__init__()
 
     def _has_permissions(self, permissions, scope=None):
-        if not self._cp_config['tools.authenticate.on']:
+        if not self._cp_config['tools.authenticate.on']:  # type: ignore
             raise Exception("Cannot verify permission in non secured "
                             "controllers")
 
@@ -597,7 +617,7 @@ class BaseController(object):
     def get_path_param_names(cls, path_extension=None):
         if path_extension is None:
             path_extension = ""
-        full_path = cls._cp_path_[1:] + path_extension
+        full_path = cls._cp_path_[1:] + path_extension  # type: ignore
         path_params = []
         for step in full_path.split('/'):
             param = None
@@ -613,7 +633,7 @@ class BaseController(object):
 
     @classmethod
     def get_path(cls):
-        return cls._cp_path_
+        return cls._cp_path_  # type: ignore
 
     @classmethod
     def endpoints(cls):
@@ -697,6 +717,7 @@ class RESTController(BaseController):
     * bulk_delete()
     * get(key)
     * set(data, key)
+    * singleton_set(data)
     * delete(key)
 
     Test with curl:
@@ -713,7 +734,7 @@ class RESTController(BaseController):
     # to specify a composite id (two parameters) use '/'. e.g., "param1/param2".
     # If subclasses don't override this property we try to infer the structure
     # of the resource ID.
-    RESOURCE_ID = None
+    RESOURCE_ID = None  # type: Optional[str]
 
     _permission_map = {
         'GET': Permission.READ,
@@ -729,7 +750,8 @@ class RESTController(BaseController):
         ('bulk_delete', {'method': 'DELETE', 'resource': False, 'status': 204}),
         ('get', {'method': 'GET', 'resource': True, 'status': 200}),
         ('delete', {'method': 'DELETE', 'resource': True, 'status': 204}),
-        ('set', {'method': 'PUT', 'resource': True, 'status': 200})
+        ('set', {'method': 'PUT', 'resource': True, 'status': 200}),
+        ('singleton_set', {'method': 'PUT', 'resource': False, 'status': 200})
     ])
 
     @classmethod
@@ -762,7 +784,7 @@ class RESTController(BaseController):
             permission = None
 
             if func.__name__ in cls._method_mapping:
-                meth = cls._method_mapping[func.__name__]
+                meth = cls._method_mapping[func.__name__]  # type: dict
 
                 if meth['resource']:
                     if not res_id_params:
@@ -884,6 +906,7 @@ def _set_func_permissions(func, permissions):
 
     for perm in permissions:
         if not Permission.valid_permission(perm):
+            logger = logging.getLogger('controller.set_func_perms')
             logger.debug("Invalid security permission: %s\n "
                          "Possible values: %s", perm,
                          Permission.all_permissions())
@@ -897,20 +920,32 @@ def _set_func_permissions(func, permissions):
 
 
 def ReadPermission(func):  # noqa: N802
+    """
+    :raises PermissionNotValid: If the permission is missing.
+    """
     _set_func_permissions(func, Permission.READ)
     return func
 
 
 def CreatePermission(func):  # noqa: N802
+    """
+    :raises PermissionNotValid: If the permission is missing.
+    """
     _set_func_permissions(func, Permission.CREATE)
     return func
 
 
 def DeletePermission(func):  # noqa: N802
+    """
+    :raises PermissionNotValid: If the permission is missing.
+    """
     _set_func_permissions(func, Permission.DELETE)
     return func
 
 
 def UpdatePermission(func):  # noqa: N802
+    """
+    :raises PermissionNotValid: If the permission is missing.
+    """
     _set_func_permissions(func, Permission.UPDATE)
     return func

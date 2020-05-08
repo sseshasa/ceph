@@ -151,15 +151,21 @@ public:
     return false;
   }
 
-  void encode(bufferlist& bl) const {
-    encode_raw(_enc, bl);
+  void encode(ceph::buffer::list& bl) const {
+    ceph::encode_raw(_enc, bl);
   }
-  void decode(bufferlist::const_iterator& p) {
+  void decode(ceph::buffer::list::const_iterator& p) {
     __u32 v;
-    decode_raw(v, p);
+    ceph::decode_raw(v, p);
     _enc = v;
   }
-
+  bool operator<(const frag_t& b) const
+  {
+    if (value() != b.value())
+      return value() < b.value();
+    else
+      return bits() < b.bits();
+  }
 private:
   _frag_t _enc = 0;
 };
@@ -176,8 +182,8 @@ inline std::ostream& operator<<(std::ostream& out, const frag_t& hb)
   return out << '*';
 }
 
-inline void encode(const frag_t &f, bufferlist& bl) { f.encode(bl); }
-inline void decode(frag_t &f, bufferlist::const_iterator& p) { f.decode(p); }
+inline void encode(const frag_t &f, ceph::buffer::list& bl) { f.encode(bl); }
+inline void decode(frag_t &f, ceph::buffer::list::const_iterator& p) { f.decode(p); }
 
 using frag_vec_t = boost::container::small_vector<frag_t, 4>;
 
@@ -458,15 +464,15 @@ public:
   }
 
   // encoding
-  void encode(bufferlist& bl) const {
+  void encode(ceph::buffer::list& bl) const {
     using ceph::encode;
     encode(_splits, bl);
   }
-  void decode(bufferlist::const_iterator& p) {
+  void decode(ceph::buffer::list::const_iterator& p) {
     using ceph::decode;
     decode(_splits, p);
   }
-  void encode_nohead(bufferlist& bl) const {
+  void encode_nohead(ceph::buffer::list& bl) const {
     using ceph::encode;
     for (compact_map<frag_t,int32_t>::const_iterator p = _splits.begin();
 	 p != _splits.end();
@@ -475,7 +481,7 @@ public:
       encode(p->second, bl);
     }
   }
-  void decode_nohead(int n, bufferlist::const_iterator& p) {
+  void decode_nohead(int n, ceph::buffer::list::const_iterator& p) {
     using ceph::decode;
     _splits.clear();
     while (n-- > 0) {
@@ -508,11 +514,9 @@ public:
     out << ")";
   }
 
-  void dump(Formatter *f) const {
+  void dump(ceph::Formatter *f) const {
     f->open_array_section("splits");
-    for (compact_map<frag_t,int32_t>::const_iterator p = _splits.begin();
-         p != _splits.end();
-         ++p) {
+    for (auto p = _splits.begin(); p != _splits.end(); ++p) {
       f->open_object_section("split");
       std::ostringstream frag_str;
       frag_str << p->first;
@@ -546,7 +550,6 @@ inline std::ostream& operator<<(std::ostream& out, const fragtree_t& ft)
   return out << ")";
 }
 
-
 /**
  * fragset_t -- a set of fragments
  */
@@ -567,29 +570,27 @@ public:
       f = f.parent();
     }
   }
-  
+
+  void insert_raw(frag_t f){
+    _set.insert(f);
+  }
   void insert(frag_t f) {
     _set.insert(f);
     simplify();
   }
 
   void simplify() {
-    while (1) {
-      bool clean = true;
-      std::set<frag_t>::iterator p = _set.begin();
-      while (p != _set.end()) {
-	if (!p->is_root() &&
-	    _set.count(p->get_sibling())) {
-	  _set.erase(p->get_sibling());
-	  _set.insert(p->parent());
-	  _set.erase(p++);
-	  clean = false;
-	} else {
-	  p++;
-	}
+    auto it = _set.begin();
+    while (it != _set.end()) {
+      if (!it->is_root() &&
+	  _set.count(it->get_sibling())) {
+	_set.erase(it->get_sibling());
+	auto ret = _set.insert(it->parent());
+	_set.erase(it);
+	it = ret.first;
+      } else {
+	++it;
       }
-      if (clean)
-	break;
     }
   }
 };

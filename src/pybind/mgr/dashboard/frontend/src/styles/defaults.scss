@@ -2,6 +2,10 @@
 
 @import 'vendor.variables';
 
+// Bootstrap defaults
+
+$gray-900: #212529 !default;
+
 $screen-sm-min: 576px !default;
 $screen-md-min: 768px !default;
 $screen-lg-min: 992px !default;
@@ -22,7 +26,7 @@ $color-bright-yellow: #ffc200 !default;
 $color-light-yellow: #fff3cd !default;
 
 $color-bright-green: #00bb00 !default;
-// $color-green: #71843f !default;
+$color-green: #245e03 !default;
 
 $color-blue: #288cea !default;
 $color-light-blue: #d1ecf1 !default;
@@ -81,6 +85,7 @@ $color-required-text: $color-pink !default;
 $color-login-row-text: $color-solid-white !default;
 $color-login-row-bg: $color-secondary !default;
 $color-password-toggle-text: $color-solid-white !default;
+$color-password-toggle-placeholder-text: $color-blue-gray !default;
 $color-password-toggle-bg: $color-solid-gray !default;
 $color-password-toggle-focus: $color-primary !default;
 // $color-login-active-row-bg: $color-light-yellow !default;
@@ -108,6 +113,9 @@ $color-nav-links: $color-white-gray !default;
 $color-nav-links-hover: $color-primary !default;
 $color-nav-active-link-bg: $color-primary !default;
 $color-nav-border-top-collapse: $color-white-gray !default;
+
+$navbar-height: 43px;
+$pwd-exp-height: 37.6px;
 
 /*Helper*/
 $color-helper-bg: $color-primary !default;

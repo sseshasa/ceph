@@ -140,6 +140,9 @@
 
 #define MSG_OSD_PG_READY_TO_MERGE 122
 
+#define MSG_OSD_PG_LEASE        133
+#define MSG_OSD_PG_LEASE_ACK    134
+
 // *** MDS ***
 
 #define MSG_MDS_BEACON             100  // to monitor
@@ -232,7 +235,7 @@
 class Message : public RefCountedObject {
 public:
 #ifdef WITH_SEASTAR
-  using ConnectionRef = ceph::net::ConnectionRef;
+  using ConnectionRef = crimson::net::ConnectionRef;
 #else
   using ConnectionRef = ::ConnectionRef;
 #endif // WITH_SEASTAR
@@ -393,7 +396,7 @@ public:
   void set_payload(ceph::buffer::list& bl) {
     if (byte_throttler)
       byte_throttler->put(payload.length());
-    payload.claim(bl, ceph::buffer::list::CLAIM_ALLOW_NONSHAREABLE);
+    payload.claim(bl);
     if (byte_throttler)
       byte_throttler->take(payload.length());
   }
@@ -401,7 +404,7 @@ public:
   void set_middle(ceph::buffer::list& bl) {
     if (byte_throttler)
       byte_throttler->put(middle.length());
-    middle.claim(bl, ceph::buffer::list::CLAIM_ALLOW_NONSHAREABLE);
+    middle.claim(bl);
     if (byte_throttler)
       byte_throttler->take(middle.length());
   }
@@ -417,11 +420,10 @@ public:
 
   const ceph::buffer::list& get_data() const { return data; }
   ceph::buffer::list& get_data() { return data; }
-  void claim_data(ceph::buffer::list& bl,
-		  unsigned int flags = ceph::buffer::list::CLAIM_DEFAULT) {
+  void claim_data(ceph::buffer::list& bl) {
     if (byte_throttler)
       byte_throttler->put(data.length());
-    bl.claim(data, flags);
+    bl.claim(data);
   }
   off_t get_data_len() const { return data.length(); }
 

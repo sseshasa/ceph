@@ -1,10 +1,8 @@
 import { Component, Input, OnChanges } from '@angular/core';
 
 import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
 
 import { CdTableColumn } from '../../../shared/models/cd-table-column';
-import { CdTableSelection } from '../../../shared/models/cd-table-selection';
 
 @Component({
   selector: 'cd-nfs-details',
@@ -13,13 +11,13 @@ import { CdTableSelection } from '../../../shared/models/cd-table-selection';
 })
 export class NfsDetailsComponent implements OnChanges {
   @Input()
-  selection: CdTableSelection;
+  selection: any;
 
   selectedItem: any;
   data: any;
 
   clientsColumns: CdTableColumn[];
-  clients = [];
+  clients: any[] = [];
 
   constructor(private i18n: I18n) {
     this.clientsColumns = [
@@ -42,8 +40,8 @@ export class NfsDetailsComponent implements OnChanges {
   }
 
   ngOnChanges() {
-    if (this.selection.hasSelection) {
-      this.selectedItem = this.selection.first();
+    if (this.selection) {
+      this.selectedItem = this.selection;
 
       this.clients = this.selectedItem.clients;
 
@@ -51,7 +49,7 @@ export class NfsDetailsComponent implements OnChanges {
       this.data[this.i18n('Cluster')] = this.selectedItem.cluster_id;
       this.data[this.i18n('Daemons')] = this.selectedItem.daemons;
       this.data[this.i18n('NFS Protocol')] = this.selectedItem.protocols.map(
-        (protocol) => 'NFSv' + protocol
+        (protocol: string) => 'NFSv' + protocol
       );
       this.data[this.i18n('Pseudo')] = this.selectedItem.pseudo;
       this.data[this.i18n('Access Type')] = this.selectedItem.access_type;

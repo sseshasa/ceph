@@ -87,6 +87,7 @@
                                         mirroring.
       mirror image resync               Force resync to primary image for RBD
                                         mirroring.
+      mirror image snapshot             Create RBD mirroring image snapshot.
       mirror image status               Show RBD mirroring status for an image.
       mirror pool demote                Demote all primary images in the pool.
       mirror pool disable               Disable RBD mirroring by default within a
@@ -106,6 +107,12 @@
                                         pool.
       mirror pool status                Show status for all mirrored images in
                                         the pool.
+      mirror snapshot schedule add      Add mirror snapshot schedule.
+      mirror snapshot schedule list (... ls)
+                                        List mirror snapshot schedule.
+      mirror snapshot schedule remove (... rm)
+                                        Remove mirror snapshot schedule.
+      mirror snapshot schedule status   Show mirror snapshot schedule status.
       namespace create                  Create an RBD image namespace.
       namespace list (namespace ls)     List RBD image namespaces.
       namespace remove (namespace rm)   Remove an RBD image namespace.
@@ -133,20 +140,24 @@
       trash list (trash ls)             List trash images.
       trash move (trash mv)             Move an image to the trash.
       trash purge                       Remove all expired images from trash.
+      trash purge schedule add          Add trash purge schedule.
+      trash purge schedule list (... ls)
+                                        List trash purge schedule.
+      trash purge schedule remove (... rm)
+                                        Remove trash purge schedule.
+      trash purge schedule status       Show trash purge schedule status.
       trash remove (trash rm)           Remove an image from trash.
       trash restore                     Restore an image from trash.
       watch                             Watch events on image.
   
   Optional arguments:
-    -c [ --conf ] arg     path to cluster configuration
-    --cluster arg         cluster name
-    --id arg              client id (without 'client.' prefix)
-    --user arg            client id (without 'client.' prefix)
-    -n [ --name ] arg     client name
-    -m [ --mon_host ] arg monitor host
-    --secret arg          path to secret key (deprecated)
-    -K [ --keyfile ] arg  path to secret key
-    -k [ --keyring ] arg  path to keyring
+    -c [ --conf ] arg                   path to cluster configuration
+    --cluster arg                       cluster name
+    --id arg                            client id (without 'client.' prefix)
+    -n [ --name ] arg                   client name
+    -m [ --mon_host ] arg               monitor host
+    -K [ --keyfile ] arg                path to secret key
+    -k [ --keyring ] arg                path to keyring
   
   See 'rbd help <command>' for help on a specific command.
   $ rbd help | grep '^    [a-z]' | sed 's/^    \([a-z -]*[a-z]\).*/\1/g' | while read -r line; do echo rbd help $line ; rbd help $line; done
@@ -207,6 +218,7 @@
                    [--image-feature <image-feature>] [--image-shared] 
                    [--stripe-unit <stripe-unit>] [--stripe-count <stripe-count>] 
                    [--data-pool <data-pool>] 
+                   [--mirror-image-mode <mirror-image-mode>] 
                    [--journal-splay-width <journal-splay-width>] 
                    [--journal-object-size <journal-object-size>] 
                    [--journal-pool <journal-pool>] 
@@ -230,7 +242,6 @@
     --dest-pool arg           destination pool name
     --dest-namespace arg      destination namespace name
     --dest arg                destination image name
-    --order arg               object order [12 <= order <= 25]
     --object-size arg         object size in B/K/M [4K <= object size <= 32M]
     --image-feature arg       image features
                               [layering(+), exclusive-lock(+*), object-map(+*),
@@ -239,6 +250,7 @@
     --stripe-unit arg         stripe unit in B/K/M
     --stripe-count arg        stripe count
     --data-pool arg           data pool
+    --mirror-image-mode arg   mirror image mode [journal or snapshot]
     --journal-splay-width arg number of active journal objects
     --journal-object-size arg size of journal objects [4K <= size <= 64M]
     --journal-pool arg        pool for journal objects
@@ -409,6 +421,7 @@
                   [--image-feature <image-feature>] [--image-shared] 
                   [--stripe-unit <stripe-unit>] [--stripe-count <stripe-count>] 
                   [--data-pool <data-pool>] 
+                  [--mirror-image-mode <mirror-image-mode>] 
                   [--journal-splay-width <journal-splay-width>] 
                   [--journal-object-size <journal-object-size>] 
                   [--journal-pool <journal-pool>] [--sparse-size <sparse-size>] 
@@ -434,7 +447,6 @@
     --dest-pool arg              destination pool name
     --dest-namespace arg         destination namespace name
     --dest arg                   destination image name
-    --order arg                  object order [12 <= order <= 25]
     --object-size arg            object size in B/K/M [4K <= object size <= 32M]
     --image-feature arg          image features
                                  [layering(+), exclusive-lock(+*),
@@ -443,6 +455,7 @@
     --stripe-unit arg            stripe unit in B/K/M
     --stripe-count arg           stripe count
     --data-pool arg              data pool
+    --mirror-image-mode arg      mirror image mode [journal or snapshot]
     --journal-splay-width arg    number of active journal objects
     --journal-object-size arg    size of journal objects [4K <= size <= 64M]
     --journal-pool arg           pool for journal objects
@@ -461,6 +474,7 @@
                     [--image-feature <image-feature>] [--image-shared] 
                     [--stripe-unit <stripe-unit>] 
                     [--stripe-count <stripe-count>] [--data-pool <data-pool>] 
+                    [--mirror-image-mode <mirror-image-mode>] 
                     [--journal-splay-width <journal-splay-width>] 
                     [--journal-object-size <journal-object-size>] 
                     [--journal-pool <journal-pool>] 
@@ -477,10 +491,7 @@
     -p [ --pool ] arg         pool name
     --namespace arg           namespace name
     --image arg               image name
-    --image-format arg        image format [1 (deprecated) or 2]
-    --new-format              use image format 2
-                              (deprecated)
-    --order arg               object order [12 <= order <= 25]
+    --image-format arg        image format [default: 2]
     --object-size arg         object size in B/K/M [4K <= object size <= 32M]
     --image-feature arg       image features
                               [layering(+), exclusive-lock(+*), object-map(+*),
@@ -489,6 +500,7 @@
     --stripe-unit arg         stripe unit in B/K/M
     --stripe-count arg        stripe count
     --data-pool arg           data pool
+    --mirror-image-mode arg   mirror image mode [journal or snapshot]
     --journal-splay-width arg number of active journal objects
     --journal-object-size arg size of journal objects [4K <= size <= 64M]
     --journal-pool arg        pool for journal objects
@@ -510,6 +522,7 @@
                        [--image-feature <image-feature>] [--image-shared] 
                        [--stripe-unit <stripe-unit>] 
                        [--stripe-count <stripe-count>] [--data-pool <data-pool>] 
+                       [--mirror-image-mode <mirror-image-mode>] 
                        [--journal-splay-width <journal-splay-width>] 
                        [--journal-object-size <journal-object-size>] 
                        [--journal-pool <journal-pool>] [--flatten] 
@@ -535,7 +548,6 @@
     --dest-pool arg              destination pool name
     --dest-namespace arg         destination namespace name
     --dest arg                   destination image name
-    --order arg                  object order [12 <= order <= 25]
     --object-size arg            object size in B/K/M [4K <= object size <= 32M]
     --image-feature arg          image features
                                  [layering(+), exclusive-lock(+*),
@@ -544,6 +556,7 @@
     --stripe-unit arg            stripe unit in B/K/M
     --stripe-count arg           stripe count
     --data-pool arg              data pool
+    --mirror-image-mode arg      mirror image mode [journal or snapshot]
     --journal-splay-width arg    number of active journal objects
     --journal-object-size arg    size of journal objects [4K <= size <= 64M]
     --journal-pool arg           pool for journal objects
@@ -637,6 +650,7 @@
   usage: rbd disk-usage [--pool <pool>] [--namespace <namespace>] 
                         [--image <image>] [--snap <snap>] [--format <format>] 
                         [--pretty-format] [--from-snap <from-snap>] [--exact] 
+                        [--merge-snapshots] 
                         <image-or-snap-spec> 
   
   Show disk usage stats for pool, image or snapshot.
@@ -655,6 +669,7 @@
     --pretty-format       pretty formatting (json and xml)
     --from-snap arg       snapshot starting point
     --exact               compute exact disk usage (slow)
+    --merge-snapshots     merge snapshot sizes with its image
   
   rbd help export
   usage: rbd export [--pool <pool>] [--namespace <namespace>] [--image <image>] 
@@ -1084,6 +1099,7 @@
                     [--image-feature <image-feature>] [--image-shared] 
                     [--stripe-unit <stripe-unit>] 
                     [--stripe-count <stripe-count>] [--data-pool <data-pool>] 
+                    [--mirror-image-mode <mirror-image-mode>] 
                     [--journal-splay-width <journal-splay-width>] 
                     [--journal-object-size <journal-object-size>] 
                     [--journal-pool <journal-pool>] 
@@ -1104,10 +1120,7 @@
     --dest-pool arg           destination pool name
     --dest-namespace arg      destination namespace name
     --dest arg                destination image name
-    --image-format arg        image format [1 (deprecated) or 2]
-    --new-format              use image format 2
-                              (deprecated)
-    --order arg               object order [12 <= order <= 25]
+    --image-format arg        image format [default: 2]
     --object-size arg         object size in B/K/M [4K <= object size <= 32M]
     --image-feature arg       image features
                               [layering(+), exclusive-lock(+*), object-map(+*),
@@ -1116,14 +1129,13 @@
     --stripe-unit arg         stripe unit in B/K/M
     --stripe-count arg        stripe count
     --data-pool arg           data pool
+    --mirror-image-mode arg   mirror image mode [journal or snapshot]
     --journal-splay-width arg number of active journal objects
     --journal-object-size arg size of journal objects [4K <= size <= 64M]
     --journal-pool arg        pool for journal objects
     --sparse-size arg         sparse size in B/K/M [default: 4K]
     --no-progress             disable progress output
     --export-format arg       format of image file
-    -p [ --pool ] arg         pool name (deprecated)
-    --image arg               image name (deprecated)
   
   Image Features:
     (*) supports enabling/disabling on existing images
@@ -1462,6 +1474,7 @@
                                [--image-shared] [--stripe-unit <stripe-unit>] 
                                [--stripe-count <stripe-count>] 
                                [--data-pool <data-pool>] 
+                               [--mirror-image-mode <mirror-image-mode>] 
                                [--journal-splay-width <journal-splay-width>] 
                                [--journal-object-size <journal-object-size>] 
                                [--journal-pool <journal-pool>] [--flatten] 
@@ -1482,10 +1495,7 @@
     --dest-pool arg           destination pool name
     --dest-namespace arg      destination namespace name
     --dest arg                destination image name
-    --image-format arg        image format [1 (deprecated) or 2]
-    --new-format              use image format 2
-                              (deprecated)
-    --order arg               object order [12 <= order <= 25]
+    --image-format arg        image format [default: 2]
     --object-size arg         object size in B/K/M [4K <= object size <= 32M]
     --image-feature arg       image features
                               [layering(+), exclusive-lock(+*), object-map(+*),
@@ -1494,6 +1504,7 @@
     --stripe-unit arg         stripe unit in B/K/M
     --stripe-count arg        stripe count
     --data-pool arg           data pool
+    --mirror-image-mode arg   mirror image mode [journal or snapshot]
     --journal-splay-width arg number of active journal objects
     --journal-object-size arg size of journal objects [4K <= size <= 64M]
     --journal-pool arg        pool for journal objects
@@ -1540,13 +1551,15 @@
   rbd help mirror image enable
   usage: rbd mirror image enable [--pool <pool>] [--namespace <namespace>] 
                                  [--image <image>] 
-                                 <image-spec> 
+                                 <image-spec> <mode> 
   
   Enable RBD mirroring for an image.
   
   Positional arguments
     <image-spec>         image specification
                          (example: [<pool-name>/[<namespace>/]]<image-name>)
+    <mode>               mirror image mode (journal or snapshot) [default:
+                         journal]
   
   Optional arguments
     -p [ --pool ] arg    pool name
@@ -1576,6 +1589,22 @@
                                  <image-spec> 
   
   Force resync to primary image for RBD mirroring.
+  
+  Positional arguments
+    <image-spec>         image specification
+                         (example: [<pool-name>/[<namespace>/]]<image-name>)
+  
+  Optional arguments
+    -p [ --pool ] arg    pool name
+    --namespace arg      namespace name
+    --image arg          image name
+  
+  rbd help mirror image snapshot
+  usage: rbd mirror image snapshot [--pool <pool>] [--namespace <namespace>] 
+                                   [--image <image>] 
+                                   <image-spec> 
+  
+  Create RBD mirroring image snapshot.
   
   Positional arguments
     <image-spec>         image specification
@@ -1674,6 +1703,7 @@
                                   [--remote-cluster <remote-cluster>] 
                                   [--remote-mon-host <remote-mon-host>] 
                                   [--remote-key-file <remote-key-file>] 
+                                  [--direction <direction>] 
                                   <pool-name> <remote-cluster-spec> 
   
   Add a mirroring peer to a pool.
@@ -1689,12 +1719,13 @@
     --remote-cluster arg     remote cluster name
     --remote-mon-host arg    remote mon host(s)
     --remote-key-file arg    path to file containing remote key
+    --direction arg          mirroring direction (rx-only, rx-tx)
+                             [default: rx-tx]
   
   rbd help mirror pool peer bootstrap create
   usage: rbd mirror pool peer bootstrap create
-                                           [--pool <pool>] 
-                                           [--site-name <site-name>] 
-                                           <pool-name> 
+                                        [--pool <pool>] [--site-name <site-name>] 
+                                        <pool-name> 
   
   Create a peer bootstrap token to import in a remote cluster
   
@@ -1707,11 +1738,11 @@
   
   rbd help mirror pool peer bootstrap import
   usage: rbd mirror pool peer bootstrap import
-                                           [--pool <pool>] 
-                                           [--site-name <site-name>] 
-                                           [--token-path <token-path>] 
-                                           [--direction <direction>] 
-                                           <pool-name> <token-path> 
+                                        [--pool <pool>] 
+                                        [--site-name <site-name>] 
+                                        [--token-path <token-path>] 
+                                        [--direction <direction>] 
+                                        <pool-name> <token-path> 
   
   Import a peer bootstrap token created from a remote cluster
   
@@ -1748,8 +1779,10 @@
   Positional arguments
     <pool-name>          pool name
     <uuid>               peer uuid
-    <key>                peer parameter [client, cluster, mon-host, key-file]
+    <key>                peer parameter
+                         (direction, site-name, client, mon-host, key-file)
     <value>              new value for specified key
+                         (rx-only, tx-only, or rx-tx for direction)
   
   Optional arguments
     -p [ --pool ] arg    pool name
@@ -1787,6 +1820,75 @@
     --format arg         output format (plain, json, or xml) [default: plain]
     --pretty-format      pretty formatting (json and xml)
     --verbose            be verbose
+  
+  rbd help mirror snapshot schedule add
+  usage: rbd mirror snapshot schedule add
+                                        [--pool <pool>] 
+                                        [--namespace <namespace>] 
+                                        [--image <image>] 
+                                        <interval> <start-time> 
+  
+  Add mirror snapshot schedule.
+  
+  Positional arguments
+    <interval>           schedule interval
+    <start-time>         schedule start time
+  
+  Optional arguments
+    -p [ --pool ] arg    pool name
+    --namespace arg      namespace name
+    --image arg          image name
+  
+  rbd help mirror snapshot schedule list
+  usage: rbd mirror snapshot schedule list
+                                        [--pool <pool>] 
+                                        [--namespace <namespace>] 
+                                        [--image <image>] [--recursive] 
+                                        [--format <format>] [--pretty-format] 
+  
+  List mirror snapshot schedule.
+  
+  Optional arguments
+    -p [ --pool ] arg    pool name
+    --namespace arg      namespace name
+    --image arg          image name
+    -R [ --recursive ]   list all schedules
+    --format arg         output format (plain, json, or xml) [default: plain]
+    --pretty-format      pretty formatting (json and xml)
+  
+  rbd help mirror snapshot schedule remove
+  usage: rbd mirror snapshot schedule remove
+                                        [--pool <pool>] 
+                                        [--namespace <namespace>] 
+                                        [--image <image>] 
+                                        <interval> <start-time> 
+  
+  Remove mirror snapshot schedule.
+  
+  Positional arguments
+    <interval>           schedule interval
+    <start-time>         schedule start time
+  
+  Optional arguments
+    -p [ --pool ] arg    pool name
+    --namespace arg      namespace name
+    --image arg          image name
+  
+  rbd help mirror snapshot schedule status
+  usage: rbd mirror snapshot schedule status
+                                        [--pool <pool>] 
+                                        [--namespace <namespace>] 
+                                        [--image <image>] [--format <format>] 
+                                        [--pretty-format] 
+  
+  Show mirror snapshot schedule status.
+  
+  Optional arguments
+    -p [ --pool ] arg    pool name
+    --namespace arg      namespace name
+    --image arg          image name
+    --format arg         output format (plain, json, or xml) [default: plain]
+    --pretty-format      pretty formatting (json and xml)
   
   rbd help namespace create
   usage: rbd namespace create [--pool <pool>] [--namespace <namespace>] 
@@ -2288,6 +2390,63 @@
     --expired-before date purges images that expired before the given date
     --threshold arg       purges images until the current pool data usage is
                           reduced to X%, value range: 0.0-1.0
+  
+  rbd help trash purge schedule add
+  usage: rbd trash purge schedule add [--pool <pool>] [--namespace <namespace>] 
+                                      <interval> <start-time> 
+  
+  Add trash purge schedule.
+  
+  Positional arguments
+    <interval>           schedule interval
+    <start-time>         schedule start time
+  
+  Optional arguments
+    -p [ --pool ] arg    pool name
+    --namespace arg      namespace name
+  
+  rbd help trash purge schedule list
+  usage: rbd trash purge schedule list [--pool <pool>] [--namespace <namespace>] 
+                                       [--recursive] [--format <format>] 
+                                       [--pretty-format] 
+  
+  List trash purge schedule.
+  
+  Optional arguments
+    -p [ --pool ] arg    pool name
+    --namespace arg      namespace name
+    -R [ --recursive ]   list all schedules
+    --format arg         output format (plain, json, or xml) [default: plain]
+    --pretty-format      pretty formatting (json and xml)
+  
+  rbd help trash purge schedule remove
+  usage: rbd trash purge schedule remove
+                                        [--pool <pool>] [--namespace <namespace>] 
+                                        <interval> <start-time> 
+  
+  Remove trash purge schedule.
+  
+  Positional arguments
+    <interval>           schedule interval
+    <start-time>         schedule start time
+  
+  Optional arguments
+    -p [ --pool ] arg    pool name
+    --namespace arg      namespace name
+  
+  rbd help trash purge schedule status
+  usage: rbd trash purge schedule status
+                                        [--pool <pool>] 
+                                        [--namespace <namespace>] 
+                                        [--format <format>] [--pretty-format] 
+  
+  Show trash purge schedule status.
+  
+  Optional arguments
+    -p [ --pool ] arg    pool name
+    --namespace arg      namespace name
+    --format arg         output format (plain, json, or xml) [default: plain]
+    --pretty-format      pretty formatting (json and xml)
   
   rbd help trash remove
   usage: rbd trash remove [--pool <pool>] [--namespace <namespace>] 

@@ -1,6 +1,7 @@
 import { Component } from '@angular/core';
 
 import { I18n } from '@ngx-translate/i18n-polyfill';
+import * as _ from 'lodash';
 
 import { MonitorService } from '../../../shared/api/monitor.service';
 import { CellTemplate } from '../../../shared/enum/cell-template.enum';
@@ -16,10 +17,6 @@ export class MonitorComponent {
   notInQuorum: any;
 
   interval: any;
-  sparklineStyle = {
-    height: '30px',
-    width: '50%'
-  };
 
   constructor(private monitorService: MonitorService, private i18n: I18n) {
     this.inQuorum = {
@@ -30,10 +27,20 @@ export class MonitorComponent {
         {
           prop: 'cdOpenSessions',
           name: this.i18n('Open Sessions'),
-          cellTransformation: CellTemplate.sparkline
+          cellTransformation: CellTemplate.sparkline,
+          comparator: (dataA: any, dataB: any) => {
+            // We get the last value of time series to compare:
+            const lastValueA = _.last(dataA);
+            const lastValueB = _.last(dataB);
+
+            if (!lastValueA || !lastValueB || lastValueA === lastValueB) {
+              return 0;
+            }
+
+            return lastValueA > lastValueB ? 1 : -1;
+          }
         }
-      ],
-      data: []
+      ]
     };
 
     this.notInQuorum = {
@@ -41,21 +48,20 @@ export class MonitorComponent {
         { prop: 'name', name: this.i18n('Name'), cellTransformation: CellTemplate.routerLink },
         { prop: 'rank', name: this.i18n('Rank') },
         { prop: 'public_addr', name: this.i18n('Public Address') }
-      ],
-      data: []
+      ]
     };
   }
 
   refresh() {
     this.monitorService.getMonitor().subscribe((data: any) => {
-      data.in_quorum.map((row) => {
-        row.cdOpenSessions = row.stats.num_sessions.map((i) => i[1]);
+      data.in_quorum.map((row: any) => {
+        row.cdOpenSessions = row.stats.num_sessions.map((i: string) => i[1]);
         row.cdLink = '/perf_counters/mon/' + row.name;
         row.cdParams = { fromLink: '/monitor' };
         return row;
       });
 
-      data.out_quorum.map((row) => {
+      data.out_quorum.map((row: any) => {
         row.cdLink = '/perf_counters/mon/' + row.name;
         row.cdParams = { fromLink: '/monitor' };
         return row;

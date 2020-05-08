@@ -1,28 +1,51 @@
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Injectable } from '@angular/core';
+
+import * as _ from 'lodash';
+import { Observable, of as observableOf } from 'rxjs';
+import { mergeMap } from 'rxjs/operators';
+
+import { InventoryDevice } from '../../ceph/cluster/inventory/inventory-devices/inventory-device.model';
+import { InventoryHost } from '../../ceph/cluster/inventory/inventory-host.model';
 import { ApiModule } from './api.module';
 
 @Injectable({
   providedIn: ApiModule
 })
 export class OrchestratorService {
-  statusURL = 'api/orchestrator/status';
-  inventoryURL = 'api/orchestrator/inventory';
-  serviceURL = 'api/orchestrator/service';
+  private url = 'api/orchestrator';
 
   constructor(private http: HttpClient) {}
 
-  status() {
-    return this.http.get(this.statusURL);
+  status(): Observable<{ available: boolean; description: string }> {
+    return this.http.get<{ available: boolean; description: string }>(`${this.url}/status`);
   }
 
-  inventoryList(hostname: string) {
-    const options = hostname ? { params: new HttpParams().set('hostname', hostname) } : {};
-    return this.http.get(this.inventoryURL, options);
+  identifyDevice(hostname: string, device: string, duration: number) {
+    return this.http.post(`${this.url}/identify_device`, {
+      hostname,
+      device,
+      duration
+    });
   }
 
-  serviceList(hostname: string) {
+  inventoryList(hostname?: string): Observable<InventoryHost[]> {
     const options = hostname ? { params: new HttpParams().set('hostname', hostname) } : {};
-    return this.http.get(this.serviceURL, options);
+    return this.http.get<InventoryHost[]>(`${this.url}/inventory`, options);
+  }
+
+  inventoryDeviceList(hostname?: string): Observable<InventoryDevice[]> {
+    return this.inventoryList(hostname).pipe(
+      mergeMap((hosts: InventoryHost[]) => {
+        const devices = _.flatMap(hosts, (host) => {
+          return host.devices.map((device) => {
+            device.hostname = host.name;
+            device.uid = device.device_id ? device.device_id : `${device.hostname}-${device.path}`;
+            return device;
+          });
+        });
+        return observableOf(devices);
+      })
+    );
   }
 }

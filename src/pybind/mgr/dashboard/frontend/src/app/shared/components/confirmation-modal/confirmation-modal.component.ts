@@ -11,10 +11,13 @@ import { Subscription } from 'rxjs';
 })
 export class ConfirmationModalComponent implements OnInit, OnDestroy {
   // Needed
-  bodyTpl: TemplateRef<any>;
   buttonText: string;
   titleText: string;
   onSubmit: Function;
+
+  // One of them is needed
+  bodyTpl?: TemplateRef<any>;
+  description?: TemplateRef<any>;
 
   // Optional
   bodyData?: object;
@@ -29,7 +32,7 @@ export class ConfirmationModalComponent implements OnInit, OnDestroy {
 
   constructor(public modalRef: BsModalRef, private modalService: BsModalService) {
     this.confirmationForm = new FormGroup({});
-    this.onHide = this.modalService.onHide.subscribe((e) => {
+    this.onHide = this.modalService.onHide.subscribe((e: any) => {
       if (this.onCancel && (e || this.canceled)) {
         this.onCancel();
       }
@@ -45,7 +48,7 @@ export class ConfirmationModalComponent implements OnInit, OnDestroy {
       throw new Error('No action name defined');
     } else if (!this.titleText) {
       throw new Error('No title defined');
-    } else if (!this.bodyTpl) {
+    } else if (!this.bodyTpl && !this.description) {
       throw new Error('No description defined');
     }
   }

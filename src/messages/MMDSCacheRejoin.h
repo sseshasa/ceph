@@ -27,12 +27,8 @@
 
 // sent from replica to auth
 
-class MMDSCacheRejoin : public Message {
-private:
-  static constexpr int HEAD_VERSION = 2;
-  static constexpr int COMPAT_VERSION = 1;
-
- public:
+class MMDSCacheRejoin : public SafeMessage {
+public:
   static constexpr int OP_WEAK    = 1;  // replica -> auth, i exist, + maybe open files.
   static constexpr int OP_STRONG  = 2;  // replica -> auth, i exist, + open files and lock state.
   static constexpr int OP_ACK     = 3;  // auth -> replica, here is your lock state.
@@ -54,7 +50,7 @@ private:
     inode_strong(int n, int cw, int dl, int nl, int dftl) :
       nonce(n), caps_wanted(cw),
       filelock(dl), nestlock(nl), dftlock(dftl) { }
-    void encode(bufferlist &bl) const {
+    void encode(ceph::buffer::list &bl) const {
       using ceph::encode;
       encode(nonce, bl);
       encode(caps_wanted, bl);
@@ -62,7 +58,7 @@ private:
       encode(nestlock, bl);
       encode(dftlock, bl);
     }
-    void decode(bufferlist::const_iterator &bl) {
+    void decode(ceph::buffer::list::const_iterator &bl) {
       using ceph::decode;
       decode(nonce, bl);
       decode(caps_wanted, bl);
@@ -78,12 +74,12 @@ private:
     int8_t  dir_rep = 0;
     dirfrag_strong() {}
     dirfrag_strong(int n, int dr) : nonce(n), dir_rep(dr) {}
-    void encode(bufferlist &bl) const {
+    void encode(ceph::buffer::list &bl) const {
       using ceph::encode;
       encode(nonce, bl);
       encode(dir_rep, bl);
     }
-    void decode(bufferlist::const_iterator &bl) {
+    void decode(ceph::buffer::list::const_iterator &bl) {
       using ceph::decode;
       decode(nonce, bl);
       decode(dir_rep, bl);
@@ -105,7 +101,7 @@ private:
     bool is_primary() const { return ino > 0; }
     bool is_remote() const { return remote_ino > 0; }
     bool is_null() const { return ino == 0 && remote_ino == 0; }
-    void encode(bufferlist &bl) const {
+    void encode(ceph::buffer::list &bl) const {
       using ceph::encode;
       encode(first, bl);
       encode(ino, bl);
@@ -114,7 +110,7 @@ private:
       encode(nonce, bl);
       encode(lock, bl);
     }
-    void decode(bufferlist::const_iterator &bl) {
+    void decode(ceph::buffer::list::const_iterator &bl) {
       using ceph::decode;
       decode(first, bl);
       decode(ino, bl);
@@ -131,12 +127,12 @@ private:
     inodeno_t ino;
     dn_weak() : ino(0) {}
     dn_weak(snapid_t f, inodeno_t pi) : first(f), ino(pi) {}
-    void encode(bufferlist &bl) const {
+    void encode(ceph::buffer::list &bl) const {
       using ceph::encode;
       encode(first, bl);
       encode(ino, bl);
     }
-    void decode(bufferlist::const_iterator &bl) {
+    void decode(ceph::buffer::list::const_iterator &bl) {
       using ceph::decode;
       decode(first, bl);
       decode(ino, bl);
@@ -144,18 +140,15 @@ private:
   };
   WRITE_CLASS_ENCODER(dn_weak)
 
-  // -- data --
-  int32_t op;
-
   struct lock_bls {
-    bufferlist file, nest, dft;
-    void encode(bufferlist& bl) const {
+    ceph::buffer::list file, nest, dft;
+    void encode(ceph::buffer::list& bl) const {
       using ceph::encode;
       encode(file, bl);
       encode(nest, bl);
       encode(dft, bl);
     }
-    void decode(bufferlist::const_iterator& bl) {
+    void decode(ceph::buffer::list::const_iterator& bl) {
       using ceph::decode;
       decode(file, bl);
       decode(nest, bl);
@@ -164,28 +157,6 @@ private:
   };
   WRITE_CLASS_ENCODER(lock_bls)
 
-  // weak
-  map<inodeno_t, map<string_snap_t, dn_weak> > weak;
-  set<dirfrag_t> weak_dirfrags;
-  set<vinodeno_t> weak_inodes;
-  map<inodeno_t, lock_bls> inode_scatterlocks;
-
-  // strong
-  map<dirfrag_t, dirfrag_strong> strong_dirfrags;
-  map<dirfrag_t, map<string_snap_t, dn_strong> > strong_dentries;
-  map<vinodeno_t, inode_strong> strong_inodes;
-
-  // open
-  map<inodeno_t,map<client_t, cap_reconnect_t> > cap_exports;
-  map<client_t, entity_inst_t> client_map;
-  map<client_t,client_metadata_t> client_metadata_map;
-  bufferlist imported_caps;
-
-  // full
-  bufferlist inode_base;
-  bufferlist inode_locks;
-  map<dirfrag_t, bufferlist> dirfrag_bases;
-
   // authpins, xlocks
   struct slave_reqid {
     metareqid_t reqid;
@@ -193,36 +164,20 @@ private:
     slave_reqid() : attempt(0) {}
     slave_reqid(const metareqid_t& r, __u32 a)
       : reqid(r), attempt(a) {}
-    void encode(bufferlist& bl) const {
+    void encode(ceph::buffer::list& bl) const {
       using ceph::encode;
       encode(reqid, bl);
       encode(attempt, bl);
     }
-    void decode(bufferlist::const_iterator& bl) {
+    void decode(ceph::buffer::list::const_iterator& bl) {
       using ceph::decode;
       decode(reqid, bl);
       decode(attempt, bl);
     }
   };
-  map<vinodeno_t, list<slave_reqid> > authpinned_inodes;
-  map<vinodeno_t, slave_reqid> frozen_authpin_inodes;
-  map<vinodeno_t, map<__s32, slave_reqid> > xlocked_inodes;
-  map<vinodeno_t, map<__s32, list<slave_reqid> > > wrlocked_inodes;
-  map<dirfrag_t, map<string_snap_t, list<slave_reqid> > > authpinned_dentries;
-  map<dirfrag_t, map<string_snap_t, slave_reqid> > xlocked_dentries;
-  
-protected:
-  MMDSCacheRejoin() :
-    MMDSCacheRejoin{0}
-  {}
-  MMDSCacheRejoin(int o) : 
-    Message{MSG_MDS_CACHEREJOIN, HEAD_VERSION, COMPAT_VERSION},
-    op(o) {}
-  ~MMDSCacheRejoin() override {}
 
-public:
   std::string_view get_type_name() const override { return "cache_rejoin"; }
-  void print(ostream& out) const override {
+  void print(std::ostream& out) const override {
     out << "cache_rejoin " << get_opname(op);
   }
 
@@ -234,7 +189,7 @@ public:
   void add_strong_inode(vinodeno_t i, int n, int cw, int dl, int nl, int dftl) {
     strong_inodes[i] = inode_strong(n, cw, dl, nl, dftl);
   }
-  void add_inode_locks(CInode *in, __u32 nonce, bufferlist& bl) {
+  void add_inode_locks(CInode *in, __u32 nonce, ceph::buffer::list& bl) {
     using ceph::encode;
     encode(in->inode.ino, inode_locks);
     encode(in->last, inode_locks);
@@ -245,7 +200,7 @@ public:
     using ceph::encode;
     encode(in->inode.ino, inode_base);
     encode(in->last, inode_base);
-    bufferlist bl;
+    ceph::buffer::list bl;
     in->_encode_base(bl, features);
     encode(bl, inode_base);
   }
@@ -275,7 +230,7 @@ public:
     strong_dirfrags[df] = dirfrag_strong(n, dr);
   }
   void add_dirfrag_base(CDir *dir) {
-    bufferlist& bl = dirfrag_bases[dir->dirfrag()];
+    ceph::buffer::list& bl = dirfrag_bases[dir->dirfrag()];
     dir->_encode_base(bl);
   }
 
@@ -352,9 +307,49 @@ public:
     if (header.version >= 2)
       decode(client_metadata_map, p);
   }
+
+  // -- data --
+  int32_t op = 0;
+
+  // weak
+  std::map<inodeno_t, std::map<string_snap_t, dn_weak> > weak;
+  std::set<dirfrag_t> weak_dirfrags;
+  std::set<vinodeno_t> weak_inodes;
+  std::map<inodeno_t, lock_bls> inode_scatterlocks;
+
+  // strong
+  std::map<dirfrag_t, dirfrag_strong> strong_dirfrags;
+  std::map<dirfrag_t, std::map<string_snap_t, dn_strong> > strong_dentries;
+  std::map<vinodeno_t, inode_strong> strong_inodes;
+
+  // open
+  std::map<inodeno_t,std::map<client_t, cap_reconnect_t> > cap_exports;
+  std::map<client_t, entity_inst_t> client_map;
+  std::map<client_t,client_metadata_t> client_metadata_map;
+  ceph::buffer::list imported_caps;
+
+  // full
+  ceph::buffer::list inode_base;
+  ceph::buffer::list inode_locks;
+  std::map<dirfrag_t, ceph::buffer::list> dirfrag_bases;
+
+  std::map<vinodeno_t, std::list<slave_reqid> > authpinned_inodes;
+  std::map<vinodeno_t, slave_reqid> frozen_authpin_inodes;
+  std::map<vinodeno_t, std::map<__s32, slave_reqid> > xlocked_inodes;
+  std::map<vinodeno_t, std::map<__s32, std::list<slave_reqid> > > wrlocked_inodes;
+  std::map<dirfrag_t, std::map<string_snap_t, std::list<slave_reqid> > > authpinned_dentries;
+  std::map<dirfrag_t, std::map<string_snap_t, slave_reqid> > xlocked_dentries;
+
 private:
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+
+  static constexpr int HEAD_VERSION = 2;
+  static constexpr int COMPAT_VERSION = 1;
+
+  MMDSCacheRejoin(int o) : MMDSCacheRejoin() { op = o; }
+  MMDSCacheRejoin() : SafeMessage{MSG_MDS_CACHEREJOIN, HEAD_VERSION, COMPAT_VERSION} {}
+  ~MMDSCacheRejoin() override {}
 };
 
 WRITE_CLASS_ENCODER(MMDSCacheRejoin::inode_strong)
@@ -364,7 +359,7 @@ WRITE_CLASS_ENCODER(MMDSCacheRejoin::dn_weak)
 WRITE_CLASS_ENCODER(MMDSCacheRejoin::lock_bls)
 WRITE_CLASS_ENCODER(MMDSCacheRejoin::slave_reqid)
 
-inline ostream& operator<<(ostream& out, const MMDSCacheRejoin::slave_reqid& r) {
+inline std::ostream& operator<<(std::ostream& out, const MMDSCacheRejoin::slave_reqid& r) {
   return out << r.reqid << '.' << r.attempt;
 }
 

@@ -29,6 +29,7 @@ sensible.
     Writing modules <modules>
     Writing orchestrator plugins <orchestrator_modules>
     Dashboard module <dashboard>
+    Alerts module <alerts>
     DiskPrediction module <diskprediction>
     Local pool module <localpool>
     RESTful module <restful>
@@ -39,10 +40,8 @@ sensible.
     Telegraf module <telegraf>
     Telemetry module <telemetry>
     Iostat module <iostat>
+    OSD Support module <osd_support>
     Crash module <crash>
-    Orchestrator CLI module <orchestrator_cli>
-    Rook module <rook>
-    DeepSea module <deepsea>
     Insights module <insights>
-    Ansible module <ansible>
-    SSH orchestrator <ssh>
+    Orchestrator module <orchestrator>
+    Rook module <rook>

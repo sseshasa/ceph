@@ -19,24 +19,24 @@
 #include "msg/Message.h"
 
 
-class MExportCapsAck : public Message {
+class MExportCapsAck : public SafeMessage {
  static constexpr int HEAD_VERSION = 1;
  static constexpr int COMPAT_VERSION = 1;
 
 public:  
   inodeno_t ino;
-  bufferlist cap_bl;
+  ceph::buffer::list cap_bl;
 
 protected:
   MExportCapsAck() :
-    Message{MSG_MDS_EXPORTCAPSACK, HEAD_VERSION, COMPAT_VERSION} {}
+    SafeMessage{MSG_MDS_EXPORTCAPSACK, HEAD_VERSION, COMPAT_VERSION} {}
   MExportCapsAck(inodeno_t i) :
-    Message{MSG_MDS_EXPORTCAPSACK, HEAD_VERSION, COMPAT_VERSION}, ino(i) {}
+    SafeMessage{MSG_MDS_EXPORTCAPSACK, HEAD_VERSION, COMPAT_VERSION}, ino(i) {}
   ~MExportCapsAck() override {}
 
 public:
   std::string_view get_type_name() const override { return "export_caps_ack"; }
-  void print(ostream& o) const override {
+  void print(std::ostream& o) const override {
     o << "export_caps_ack(" << ino << ")";
   }
 
@@ -46,6 +46,7 @@ public:
     encode(cap_bl, payload);
   }
   void decode_payload() override {
+    using ceph::decode;
     auto p = payload.cbegin();
     decode(ino, p);
     decode(cap_bl, p);

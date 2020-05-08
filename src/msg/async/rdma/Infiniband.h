@@ -25,11 +25,14 @@
 #include <rdma/rdma_cma.h>
 
 #include <atomic>
+#include <functional>
 #include <string>
 #include <vector>
 
+#include "include/common_fwd.h"
 #include "include/int_types.h"
 #include "include/page.h"
+#include "include/scope_guard.h"
 #include "common/debug.h"
 #include "common/errno.h"
 #include "common/ceph_mutex.h"
@@ -55,14 +58,13 @@ struct ib_cm_meta_t {
 } __attribute__((packed));
 
 class RDMAStack;
-class CephContext;
 
 class Port {
   struct ibv_context* ctxt;
   int port_num;
   struct ibv_port_attr port_attr;
   uint16_t lid;
-  int gid_idx = 0;
+  int gid_idx;
   union ibv_gid gid;
 
  public:
@@ -290,8 +292,17 @@ class Infiniband {
       static char * malloc(const size_type bytes);
       static void free(char * const block);
 
-      static MemPoolContext  *g_ctx;
-      static ceph::mutex lock;
+      template<typename Func>
+      static std::invoke_result_t<Func> with_context(MemPoolContext* ctx,
+						     Func&& func) {
+	std::lock_guard l{get_lock()};
+	g_ctx = ctx;
+	scope_guard reset_ctx{[] { g_ctx = nullptr; }};
+	return std::move(func)();
+      }
+    private:
+      static ceph::mutex& get_lock();
+      static MemPoolContext* g_ctx;
     };
 
     /**
@@ -538,7 +549,7 @@ class Infiniband {
     uint32_t     max_recv_wr;
     uint32_t     q_key;
     bool dead;
-    vector<Chunk*> recv_queue;
+    std::vector<Chunk*> recv_queue;
     ceph::mutex lock = ceph::make_mutex("queue_pair_lock");
   };
 

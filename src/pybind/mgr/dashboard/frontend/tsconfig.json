@@ -10,6 +10,13 @@
     "moduleResolution": "node",
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitThis": true,
+    "noImplicitReturns": true,
+    "noImplicitAny": true,
+    "suppressImplicitAnyIndexErrors": true,
     "target": "es2015",
     "typeRoots": [
       "node_modules/@types"
@@ -21,9 +28,9 @@
     "allowJs": true
   },
   "exclude": [
-    ".protractor-report",
     "coverage",
     "dist",
-    "node_modules"
+    "node_modules",
+    "cypress"
   ]
 }

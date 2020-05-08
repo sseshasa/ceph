@@ -79,15 +79,93 @@ describe('PrometheusService', () => {
     expect(req.request.method).toBe('GET');
   });
 
-  it('should get prometheus rules', () => {
-    service.getRules({}).subscribe();
-    const req = httpTesting.expectOne('api/prometheus/rules');
-    expect(req.request.method).toBe('GET');
+  describe('test getRules()', () => {
+    let data: {}; // Subset of PrometheusRuleGroup to keep the tests concise.
+
+    beforeEach(() => {
+      data = {
+        groups: [
+          {
+            name: 'test',
+            rules: [
+              {
+                name: 'load_0',
+                type: 'alerting'
+              },
+              {
+                name: 'load_1',
+                type: 'alerting'
+              },
+              {
+                name: 'load_2',
+                type: 'alerting'
+              }
+            ]
+          },
+          {
+            name: 'recording_rule',
+            rules: [
+              {
+                name: 'node_memory_MemUsed_percent',
+                type: 'recording'
+              }
+            ]
+          }
+        ]
+      };
+    });
+
+    it('should get rules without applying filters', () => {
+      service.getRules().subscribe((rules) => {
+        expect(rules).toEqual(data);
+      });
+
+      const req = httpTesting.expectOne('api/prometheus/rules');
+      expect(req.request.method).toBe('GET');
+      req.flush(data);
+    });
+
+    it('should get rewrite rules only', () => {
+      service.getRules('rewrites').subscribe((rules) => {
+        expect(rules).toEqual({
+          groups: [
+            { name: 'test', rules: [] },
+            { name: 'recording_rule', rules: [] }
+          ]
+        });
+      });
+
+      const req = httpTesting.expectOne('api/prometheus/rules');
+      expect(req.request.method).toBe('GET');
+      req.flush(data);
+    });
+
+    it('should get alerting rules only', () => {
+      service.getRules('alerting').subscribe((rules) => {
+        expect(rules).toEqual({
+          groups: [
+            {
+              name: 'test',
+              rules: [
+                { name: 'load_0', type: 'alerting' },
+                { name: 'load_1', type: 'alerting' },
+                { name: 'load_2', type: 'alerting' }
+              ]
+            },
+            { name: 'recording_rule', rules: [] }
+          ]
+        });
+      });
+
+      const req = httpTesting.expectOne('api/prometheus/rules');
+      expect(req.request.method).toBe('GET');
+      req.flush(data);
+    });
   });
 
   describe('ifAlertmanagerConfigured', () => {
     let x: any;
-    let host;
+    let host: string;
 
     const receiveConfig = () => {
       const req = httpTesting.expectOne('api/settings/alertmanager-api-host');
@@ -98,7 +176,10 @@ describe('PrometheusService', () => {
     beforeEach(() => {
       x = false;
       TestBed.get(SettingsService)['settings'] = {};
-      service.ifAlertmanagerConfigured((v) => (x = v), () => (x = []));
+      service.ifAlertmanagerConfigured(
+        (v) => (x = v),
+        () => (x = [])
+      );
       host = 'http://localhost:9093';
     });
 
@@ -125,7 +206,7 @@ describe('PrometheusService', () => {
 
   describe('ifPrometheusConfigured', () => {
     let x: any;
-    let host;
+    let host: string;
 
     const receiveConfig = () => {
       const req = httpTesting.expectOne('api/settings/prometheus-api-host');
@@ -136,7 +217,10 @@ describe('PrometheusService', () => {
     beforeEach(() => {
       x = false;
       TestBed.get(SettingsService)['settings'] = {};
-      service.ifPrometheusConfigured((v) => (x = v), () => (x = []));
+      service.ifPrometheusConfigured(
+        (v) => (x = v),
+        () => (x = [])
+      );
       host = 'http://localhost:9090';
     });
 

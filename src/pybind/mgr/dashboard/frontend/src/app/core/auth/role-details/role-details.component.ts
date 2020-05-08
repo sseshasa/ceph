@@ -5,7 +5,6 @@ import * as _ from 'lodash';
 
 import { CellTemplate } from '../../../shared/enum/cell-template.enum';
 import { CdTableColumn } from '../../../shared/models/cd-table-column';
-import { CdTableSelection } from '../../../shared/models/cd-table-selection';
 
 @Component({
   selector: 'cd-role-details',
@@ -14,7 +13,7 @@ import { CdTableSelection } from '../../../shared/models/cd-table-selection';
 })
 export class RoleDetailsComponent implements OnChanges, OnInit {
   @Input()
-  selection: CdTableSelection;
+  selection: any;
   @Input()
   scopes: Array<string>;
   selectedItem: any;
@@ -63,12 +62,12 @@ export class RoleDetailsComponent implements OnChanges, OnInit {
   }
 
   ngOnChanges() {
-    if (this.selection.hasSelection) {
-      this.selectedItem = this.selection.first();
+    if (this.selection) {
+      this.selectedItem = this.selection;
       // Build the scopes/permissions data used by the data table.
-      const scopes_permissions = [];
+      const scopes_permissions: any[] = [];
       _.each(this.scopes, (scope) => {
-        const scope_permission = { read: false, create: false, update: false, delete: false };
+        const scope_permission: any = { read: false, create: false, update: false, delete: false };
         scope_permission['scope'] = scope;
         if (scope in this.selectedItem['scopes_permissions']) {
           _.each(this.selectedItem['scopes_permissions'][scope], (permission) => {

@@ -1,21 +1,13 @@
-<cd-info-panel *ngIf="!orchestratorExist && !checkingOrchestrator"
-               i18n>Please consult the
-  <a href="{{ docsUrl }}"
-     target="_blank">documentation</a> on how to
-  configure and enable the orchestrator functionality.</cd-info-panel>
-
-<ng-container *ngIf="orchestratorExist">
+<cd-orchestrator-doc-panel *ngIf="!hasOrchestrator"></cd-orchestrator-doc-panel>
+<ng-container *ngIf="hasOrchestrator">
   <legend i18n>Devices</legend>
   <div class="row">
     <div class="col-md-12">
-      <cd-table [data]="devices"
-                [columns]="columns"
-                identifier="uid"
-                forceIdentifier="true"
-                columnMode="flex"
-                (fetchData)="getInventory($event)"
-                selectionType="single">
-      </cd-table>
+      <cd-inventory-devices [devices]="devices"
+                            [hiddenColumns]="hostname === undefined ? [] : ['hostname']"
+                            selectionType="single"
+                            (fetchInventory)="refresh()">
+      </cd-inventory-devices>
     </div>
   </div>
 </ng-container>

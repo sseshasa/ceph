@@ -62,7 +62,7 @@ librados::RadosClient::RadosClient(CephContext *cct_)
     conf(cct_->_conf),
     state(DISCONNECTED),
     monclient(cct_),
-    mgrclient(cct_, nullptr),
+    mgrclient(cct_, nullptr, &monclient.monmap),
     messenger(NULL),
     instance_id(0),
     objecter(NULL),
@@ -444,7 +444,7 @@ int librados::RadosClient::get_min_compatible_osd(int8_t* require_osd_release)
 
   objecter->with_osdmap(
     [require_osd_release](const OSDMap& o) {
-      *require_osd_release = ceph::to_integer<int8_t>(o.require_osd_release);
+      *require_osd_release = to_integer<int8_t>(o.require_osd_release);
     });
   return 0;
 }
@@ -459,10 +459,9 @@ int librados::RadosClient::get_min_compatible_client(int8_t* min_compat_client,
 
   objecter->with_osdmap(
     [min_compat_client, require_min_compat_client](const OSDMap& o) {
-      *min_compat_client =
-	ceph::to_integer<int8_t>(o.get_min_compat_client());
+      *min_compat_client = to_integer<int8_t>(o.get_min_compat_client());
       *require_min_compat_client =
-	ceph::to_integer<int8_t>(o.get_require_min_compat_client());
+	to_integer<int8_t>(o.get_require_min_compat_client());
     });
   return 0;
 }
@@ -796,6 +795,12 @@ void librados::RadosClient::blacklist_self(bool set) {
   objecter->blacklist_self(set);
 }
 
+std::string librados::RadosClient::get_addrs() const {
+  CachedStackStringStream cos;
+  *cos << messenger->get_myaddrs();
+  return std::string(cos->strv());
+}
+
 int librados::RadosClient::blacklist_add(const string& client_address,
 					 uint32_t expire_seconds)
 {
@@ -854,6 +859,30 @@ int librados::RadosClient::mgr_command(const vector<string>& cmd,
 
   C_SaferCond cond;
   int r = mgrclient.start_command(cmd, inbl, outbl, outs, &cond);
+  if (r < 0)
+    return r;
+
+  lock.unlock();
+  if (conf->rados_mon_op_timeout) {
+    r = cond.wait_for(conf->rados_mon_op_timeout);
+  } else {
+    r = cond.wait();
+  }
+  lock.lock();
+
+  return r;
+}
+
+int librados::RadosClient::mgr_command(
+  const string& name,
+  const vector<string>& cmd,
+  const bufferlist &inbl,
+  bufferlist *outbl, string *outs)
+{
+  std::lock_guard l(lock);
+
+  C_SaferCond cond;
+  int r = mgrclient.start_tell_command(name, cmd, inbl, outbl, outs, &cond);
   if (r < 0)
     return r;
 

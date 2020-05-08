@@ -176,8 +176,10 @@ class Objecter::RequestStateHook : public AdminSocketHook {
   Objecter *m_objecter;
 public:
   explicit RequestStateHook(Objecter *objecter);
-  bool call(std::string_view command, const cmdmap_t& cmdmap,
-	    std::string_view format, ceph::buffer::list& out) override;
+  int call(std::string_view command, const cmdmap_t& cmdmap,
+	   Formatter *f,
+	   std::ostream& ss,
+	   ceph::buffer::list& out) override;
 };
 
 /**
@@ -384,7 +386,6 @@ void Objecter::init()
   m_request_state_hook = new RequestStateHook(this);
   AdminSocket* admin_socket = cct->get_admin_socket();
   int ret = admin_socket->register_command("objecter_requests",
-					   "objecter_requests",
 					   m_request_state_hook,
 					   "show in-progress osd requests");
 
@@ -532,7 +533,7 @@ void Objecter::shutdown()
   // shutdown() with the ::initialized check at start.
   if (m_request_state_hook) {
     AdminSocket* admin_socket = cct->get_admin_socket();
-    admin_socket->unregister_command("objecter_requests");
+    admin_socket->unregister_commands(m_request_state_hook);
     delete m_request_state_hook;
     m_request_state_hook = NULL;
   }
@@ -1093,7 +1094,7 @@ void Objecter::_scan_requests(
 			 op->session ? op->session->con.get() : nullptr);
     switch (r) {
     case RECALC_OP_TARGET_NO_ACTION:
-      if (!skipped_map && !(force_resend_writes && op->respects_full()))
+      if (!skipped_map && !(force_resend_writes && op->target.respects_full()))
 	break;
       // -- fall-thru --
     case RECALC_OP_TARGET_NEED_RESEND:
@@ -1910,10 +1911,10 @@ void Objecter::close_session(OSDSession *s)
   logger->set(l_osdc_osd_sessions, osd_sessions.size());
 }
 
-void Objecter::wait_for_osd_map()
+void Objecter::wait_for_osd_map(epoch_t e)
 {
   unique_lock l(rwlock);
-  if (osdmap->get_epoch()) {
+  if (osdmap->get_epoch() >= e) {
     l.unlock();
     return;
   }
@@ -1924,7 +1925,7 @@ void Objecter::wait_for_osd_map()
   bool done;
   std::unique_lock mlock{lock};
   C_SafeCond *context = new C_SafeCond(lock, cond, &done, NULL);
-  waiting_for_map[0].push_back(pair<Context*, int>(context, 0));
+  waiting_for_map[e].push_back(pair<Context*, int>(context, 0));
   l.unlock();
   cond.wait(mlock, [&done] { return done; });
 }
@@ -2415,35 +2416,14 @@ void Objecter::_op_submit(Op *op, shunique_lock& sul, ceph_tid_t *ptid)
 
   ceph_assert(op->target.flags & (CEPH_OSD_FLAG_READ|CEPH_OSD_FLAG_WRITE));
 
-  if (osdmap_full_try) {
+  if (pool_full_try) {
     op->target.flags |= CEPH_OSD_FLAG_FULL_TRY;
   }
 
   bool need_send = false;
-
-  if (osdmap->get_epoch() < epoch_barrier) {
-    ldout(cct, 10) << " barrier, paused " << op << " tid " << op->tid
+  if (op->target.paused) {
+    ldout(cct, 10) << " tid " << op->tid << " op " << op << " is paused"
 		   << dendl;
-    op->target.paused = true;
-    _maybe_request_map();
-  } else if ((op->target.flags & CEPH_OSD_FLAG_WRITE) &&
-             osdmap->test_flag(CEPH_OSDMAP_PAUSEWR)) {
-    ldout(cct, 10) << " paused modify " << op << " tid " << op->tid
-		   << dendl;
-    op->target.paused = true;
-    _maybe_request_map();
-  } else if ((op->target.flags & CEPH_OSD_FLAG_READ) &&
-	     osdmap->test_flag(CEPH_OSDMAP_PAUSERD)) {
-    ldout(cct, 10) << " paused read " << op << " tid " << op->tid
-		   << dendl;
-    op->target.paused = true;
-    _maybe_request_map();
-  } else if (op->respects_full() &&
-	     (_osdmap_full_flag() ||
-	      _osdmap_pool_full(op->target.base_oloc.pool))) {
-    ldout(cct, 0) << " FULL, paused modify " << op << " tid "
-		  << op->tid << dendl;
-    op->target.paused = true;
     _maybe_request_map();
   } else if (!s->is_homeless()) {
     need_send = true;
@@ -2639,7 +2619,7 @@ bool Objecter::is_pg_changed(
   const vector<int>& newacting,
   bool any_change)
 {
-  if (OSDMap::primary_changed(
+  if (OSDMap::primary_changed_broken( // https://tracker.ceph.com/issues/43213
 	oldprimary,
 	oldacting,
 	newprimary,
@@ -2655,7 +2635,7 @@ bool Objecter::target_should_be_paused(op_target_t *t)
   const pg_pool_t *pi = osdmap->get_pg_pool(t->base_oloc.pool);
   bool pauserd = osdmap->test_flag(CEPH_OSDMAP_PAUSERD);
   bool pausewr = osdmap->test_flag(CEPH_OSDMAP_PAUSEWR) ||
-    _osdmap_full_flag() || _osdmap_pool_full(*pi);
+    (t->respects_full() && (_osdmap_full_flag() || _osdmap_pool_full(*pi)));
 
   return (t->flags & CEPH_OSD_FLAG_READ && pauserd) ||
     (t->flags & CEPH_OSD_FLAG_WRITE && pausewr) ||
@@ -2705,18 +2685,13 @@ bool Objecter::_osdmap_has_pool_full() const
   return false;
 }
 
-bool Objecter::_osdmap_pool_full(const pg_pool_t &p) const
-{
-  return p.has_flag(pg_pool_t::FLAG_FULL) && honor_osdmap_full;
-}
-
 /**
  * Wrapper around osdmap->test_flag for special handling of the FULL flag.
  */
 bool Objecter::_osdmap_full_flag() const
 {
   // Ignore the FULL flag if the caller does not have honor_osdmap_full
-  return osdmap->test_flag(CEPH_OSDMAP_FULL) && honor_osdmap_full;
+  return osdmap->test_flag(CEPH_OSDMAP_FULL) && honor_pool_full;
 }
 
 void Objecter::update_pool_full_map(map<int64_t, bool>& pool_full_map)
@@ -2905,7 +2880,11 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
   if (t->paused && !should_be_paused) {
     unpaused = true;
   }
-  t->paused = should_be_paused;
+  if (t->paused != should_be_paused) {
+    ldout(cct, 10) << __func__ << " paused " << t->paused
+		   << " -> " << should_be_paused << dendl;
+    t->paused = should_be_paused;
+  }
 
   bool legacy_change =
     t->pgid != pgid ||
@@ -3191,7 +3170,7 @@ MOSDOp *Objecter::_prepare_osd_op(Op *op)
   // pre-luminous osds
   flags |= CEPH_OSD_FLAG_ONDISK;
 
-  if (!honor_osdmap_full)
+  if (!honor_pool_full)
     flags |= CEPH_OSD_FLAG_FULL_FORCE;
 
   op->target.paused = false;
@@ -3503,7 +3482,7 @@ void Objecter::handle_osd_op_reply(MOSDOpReply *m)
       ceph::buffer::list t;
       t.claim(*op->outbl);
       t.invalidate_crc();  // we're overwriting the raw buffers via c_str()
-      bl.copy(0, bl.length(), t.c_str());
+      bl.begin().copy(bl.length(), t.c_str());
       op->outbl->substr_of(t, 0, bl.length());
     } else {
       m->claim_data(*op->outbl);
@@ -4539,7 +4518,7 @@ void Objecter::_dump_ops(const OSDSession *s, Formatter *fmt)
        p != s->ops.end();
        ++p) {
     Op *op = p->second;
-    auto age = std::chrono::duration<double>(coarse_mono_clock::now() - op->stamp);
+    auto age = std::chrono::duration<double>(ceph::coarse_mono_clock::now() - op->stamp);
     fmt->open_object_section("op");
     fmt->dump_unsigned("tid", op->tid);
     op->target.dump(fmt);
@@ -4708,17 +4687,15 @@ Objecter::RequestStateHook::RequestStateHook(Objecter *objecter) :
 {
 }
 
-bool Objecter::RequestStateHook::call(std::string_view command,
-				      const cmdmap_t& cmdmap,
-				      std::string_view format,
-				      ceph::buffer::list& out)
+int Objecter::RequestStateHook::call(std::string_view command,
+				     const cmdmap_t& cmdmap,
+				     Formatter *f,
+				     std::ostream& ss,
+				     ceph::buffer::list& out)
 {
-  Formatter *f = Formatter::create(format, "json-pretty", "json-pretty");
   shared_lock rl(m_objecter->rwlock);
   m_objecter->dump_requests(f);
-  f->flush(out);
-  delete f;
-  return true;
+  return 0;
 }
 
 void Objecter::blacklist_self(bool set)
@@ -4782,6 +4759,18 @@ void Objecter::handle_command_reply(MCommandReply *m)
     sl.unlock();
     return;
   }
+  if (m->r == -EAGAIN) {
+    ldout(cct,10) << __func__ << " tid " << m->get_tid()
+		  << " got EAGAIN, requesting map and resending" << dendl;
+    // NOTE: This might resend twice... once now, and once again when
+    // we get an updated osdmap and the PG is found to have moved.
+    _maybe_request_map();
+    _send_command(c);
+    m->put();
+    sl.unlock();
+    return;
+  }
+
   if (c->poutbl) {
     c->poutbl->claim(m->get_data());
   }

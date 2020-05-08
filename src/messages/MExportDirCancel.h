@@ -18,7 +18,7 @@
 #include "msg/Message.h"
 #include "include/types.h"
 
-class MExportDirCancel : public Message {
+class MExportDirCancel : public SafeMessage {
 private:
   static const int HEAD_VERSION = 1;
   static const int COMPAT_VERSION = 1;
@@ -28,16 +28,16 @@ private:
   dirfrag_t get_dirfrag() const { return dirfrag; }
 
 protected:
-  MExportDirCancel() : Message{MSG_MDS_EXPORTDIRCANCEL, HEAD_VERSION, COMPAT_VERSION} {}
+  MExportDirCancel() : SafeMessage{MSG_MDS_EXPORTDIRCANCEL, HEAD_VERSION, COMPAT_VERSION} {}
   MExportDirCancel(dirfrag_t df, uint64_t tid) :
-    Message{MSG_MDS_EXPORTDIRCANCEL, HEAD_VERSION, COMPAT_VERSION}, dirfrag(df) {
+    SafeMessage{MSG_MDS_EXPORTDIRCANCEL, HEAD_VERSION, COMPAT_VERSION}, dirfrag(df) {
     set_tid(tid);
   }
   ~MExportDirCancel() override {}
 
 public:
   std::string_view get_type_name() const override { return "ExCancel"; }
-  void print(ostream& o) const override {
+  void print(std::ostream& o) const override {
     o << "export_cancel(" << dirfrag << ")";
   }
 
@@ -46,6 +46,7 @@ public:
     encode(dirfrag, payload);
   }
   void decode_payload() override {
+    using ceph::decode;
     auto p = payload.cbegin();
     decode(dirfrag, p);
   }

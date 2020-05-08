@@ -32,6 +32,7 @@
 
 #include <boost/smart_ptr/local_shared_ptr.hpp>
 #include "include/btree_map.h"
+#include "include/common_fwd.h"
 #include "include/types.h"
 #include "common/ceph_releases.h"
 #include "osd_types.h"
@@ -40,7 +41,6 @@
 #include "crush/CrushWrapper.h"
 
 // forward declaration
-class CephContext;
 class CrushWrapper;
 class health_check_map_t;
 
@@ -142,7 +142,7 @@ struct PGTempMap {
       offsets[i].second = p.get_off() - start_off;
       uint32_t vn;
       decode(vn, p);
-      p.advance(vn * sizeof(int32_t));
+      p += vn * sizeof(int32_t);
     }
     size_t len = p.get_off() - start_off;
     pstart.copy(len, data);
@@ -1054,17 +1054,17 @@ public:
    */
   uint64_t get_up_osd_features() const;
 
-  void get_upmap_pgs(vector<pg_t> *upmap_pgs) const;
+  void get_upmap_pgs(std::vector<pg_t> *upmap_pgs) const;
   bool check_pg_upmaps(
     CephContext *cct,
-    const vector<pg_t>& to_check,
-    vector<pg_t> *to_cancel,
-    map<pg_t, mempool::osdmap::vector<pair<int,int>>> *to_remap) const;
+    const std::vector<pg_t>& to_check,
+    std::vector<pg_t> *to_cancel,
+    std::map<pg_t, mempool::osdmap::vector<std::pair<int,int>>> *to_remap) const;
   void clean_pg_upmaps(
     CephContext *cct,
     Incremental *pending_inc,
-    const vector<pg_t>& to_cancel,
-    const map<pg_t, mempool::osdmap::vector<pair<int,int>>>& to_remap) const;
+    const std::vector<pg_t>& to_cancel,
+    const std::map<pg_t, mempool::osdmap::vector<std::pair<int,int>>>& to_remap) const;
   bool clean_pg_upmaps(CephContext *cct, Incremental *pending_inc) const;
 
   int apply_incremental(const Incremental &inc);
@@ -1380,52 +1380,27 @@ public:
   bool is_up_acting_osd_shard(spg_t pg, int osd) const {
     std::vector<int> up, acting;
     _pg_to_up_acting_osds(pg.pgid, &up, NULL, &acting, NULL, false);
-    if (pg.shard == shard_id_t::NO_SHARD) {
-      if (calc_pg_role(osd, acting, acting.size()) >= 0 ||
-	  calc_pg_role(osd, up, up.size()) >= 0)
-	return true;
-    } else {
-      if (pg.shard < (int)acting.size() && acting[pg.shard] == osd)
-	return true;
-      if (pg.shard < (int)up.size() && up[pg.shard] == osd)
-	return true;
+    if (calc_pg_role(pg_shard_t(osd, pg.shard), acting) >= 0 ||
+	calc_pg_role(pg_shard_t(osd, pg.shard), up) >= 0) {
+      return true;
     }
     return false;
   }
 
 
-  /* what replica # is a given osd? 0 primary, -1 for none. */
-  static int calc_pg_rank(int osd, const std::vector<int>& acting, int nrep=0);
-  static int calc_pg_role(int osd, const std::vector<int>& acting, int nrep=0);
-  static bool primary_changed(
+  static int calc_pg_role_broken(int osd, const std::vector<int>& acting, int nrep=0);
+  static int calc_pg_role(pg_shard_t who, const std::vector<int>& acting);
+  static bool primary_changed_broken(
     int oldprimary,
     const std::vector<int> &oldacting,
     int newprimary,
     const std::vector<int> &newacting);
   
   /* rank is -1 (stray), 0 (primary), 1,2,3,... (replica) */
-  int get_pg_acting_rank(pg_t pg, int osd) const {
+  int get_pg_acting_role(spg_t pg, int osd) const {
     std::vector<int> group;
-    pg_to_acting_osds(pg, group);
-    return calc_pg_rank(osd, group, group.size());
-  }
-  /* role is -1 (stray), 0 (primary), 1 (replica) */
-  int get_pg_acting_role(const pg_t& pg, int osd) const {
-    std::vector<int> group;
-    pg_to_acting_osds(pg, group);
-    return calc_pg_role(osd, group, group.size());
-  }
-
-  bool osd_is_valid_op_target(pg_t pg, int osd) const {
-    int primary;
-    std::vector<int> group;
-    pg_to_acting_osds(pg, &group, &primary);
-    if (osd == primary)
-      return true;
-    if (pg_is_ec(pg))
-      return false;
-
-    return calc_pg_role(osd, group, group.size()) >= 0;
+    pg_to_acting_osds(pg.pgid, group);
+    return calc_pg_role(pg_shard_t(osd, pg.shard), group);
   }
 
   bool try_pg_upmap(
@@ -1433,12 +1408,13 @@ public:
     pg_t pg,                       ///< pg to potentially remap
     const std::set<int>& overfull,      ///< osds we'd want to evacuate
     const std::vector<int>& underfull,  ///< osds to move to, in order of preference
+    const std::vector<int>& more_underfull,  ///< less full osds to move to, in order of preference
     std::vector<int> *orig,
     std::vector<int> *out);             ///< resulting alternative mapping
 
   int calc_pg_upmaps(
     CephContext *cct,
-    float max_deviation, ///< max deviation from target (value < 1.0)
+    uint32_t max_deviation, ///< max deviation from target (value >= 1)
     int max_iterations,  ///< max iterations to run
     const std::set<int64_t>& pools,        ///< [optional] restrict to pool
     Incremental *pending_inc
@@ -1451,7 +1427,7 @@ public:
       pg_upmap_items.count(pg);
   }
 
-  bool check_full(const set<pg_shard_t> &missing_on) const {
+  bool check_full(const std::set<pg_shard_t> &missing_on) const {
     for (auto shard : missing_on) {
       if (get_state(shard.osd) & CEPH_OSD_FULL)
 	return true;
@@ -1546,7 +1522,7 @@ public:
   static void generate_test_instances(std::list<OSDMap*>& o);
   bool check_new_blacklist_entries() const { return new_blacklist_entries; }
 
-  void check_health(health_check_map_t *checks) const;
+  void check_health(CephContext *cct, health_check_map_t *checks) const;
 
   int parse_osd_id_list(const std::vector<std::string>& ls,
 			std::set<int> *out,

@@ -35,7 +35,7 @@
 #define dout_subsys ceph_subsys_ms
 #undef dout_prefix
 #define dout_prefix _conn_prefix(_dout)
-ostream& AsyncConnection::_conn_prefix(std::ostream *_dout) {
+std::ostream& AsyncConnection::_conn_prefix(std::ostream *_dout) {
   return *_dout << "-- " << async_msgr->get_myaddrs() << " >> "
 		<< *peer_addrs << " conn(" << this
 		<< (msgr2 ? " msgr2=" : " legacy=")
@@ -168,8 +168,8 @@ void AsyncConnection::maybe_start_delay_thread()
   if (!delay_state) {
     async_msgr->cct->_conf.with_val<std::string>(
       "ms_inject_delay_type",
-      [this](const string& s) {
-	if (s.find(ceph_entity_type_name(peer_type)) != string::npos) {
+      [this](const std::string& s) {
+	if (s.find(ceph_entity_type_name(peer_type)) != std::string::npos) {
 	  ldout(msgr->cct, 1) << __func__ << " setting up a delay queue"
 			      << dendl;
 	  delay_state = new DelayedDelivery(async_msgr, center, dispatch_queue,
@@ -300,12 +300,12 @@ ssize_t AsyncConnection::read_bulk(char *buf, unsigned len)
   return nread;
 }
 
-ssize_t AsyncConnection::write(bufferlist &bl,
+ssize_t AsyncConnection::write(ceph::buffer::list &bl,
                                std::function<void(ssize_t)> callback,
                                bool more) {
 
     std::unique_lock<std::mutex> l(write_lock);
-    outcoming_bl.claim_append(bl);
+    outgoing_bl.claim_append(bl);
     ssize_t r = _try_send(more);
     if (r > 0) {
       writeCallback = callback;
@@ -325,16 +325,16 @@ ssize_t AsyncConnection::_try_send(bool more)
   }
 
   ceph_assert(center->in_thread());
-  ldout(async_msgr->cct, 25) << __func__ << " cs.send " << outcoming_bl.length()
+  ldout(async_msgr->cct, 25) << __func__ << " cs.send " << outgoing_bl.length()
                              << " bytes" << dendl;
-  ssize_t r = cs.send(outcoming_bl, more);
+  ssize_t r = cs.send(outgoing_bl, more);
   if (r < 0) {
     ldout(async_msgr->cct, 1) << __func__ << " send error: " << cpp_strerror(r) << dendl;
     return r;
   }
 
   ldout(async_msgr->cct, 10) << __func__ << " sent bytes " << r
-                             << " remaining bytes " << outcoming_bl.length() << dendl;
+                             << " remaining bytes " << outgoing_bl.length() << dendl;
 
   if (!open_write && is_queued()) {
     center->create_file_event(cs.fd(), EVENT_WRITABLE, write_handler);
@@ -349,7 +349,7 @@ ssize_t AsyncConnection::_try_send(bool more)
     }
   }
 
-  return outcoming_bl.length();
+  return outgoing_bl.length();
 }
 
 void AsyncConnection::inject_delay() {
@@ -539,7 +539,7 @@ int AsyncConnection::send_message(Message *m)
   m->get_header().src = async_msgr->get_myname();
   m->set_connection(this);
 
-#if defined(WITH_LTTNG) && defined(WITH_EVENTTRACE)
+#if defined(WITH_EVENTTRACE)
   if (m->get_type() == CEPH_MSG_OSD_OP)
     OID_EVENT_TRACE_WITH_MSG(m, "SEND_MSG_OSD_OP_BEGIN", true);
   else if (m->get_type() == CEPH_MSG_OSD_OPREPLY)
@@ -596,7 +596,7 @@ void AsyncConnection::fault()
 
   recv_start = recv_end = 0;
   state_offset = 0;
-  outcoming_bl.clear();
+  outgoing_bl.clear();
 }
 
 void AsyncConnection::_stop() {
@@ -614,7 +614,7 @@ void AsyncConnection::_stop() {
 }
 
 bool AsyncConnection::is_queued() const {
-  return outcoming_bl.length();
+  return outgoing_bl.length();
 }
 
 void AsyncConnection::shutdown_socket() {

@@ -18,7 +18,7 @@
 
 #include "msg/Message.h"
 
-class MDirUpdate : public Message {
+class MDirUpdate : public SafeMessage {
 public:
   mds_rank_t get_source_mds() const { return from_mds; }
   dirfrag_t get_dirfrag() const { return dirfrag; }
@@ -31,11 +31,12 @@ public:
   void inc_tried_discover() const { ++tried_discover; }
 
   std::string_view get_type_name() const override { return "dir_update"; }
-  void print(ostream& out) const override {
+  void print(std::ostream& out) const override {
     out << "dir_update(" << get_dirfrag() << ")";
   }
 
   void decode_payload() override {
+    using ceph::decode;
     auto p = payload.cbegin();
     decode(from_mds, p);
     decode(dirfrag, p);
@@ -57,19 +58,19 @@ public:
 
 protected:
   ~MDirUpdate() {}
-  MDirUpdate() : Message(MSG_MDS_DIRUPDATE, HEAD_VERSION, COMPAT_VERSION) {}
+  MDirUpdate() : SafeMessage(MSG_MDS_DIRUPDATE, HEAD_VERSION, COMPAT_VERSION) {}
   MDirUpdate(mds_rank_t f,
 	     dirfrag_t dirfrag,
              int dir_rep,
              const std::set<int32_t>& dir_rep_by,
              filepath& path,
              bool discover = false) :
-    Message(MSG_MDS_DIRUPDATE, HEAD_VERSION, COMPAT_VERSION), from_mds(f), dirfrag(dirfrag),
+    SafeMessage(MSG_MDS_DIRUPDATE, HEAD_VERSION, COMPAT_VERSION), from_mds(f), dirfrag(dirfrag),
     dir_rep(dir_rep), dir_rep_by(dir_rep_by), path(path) {
     this->discover = discover ? 5 : 0;
   }
   MDirUpdate(const MDirUpdate& m)
-  : Message{MSG_MDS_DIRUPDATE},
+  : SafeMessage{MSG_MDS_DIRUPDATE},
     from_mds(m.from_mds),
     dirfrag(m.dirfrag),
     dir_rep(m.dir_rep),

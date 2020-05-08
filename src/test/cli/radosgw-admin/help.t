@@ -31,6 +31,7 @@
     bucket rewrite             rewrite all objects in the specified bucket
     bucket sync disable        disable bucket sync
     bucket sync enable         enable bucket sync
+    bucket radoslist           list rados objects backing bucket's objects
     bi get                     retrieve bucket index object entries
     bi put                     store bucket index object entries
     bi list                    list raw bucket index entries
@@ -79,6 +80,7 @@
     zonegroup rename           rename a zone group
     zonegroup list             list all zone groups set on this cluster
     zonegroup placement list   list zonegroup's placement targets
+    zonegroup placement get    get a placement target of a specific zonegroup
     zonegroup placement add    add a placement target id to a zonegroup
     zonegroup placement modify modify a placement target of a specific zonegroup
     zonegroup placement rm     remove a placement target from a zonegroup
@@ -91,6 +93,7 @@
     zone list                  list all zones set on this cluster
     zone rename                rename a zone
     zone placement list        list zone's placement targets
+    zone placement get         get a zone placement target
     zone placement add         add a zone placement target
     zone placement modify      modify a zone placement target
     zone placement rm          remove a zone placement target
@@ -135,9 +138,10 @@
     datalog list               list data log
     datalog trim               trim data log
     datalog status             read data log status
-    orphans find               init and run search for leaked rados objects (use job-id, pool)
-    orphans finish             clean up search for leaked rados objects
-    orphans list-jobs          list the current job-ids for orphans search
+    orphans find               deprecated -- init and run search for leaked rados objects (use job-id, pool)
+    orphans finish             deprecated -- clean up search for leaked rados objects
+    orphans list-jobs          deprecated -- list the current job-ids for orphans search
+                             * the three 'orphans' sub-commands are now deprecated; consider using the `rgw-orphan-list` tool
     role create                create a AWS role for use with STS
     role rm                    remove a role
     role get                   get a role
@@ -243,6 +247,7 @@
                                set list of zones to sync from
      --sync-from-rm=[zone-name][,...]
                                remove zones from list of zones to sync from
+     --bucket-index-max-shards override a zone/zonegroup's default bucket index shard count
      --fix                     besides checking bucket index, will also fix it
      --check-objects           bucket check: rebuilds bucket index according to
                                actual objects state
@@ -278,6 +283,7 @@
      --min-rewrite-stripe-size min stripe size for object rewrite (default 0)
      --trim-delay-ms           time interval in msec to limit the frequency of sync error log entries trimming operations,
                                the trimming process will sleep the specified msec for every 1000 entries trimmed
+     --max-concurrent-ios      maximum concurrent ios for bucket operations (default: 32)
   
   <date> := "YYYY-MM-DD[ hh:mm:ss]"
   
@@ -290,7 +296,6 @@
      --num-shards              num of shards to use for keeping the temporary scan info
      --orphan-stale-secs       num of seconds to wait before declaring an object to be an orphan (default: 86400)
      --job-id                  set the job id (for orphans find)
-     --max-concurrent-ios      maximum concurrent ios for orphans find (default: 32)
      --detail                  detailed mode, log and stat head objects as well
   
   Orphans list-jobs options:

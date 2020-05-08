@@ -13,15 +13,14 @@
  *
  */
 
-#ifndef RGW_REST_METADATA_H
-#define RGW_REST_METADATA_H
+#pragma once
 
 class RGWOp_Metadata_List : public RGWRESTOp {
 public:
   RGWOp_Metadata_List() {}
   ~RGWOp_Metadata_List() override {}
 
-  int check_caps(RGWUserCaps& caps) override {
+  int check_caps(const RGWUserCaps& caps) override {
     return caps.check_cap("metadata", RGW_CAP_READ);
   }
   void execute() override;
@@ -33,7 +32,7 @@ public:
   RGWOp_Metadata_Get() {}
   ~RGWOp_Metadata_Get() override {}
 
-  int check_caps(RGWUserCaps& caps) override {
+  int check_caps(const RGWUserCaps& caps) override {
     return caps.check_cap("metadata", RGW_CAP_READ);
   }
   void execute() override;
@@ -56,7 +55,7 @@ public:
   RGWOp_Metadata_Put() {}
   ~RGWOp_Metadata_Put() override {}
 
-  int check_caps(RGWUserCaps& caps) override {
+  int check_caps(const RGWUserCaps& caps) override {
     return caps.check_cap("metadata", RGW_CAP_WRITE);
   }
   void execute() override;
@@ -70,7 +69,7 @@ public:
   RGWOp_Metadata_Delete() {}
   ~RGWOp_Metadata_Delete() override {}
 
-  int check_caps(RGWUserCaps& caps) override {
+  int check_caps(const RGWUserCaps& caps) override {
     return caps.check_cap("metadata", RGW_CAP_WRITE);
   }
   void execute() override;
@@ -102,5 +101,3 @@ public:
     return new RGWHandler_Metadata(auth_registry);
   }
 };
-
-#endif /* RGW_REST_METADATA_H */

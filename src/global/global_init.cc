@@ -39,6 +39,9 @@
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_
 
+using std::cerr;
+using std::string;
+
 static void global_init_set_globals(CephContext *cct)
 {
   g_ceph_context = cct;
@@ -90,6 +93,9 @@ void global_pre_init(
   std::string conf_file_list;
   std::string cluster = "";
 
+  // ensure environment arguments are included in early processing
+  env_to_vec(args);
+
   CephInitParameters iparams = ceph_argparse_early_args(
     args, module_type,
     &cluster, &conf_file_list);
@@ -111,6 +117,10 @@ void global_pre_init(
     }
   }
 
+  if (conf.get_val<bool>("no_config_file")) {
+    flags |= CINIT_FLAG_NO_DEFAULT_CONFIG_FILE;
+  }
+
   int ret = conf.parse_config_files(c_str_or_null(conf_file_list),
 				    &cerr, flags);
   if (ret == -EDOM) {
@@ -126,7 +136,8 @@ void global_pre_init(
 	     << conf_file_list << std::endl;
         _exit(1);
       } else {
-	cerr << "did not load config file, using default settings." << std::endl;
+	cerr << "did not load config file, using default settings."
+	     << std::endl;
       }
     }
   }
@@ -190,13 +201,13 @@ global_init(const std::map<std::string,std::string> *defaults,
   if (g_conf()->fatal_signal_handlers) {
     install_standard_sighandlers();
   }
-  register_assert_context(g_ceph_context);
+  ceph::register_assert_context(g_ceph_context);
 
   if (g_conf()->log_flush_on_exit)
     g_ceph_context->_log->set_flush_on_exit();
 
   // drop privileges?
-  ostringstream priv_ss;
+  std::ostringstream priv_ss;
  
   // consider --setuser root a no-op, even if we're not root
   if (getuid() != 0) {
@@ -312,6 +323,11 @@ global_init(const std::map<std::string,std::string> *defaults,
   if (prctl(PR_SET_DUMPABLE, 1) == -1) {
     cerr << "warning: unable to set dumpable flag: " << cpp_strerror(errno) << std::endl;
   }
+#  if defined(PR_SET_THP_DISABLE)
+  if (!g_conf().get_val<bool>("thp") && prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0) == -1) {
+    cerr << "warning: unable to disable THP: " << cpp_strerror(errno) << std::endl;
+  }
+#  endif
 #endif
 
   //
@@ -392,7 +408,7 @@ global_init(const std::map<std::string,std::string> *defaults,
 
   return boost::intrusive_ptr<CephContext>{g_ceph_context, false};
 }
-
+namespace TOPNSPC::common {
 void intrusive_ptr_add_ref(CephContext* cct)
 {
   cct->get();
@@ -402,7 +418,7 @@ void intrusive_ptr_release(CephContext* cct)
 {
   cct->put();
 }
-
+}
 void global_print_banner(void)
 {
   output_ceph_version();
@@ -558,11 +574,9 @@ int global_init_preload_erasure_code(const CephContext *cct)
   string plugins = conf->osd_erasure_code_plugins;
 
   // validate that this is a not a legacy plugin
-  list<string> plugins_list;
+  std::list<string> plugins_list;
   get_str_list(plugins, plugins_list);
-  for (list<string>::iterator i = plugins_list.begin();
-       i != plugins_list.end();
-       ++i) {
+  for (auto i = plugins_list.begin(); i != plugins_list.end(); ++i) {
 	string plugin_name = *i;
 	string replacement = "";
 
@@ -586,8 +600,8 @@ int global_init_preload_erasure_code(const CephContext *cct)
 	}
   }
 
-  stringstream ss;
-  int r = ErasureCodePluginRegistry::instance().preload(
+  std::stringstream ss;
+  int r = ceph::ErasureCodePluginRegistry::instance().preload(
     plugins,
     conf.get_val<std::string>("erasure_code_dir"),
     &ss);

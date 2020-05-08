@@ -37,11 +37,22 @@
 // set set_mon_vals()
 #define dout_subsys ceph_subsys_monc
 
+using std::cerr;
+using std::cout;
 using std::map;
+using std::less;
 using std::list;
+using std::ostream;
 using std::ostringstream;
 using std::pair;
 using std::string;
+using std::string_view;
+using std::vector;
+
+using ceph::bufferlist;
+using ceph::decode;
+using ceph::encode;
+using ceph::Formatter;
 
 static const char *CEPH_CONF_FILE_DEFAULT = "$data_dir/config, /etc/ceph/$cluster.conf, $home/.ceph/$cluster.conf, $cluster.conf"
 #if defined(__FreeBSD__)
@@ -293,8 +304,8 @@ int md_config_t::set_mon_vals(CephContext *cct,
     std::string err;
     int r = _set_val(values, tracker, i.second, *o, CONF_MON, &err);
     if (r < 0) {
-      lderr(cct) << __func__ << " failed to set " << i.first << " = "
-		 << i.second << ": " << err << dendl;
+      ldout(cct, 4) << __func__ << " failed to set " << i.first << " = "
+		    << i.second << ": " << err << dendl;
       ignored_mon_values.emplace(i);
     } else if (r == ConfigValues::SET_NO_CHANGE ||
 	       r == ConfigValues::SET_NO_EFFECT) {
@@ -318,6 +329,11 @@ int md_config_t::set_mon_vals(CephContext *cct,
 		  << " cleared (was " << Option::to_str(config->second) << ")"
 		  << dendl;
     values.rm_val(name, CONF_MON);
+    // if this is a debug option, it needs to propagate to teh subsys;
+    // this isn't covered by update_legacy_vals() below.  similarly,
+    // we want to trigger a config notification for these items.
+    const Option *o = find_option(name);
+    _refresh(values, *o);
   });
   values_bl.clear();
   update_legacy_vals(values);
@@ -1026,8 +1042,7 @@ Option::value_t md_config_t::get_val_generic(
   const ConfigValues& values,
   const std::string_view key) const
 {
-  string k(ConfFile::normalize_key_name(key));
-  return _get_val(values, k);
+  return _get_val(values, key);
 }
 
 Option::value_t md_config_t::_get_val(
@@ -1043,7 +1058,7 @@ Option::value_t md_config_t::_get_val(
   // In key names, leading and trailing whitespace are not significant.
   string k(ConfFile::normalize_key_name(key));
 
-  const Option *o = find_option(key);
+  const Option *o = find_option(k);
   if (!o) {
     // not a valid config option
     return Option::value_t(boost::blank());
@@ -1270,8 +1285,6 @@ int md_config_t::_get_val_cstr(
     return (l > len) ? -ENAMETOOLONG : 0;
   }
 
-  string k(ConfFile::normalize_key_name(key));
-
   // couldn't find a configuration option with key 'k'
   return -ENOENT;
 }
@@ -1379,7 +1392,7 @@ int md_config_t::_set_val(
     if (new_value != _get_val_nometa(values, opt)) {
       *error_message = string("Configuration option '") + opt.name +
 	"' may not be modified at runtime";
-      return -ENOSYS;
+      return -EPERM;
     }
   }
 

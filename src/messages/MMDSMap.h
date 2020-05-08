@@ -20,23 +20,23 @@
 #include "mds/MDSMap.h"
 #include "include/ceph_features.h"
 
-class MMDSMap : public Message {
+class MMDSMap : public SafeMessage {
 private:
   static constexpr int HEAD_VERSION = 1;
   static constexpr int COMPAT_VERSION = 1;
 public:
   uuid_d fsid;
   epoch_t epoch = 0;
-  bufferlist encoded;
+  ceph::buffer::list encoded;
 
   version_t get_epoch() const { return epoch; }
-  const bufferlist& get_encoded() const { return encoded; }
+  const ceph::buffer::list& get_encoded() const { return encoded; }
 
 protected:
   MMDSMap() : 
-    Message{CEPH_MSG_MDS_MAP, HEAD_VERSION, COMPAT_VERSION} {}
+    SafeMessage{CEPH_MSG_MDS_MAP, HEAD_VERSION, COMPAT_VERSION} {}
   MMDSMap(const uuid_d &f, const MDSMap &mm) :
-    Message{CEPH_MSG_MDS_MAP, HEAD_VERSION, COMPAT_VERSION},
+    SafeMessage{CEPH_MSG_MDS_MAP, HEAD_VERSION, COMPAT_VERSION},
     fsid(f) {
     epoch = mm.get_epoch();
     mm.encode(encoded, -1);  // we will reencode with fewer features as necessary
@@ -45,12 +45,13 @@ protected:
 
 public:
   std::string_view get_type_name() const override { return "mdsmap"; }
-  void print(ostream& out) const override {
+  void print(std::ostream& out) const override {
     out << "mdsmap(e " << epoch << ")";
   }
 
   // marshalling
   void decode_payload() override {
+    using ceph::decode;
     auto p = payload.cbegin();
     decode(fsid, p);
     decode(epoch, p);

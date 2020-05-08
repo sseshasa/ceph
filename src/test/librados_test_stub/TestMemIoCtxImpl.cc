@@ -82,7 +82,7 @@ int TestMemIoCtxImpl::append(const std::string& oid, const bufferlist &bl,
   std::unique_lock l{file->lock};
   auto off = file->data.length();
   ensure_minimum_length(off + bl.length(), &file->data);
-  file->data.copy_in(off, bl.length(), bl);
+  file->data.begin(off).copy_in(bl.length(), bl);
   return 0;
 }
 
@@ -445,6 +445,7 @@ int TestMemIoCtxImpl::selfmanaged_snap_rollback(const std::string& oid,
 int TestMemIoCtxImpl::set_alloc_hint(const std::string& oid,
                                      uint64_t expected_object_size,
                                      uint64_t expected_write_size,
+                                     uint32_t flags,
                                      const SnapContext &snapc) {
   if (get_snap_read() != CEPH_NOSNAP) {
     return -EROFS;
@@ -581,7 +582,7 @@ int TestMemIoCtxImpl::write(const std::string& oid, bufferlist& bl, size_t len,
   }
 
   ensure_minimum_length(off + len, &file->data);
-  file->data.copy_in(off, len, bl);
+  file->data.begin(off).copy_in(len, bl);
   return 0;
 }
 
@@ -612,7 +613,7 @@ int TestMemIoCtxImpl::write_full(const std::string& oid, bufferlist& bl,
 
   file->data.clear();
   ensure_minimum_length(bl.length(), &file->data);
-  file->data.copy_in(0, bl.length(), bl);
+  file->data.begin().copy_in(bl.length(), bl);
   return 0;
 }
 
@@ -644,7 +645,7 @@ int TestMemIoCtxImpl::writesame(const std::string& oid, bufferlist& bl, size_t l
 
   ensure_minimum_length(off + len, &file->data);
   while (len > 0) {
-    file->data.copy_in(off, bl.length(), bl);
+    file->data.begin(off).copy_in(bl.length(), bl);
     off += bl.length();
     len -= bl.length();
   }

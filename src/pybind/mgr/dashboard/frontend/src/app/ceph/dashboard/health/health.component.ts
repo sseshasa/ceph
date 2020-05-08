@@ -78,7 +78,6 @@ export class HealthComponent implements OnInit, OnDestroy {
   }
 
   ngOnInit() {
-    this.getHealth();
     this.interval = this.refreshIntervalService.intervalData$.subscribe(() => {
       this.getHealth();
     });
@@ -94,7 +93,7 @@ export class HealthComponent implements OnInit, OnDestroy {
     });
   }
 
-  prepareReadWriteRatio(chart) {
+  prepareReadWriteRatio(chart: Record<string, any>) {
     const ratioLabels = [];
     const ratioData = [];
 
@@ -120,7 +119,7 @@ export class HealthComponent implements OnInit, OnDestroy {
     chart.labels = ratioLabels;
   }
 
-  prepareRawUsage(chart, data) {
+  prepareRawUsage(chart: Record<string, any>, data: Record<string, any>) {
     const percentAvailable = this.calcPercentage(
       data.df.stats.total_bytes - data.df.stats.total_used_raw_bytes,
       data.df.stats.total_bytes
@@ -146,8 +145,8 @@ export class HealthComponent implements OnInit, OnDestroy {
     )} ${this.i18n('total')}`;
   }
 
-  preparePgStatus(chart, data) {
-    const categoryPgAmount = {};
+  preparePgStatus(chart: Record<string, any>, data: Record<string, any>) {
+    const categoryPgAmount: Record<string, number> = {};
     let totalPgs = 0;
 
     _.forEach(data.pg_info.statuses, (pgAmount, pgStatesText) => {
@@ -172,7 +171,7 @@ export class HealthComponent implements OnInit, OnDestroy {
     ];
   }
 
-  prepareObjects(chart, data) {
+  prepareObjects(chart: Record<string, any>, data: Record<string, any>) {
     const totalReplicas = data.pg_info.object_stats.num_object_copies;
     const healthy =
       totalReplicas -
