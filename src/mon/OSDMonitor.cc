@@ -3146,16 +3146,21 @@ bool OSDMonitor::check_failure(utime_t now, int target_osd, failure_info_t& fi)
   double decay_k = 0;
   if (g_conf()->mon_osd_adjust_heartbeat_grace) {
     double halflife = (double)g_conf()->mon_osd_laggy_halflife;
-    decay_k = ::log(.5) / halflife;
-
-    // scale grace period based on historical probability of 'lagginess'
-    // (false positive failures due to slowness).
     const osd_xinfo_t& xi = osdmap.get_xinfo(target_osd);
-    double decay = exp((double)failed_for * decay_k);
-    dout(20) << " halflife " << halflife << " decay_k " << decay_k
-	     << " failed_for " << failed_for << " decay " << decay << dendl;
-    my_grace = decay * (double)xi.laggy_interval * xi.laggy_probability;
-    grace += my_grace;
+    int last_failure = now.sec() - xi.down_stamp.sec();
+    decay_k = ::log(.5) / halflife;
+    // Reset laggy parameters if failure interval exceeds a threshold.
+    if (grace_interval_threshold_exceeded(last_failure)) {
+      set_default_laggy_params(target_osd);
+    } else {
+      // scale grace period based on historical probability of 'lagginess'
+      // (false positive failures due to slowness).
+      double decay = exp((double)failed_for * decay_k);
+      dout(20) << " halflife " << halflife << " decay_k " << decay_k
+	       << " failed_for " << failed_for << " decay " << decay << dendl;
+      my_grace = decay * (double)xi.laggy_interval * xi.laggy_probability;
+      grace += my_grace;
+    }
   }
 
   // consider the peers reporting a failure a proxy for a potential
@@ -3178,8 +3183,13 @@ bool OSDMonitor::check_failure(utime_t now, int target_osd, failure_info_t& fi)
       if (g_conf()->mon_osd_adjust_heartbeat_grace) {
         const osd_xinfo_t& xi = osdmap.get_xinfo(p->first);
         utime_t elapsed = now - xi.down_stamp;
-        double decay = exp((double)elapsed * decay_k);
-        peer_grace += decay * (double)xi.laggy_interval * xi.laggy_probability;
+        // Reset laggy parameters if failure interval exceeds a threshold.
+        if (grace_interval_threshold_exceeded((int)elapsed)) {
+          set_default_laggy_params(p->first);
+        } else {
+          double decay = exp((double)elapsed * decay_k);
+          peer_grace += decay * (double)xi.laggy_interval * xi.laggy_probability;
+        }
       }
       ++p;
     } else {
@@ -3343,6 +3353,27 @@ void OSDMonitor::take_all_failures(list<MonOpRequestRef>& ls)
     p->second.take_report_messages(ls);
   }
   failure_info.clear();
+}
+
+bool OSDMonitor::grace_interval_threshold_exceeded(int last_failed_interval)
+{
+  int halflife = g_conf()->mon_osd_laggy_halflife;
+  const int grace_interval_threshold_hours = 48;
+  // Grace threshold: 48 Hrs. Is this enough??
+  const int grace_interval_threshold_secs =
+    halflife * grace_interval_threshold_hours;
+  return (last_failed_interval > grace_interval_threshold_secs) ? true : false;
+}
+
+void OSDMonitor::set_default_laggy_params(int target_osd)
+{
+  if (pending_inc.new_xinfo.count(target_osd) == 0) {
+    pending_inc.new_xinfo[target_osd] = osdmap.osd_xinfo[target_osd];
+  }
+  osd_xinfo_t& xi = pending_inc.new_xinfo[target_osd];
+  xi.laggy_probability = 0.0;
+  xi.laggy_interval = 0;
+  dout(20) << " reset laggy, now xi " << xi << dendl;
 }
 
 
@@ -3586,9 +3617,16 @@ bool OSDMonitor::prepare_boot(MonOpRequestRef op)
       xi.laggy_interval *= (1.0 - g_conf()->mon_osd_laggy_weight);
       dout(10) << " not laggy, new xi " << xi << dendl;
     } else {
+      bool grace_threshold_exceeded = false;
       if (xi.down_stamp.sec()) {
         int interval = ceph_clock_now().sec() -
 	  xi.down_stamp.sec();
+        grace_threshold_exceeded =
+          grace_interval_threshold_exceeded(interval);
+        if (grace_threshold_exceeded) {
+          set_default_laggy_params(from);
+          interval = 0;
+        }
         if (g_conf()->mon_osd_laggy_max_interval &&
 	    (interval > g_conf()->mon_osd_laggy_max_interval)) {
           interval =  g_conf()->mon_osd_laggy_max_interval;
@@ -3597,10 +3635,12 @@ bool OSDMonitor::prepare_boot(MonOpRequestRef op)
 	  interval * g_conf()->mon_osd_laggy_weight +
 	  xi.laggy_interval * (1.0 - g_conf()->mon_osd_laggy_weight);
       }
-      xi.laggy_probability =
-	g_conf()->mon_osd_laggy_weight +
-	xi.laggy_probability * (1.0 - g_conf()->mon_osd_laggy_weight);
-      dout(10) << " laggy, now xi " << xi << dendl;
+      if (!grace_threshold_exceeded) {
+        xi.laggy_probability =
+          g_conf()->mon_osd_laggy_weight +
+          xi.laggy_probability * (1.0 - g_conf()->mon_osd_laggy_weight);
+        dout(10) << " laggy, now xi " << xi << dendl;
+      }
     }
 
     // set features shared by the osd
