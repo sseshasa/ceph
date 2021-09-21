@@ -477,6 +477,16 @@ WorkItem mClockScheduler::dequeue()
       ceph_assert(result.is_retn());
 
       auto &retn = result.get_retn();
+      std::optional<OpRequestRef> _op = retn.request->maybe_get_op();
+      if (_op.has_value()) {
+        auto req = (*_op)->get_req();
+        if (req->get_type() == CEPH_MSG_OSD_OP) {
+          (*_op)->qos_phase = retn.phase; // 'reservation' or 'priority'
+          (*_op)->qos_cost = retn.cost; // cost in terms of Bytes
+          dout(20) << __func__ << " qos_phase: " << (*_op)->qos_phase
+                   << " qos_cost: " << (*_op)->qos_cost << dendl;
+        }
+      }
       return std::move(*retn.request);
     }
   }
