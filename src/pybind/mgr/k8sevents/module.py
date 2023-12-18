@@ -33,20 +33,14 @@ import logging
 import tempfile
 import threading
 
-try:
-    # python 3 
-    from urllib.parse import urlparse
-except ImportError:
-    # python 2 fallback
-    from urlparse import urlparse
-
+from urllib.parse import urlparse
 from datetime import tzinfo, datetime, timedelta
    
 from urllib3.exceptions import MaxRetryError,ProtocolError
 from collections import OrderedDict
 
 import rados
-from mgr_module import MgrModule
+from mgr_module import MgrModule, NotifyType
 from mgr_util import verify_cacrt, ServerConfigException
 
 try:
@@ -250,6 +244,27 @@ class BaseThread(threading.Thread):
     daemon = True
 
 
+def clean_event(event):
+    """ clean an event record """
+    if not event.first_timestamp:
+        log.error("first_timestamp is empty")
+        if event.metadata.creation_timestamp:
+            log.error("setting first_timestamp to the creation timestamp")
+            event.first_timestamp = event.metadata.creation_timestamp
+        else:
+            log.error("defaulting event first timestamp to current datetime")
+            event.first_timestamp = datetime.datetime.now()
+
+    if not event.last_timestamp:
+        log.error("setting event last timestamp to {}".format(event.first_timestamp))
+        event.last_timestamp = event.first_timestamp
+
+    if not event.count:
+        event.count = 1
+
+    return event
+
+
 class NamespaceWatcher(BaseThread):
     """Watch events in a given namespace 
     
@@ -289,7 +304,7 @@ class NamespaceWatcher(BaseThread):
             self.resource_version = resp.metadata.resource_version
             
             for item in resp.items:
-                self.events[item.metadata.name] = item
+                self.events[item.metadata.name] = clean_event(item)
             log.info('Added {} events'.format(len(resp.items)))
 
     def run(self):
@@ -311,7 +326,7 @@ class NamespaceWatcher(BaseThread):
                         with self.lock:
 
                             if item['type'] in ['ADDED', 'MODIFIED']:
-                                self.events[obj.metadata.name] = obj
+                                self.events[obj.metadata.name] = clean_event(obj)
 
                             elif item['type'] == 'DELETED':
                                 del self.events[obj.metadata.name]
@@ -331,6 +346,10 @@ class NamespaceWatcher(BaseThread):
                     # refresh the resource_version & watcher
                     log.warning("API exception caught in watcher ({})".format(e))
                     log.warning("Restarting namespace watcher")
+                    self.fetch()
+
+                except ProtocolError as e:
+                    log.warning("Namespace watcher hit protocolerror ({}) - restarting".format(e))
                     self.fetch()
 
                 except Exception:
@@ -1007,12 +1026,12 @@ class Module(MgrModule):
         },
         {
             "cmd": "k8sevents set-access name=key,type=CephString",
-            "desc": "Set kubernetes access credentials. <key> must be cacrt or token and use -i <filename> syntax.\ne.g. ceph k8sevents set-access cacrt -i /root/ca.crt",
+            "desc": "Set kubernetes access credentials. <key> must be cacrt or token and use -i <filename> syntax (e.g., ceph k8sevents set-access cacrt -i /root/ca.crt).",
             "perm": "rw"
         },
         {
             "cmd": "k8sevents set-config name=key,type=CephString name=value,type=CephString",
-            "desc": "Set kubernetes config paramters. <key> must be server or namespace.\ne.g. ceph k8sevents set-config server https://localhost:30433",
+            "desc": "Set kubernetes config paramters. <key> must be server or namespace (e.g., ceph k8sevents set-config server https://localhost:30433).",
             "perm": "rw"
         },
         {
@@ -1032,6 +1051,7 @@ class Module(MgrModule):
          'default': 7,
          'desc': "Days to hold ceph event information within local cache"}
     ]
+    NOTIFY_TYPES = [NotifyType.clog]
 
     def __init__(self, *args, **kwargs):
         self.run = True
@@ -1119,7 +1139,7 @@ class Module(MgrModule):
         else:
             self.log.warning("Unexpected clog message format received - skipped: {}".format(log_message))
 
-    def notify(self, notify_type, notify_id):
+    def notify(self, notify_type: NotifyType, notify_id):
         """
         Called by the ceph-mgr service to notify the Python plugin
         that new state is available.
@@ -1134,7 +1154,7 @@ class Module(MgrModule):
         """
         
         # only interested in cluster log (clog) messages for now
-        if notify_type == 'clog':
+        if notify_type == NotifyType.clog:
             self.log.debug("received a clog entry from mgr.notify")
             if isinstance(notify_id, dict):
                 # create a log object to process
@@ -1156,10 +1176,10 @@ class Module(MgrModule):
 
             s += fmt.format(
                     datetime.strftime(event.last_timestamp,"%Y/%m/%d %H:%M:%S"),
-                    event.type,
-                    event.count,
-                    event.message,
-                    event_name
+                    str(event.type),
+                    str(event.count),
+                    str(event.message),
+                    str(event_name)
             )
         s += "Total : {:>3}\n".format(len(events))
         return s

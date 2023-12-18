@@ -4,6 +4,7 @@
  * Bitmap allocator fragmentation benchmarks.
  * Author: Adam Kupczyk, akupczyk@redhat.com
  */
+#include <bit>
 #include <iostream>
 #include <boost/scoped_ptr.hpp>
 #include <gtest/gtest.h>
@@ -12,6 +13,7 @@
 #include "common/ceph_mutex.h"
 #include "common/Cond.h"
 #include "common/errno.h"
+#include "global/global_init.h"
 #include "include/stringify.h"
 #include "include/Context.h"
 #include "os/bluestore/Allocator.h"
@@ -21,7 +23,7 @@
 typedef boost::mt11213b gen_type;
 
 #include "common/debug.h"
-#define dout_context g_ceph_context
+#define dout_context cct
 #define dout_subsys ceph_subsys_
 
 struct Scenario {
@@ -74,6 +76,8 @@ class AllocTest : public ::testing::TestWithParam<std::string> {
 protected:
   boost::scoped_ptr<AllocTracker> at;
   gen_type rng;
+  static boost::intrusive_ptr<CephContext> cct;
+
 public:
   boost::scoped_ptr<Allocator> alloc;
   AllocTest(): alloc(nullptr) {}
@@ -96,7 +100,9 @@ public:
   void do_free(uint64_t low_mark);
   uint32_t free_random();
 
-  static void TearDownTestCase();
+  void TearDown() final;
+  static void SetUpTestSuite();
+  static void TearDownTestSuite();
 };
 
 struct test_result {
@@ -150,12 +156,13 @@ public:
   }
 };
 
+boost::intrusive_ptr<CephContext> AllocTest::cct;
 
 void AllocTest::init_alloc(const std::string& allocator_name, int64_t size, uint64_t min_alloc_size) {
   this->capacity = size;
   this->alloc_unit = min_alloc_size;
   rng.seed(0);
-  alloc.reset(Allocator::create(g_ceph_context, allocator_name, size,
+  alloc.reset(Allocator::create(cct.get(), allocator_name, size,
 				min_alloc_size));
   at.reset(new AllocTracker());
 }
@@ -228,8 +235,8 @@ void AllocTest::doAgingTest(
     uint64_t capacity, uint32_t alloc_unit,
     uint64_t high_mark, uint64_t low_mark, uint32_t iterations, double leak_factor)
 {
-  assert(isp2(alloc_unit));
-  g_ceph_context->_conf->bdev_block_size = alloc_unit;
+  assert(std::has_single_bit(alloc_unit));
+  cct->_conf->bdev_block_size = alloc_unit;
   PExtentVector allocated, tmp;
   init_alloc(allocator_name, capacity, alloc_unit);
   alloc->init_add_free(0, capacity);
@@ -299,7 +306,26 @@ void AllocTest::doAgingTest(
   r.frag_score += frag_score;
 }
 
-void AllocTest::TearDownTestCase() {
+void AllocTest::SetUpTestSuite()
+{
+  vector<const char*> args;
+  cct = global_init(NULL, args,
+		    CEPH_ENTITY_TYPE_CLIENT,
+		    CODE_ENVIRONMENT_UTILITY,
+		    CINIT_FLAG_NO_DEFAULT_CONFIG_FILE);
+  common_init_finish(cct.get());
+}
+
+void AllocTest::TearDown()
+{
+  at.reset();
+  alloc.reset();
+}
+
+void AllocTest::TearDownTestSuite()
+{
+  cct.reset();
+
   std::cout << "Summary: " << std::endl;
   for (auto& r: results_per_allocator) {
     std::cout << r.first <<
@@ -431,8 +457,7 @@ TEST_P(AllocTest, test_bonus_empty_fragmented)
   std::cout << "    empty storage frag.score=" << frag_score << std::endl;
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
   Allocator,
   AllocTest,
-  ::testing::Values("stupid", "bitmap", "avl"));
-
+  ::testing::Values("stupid", "bitmap", "avl", "btree"));

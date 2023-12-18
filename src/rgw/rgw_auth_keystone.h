@@ -1,13 +1,11 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab ft=cpp
 
+#pragma once
 
-#ifndef CEPH_RGW_AUTH_KEYSTONE_H
-#define CEPH_RGW_AUTH_KEYSTONE_H
-
+#include <string_view>
 #include <utility>
 #include <boost/optional.hpp>
-#include <boost/utility/string_view.hpp>
 
 #include "rgw_auth.h"
 #include "rgw_rest_s3.h"
@@ -30,7 +28,8 @@ class TokenEngine : public rgw::auth::Engine {
   using result_t = rgw::auth::Engine::result_t;
   using token_envelope_t = rgw::keystone::TokenEnvelope;
 
-  const rgw::auth::TokenExtractor* const extractor;
+  const rgw::auth::TokenExtractor* const auth_token_extractor;
+  const rgw::auth::TokenExtractor* const service_token_extractor;
   const rgw::auth::RemoteApplier::Factory* const apl_factory;
   rgw::keystone::Config& config;
   rgw::keystone::TokenCache& token_cache;
@@ -39,24 +38,29 @@ class TokenEngine : public rgw::auth::Engine {
   bool is_applicable(const std::string& token) const noexcept;
 
   boost::optional<token_envelope_t>
-  get_from_keystone(const DoutPrefixProvider* dpp, const std::string& token) const;
+  get_from_keystone(const DoutPrefixProvider* dpp,
+                    const std::string& token,
+                    bool allow_expired,
+                    optional_yield y) const;
 
   acl_strategy_t get_acl_strategy(const token_envelope_t& token) const;
-  auth_info_t get_creds_info(const token_envelope_t& token,
-                             const std::vector<std::string>& admin_roles
-                            ) const noexcept;
+  auth_info_t get_creds_info(const token_envelope_t& token) const noexcept;
   result_t authenticate(const DoutPrefixProvider* dpp,
                         const std::string& token,
-                        const req_state* s) const;
+                        const std::string& service_token,
+                        const req_state* s,
+                        optional_yield y) const;
 
 public:
   TokenEngine(CephContext* const cct,
-              const rgw::auth::TokenExtractor* const extractor,
+              const rgw::auth::TokenExtractor* const auth_token_extractor,
+              const rgw::auth::TokenExtractor* const service_token_extractor,
               const rgw::auth::RemoteApplier::Factory* const apl_factory,
               rgw::keystone::Config& config,
               rgw::keystone::TokenCache& token_cache)
     : cct(cct),
-      extractor(extractor),
+      auth_token_extractor(auth_token_extractor),
+      service_token_extractor(service_token_extractor),
       apl_factory(apl_factory),
       config(config),
       token_cache(token_cache) {
@@ -66,8 +70,10 @@ public:
     return "rgw::auth::keystone::TokenEngine";
   }
 
-  result_t authenticate(const DoutPrefixProvider* dpp, const req_state* const s) const override {
-    return authenticate(dpp, extractor->get_token(s), s);
+  result_t authenticate(const DoutPrefixProvider* dpp, const req_state* const s,
+			optional_yield y) const override {
+    return authenticate(dpp, auth_token_extractor->get_token(s),
+                        service_token_extractor->get_token(s), s, y);
   }
 }; /* class TokenEngine */
 
@@ -78,7 +84,7 @@ class SecretCache {
     token_envelope_t token;
     std::string secret;
     utime_t expires;
-    list<std::string>::iterator lru_iter;
+    std::list<std::string>::iterator lru_iter;
   };
 
   const boost::intrusive_ptr<CephContext> cct;
@@ -137,30 +143,42 @@ class EC2Engine : public rgw::auth::s3::AWSEngine {
   /* Helper methods. */
   acl_strategy_t get_acl_strategy(const token_envelope_t& token) const;
   auth_info_t get_creds_info(const token_envelope_t& token,
-                             const std::vector<std::string>& admin_roles
+                             const std::vector<std::string>& admin_roles,
+                             const std::string& access_key_id
                             ) const noexcept;
   std::pair<boost::optional<token_envelope_t>, int>
   get_from_keystone(const DoutPrefixProvider* dpp,
-                    const boost::string_view& access_key_id,
+                    const std::string_view& access_key_id,
                     const std::string& string_to_sign,
-                    const boost::string_view& signature) const;
-  std::pair<boost::optional<token_envelope_t>, int>
+                    const std::string_view& signature,
+                    optional_yield y) const;
+
+  struct access_token_result {
+    boost::optional<token_envelope_t> token;
+    boost::optional<std::string> secret_key;
+    int failure_reason = 0;
+  };
+  access_token_result
   get_access_token(const DoutPrefixProvider* dpp,
-                   const boost::string_view& access_key_id,
+                   const std::string_view& access_key_id,
                    const std::string& string_to_sign,
-                   const boost::string_view& signature,
-		   const signature_factory_t& signature_factory) const;
+                   const std::string_view& signature,
+		   const signature_factory_t& signature_factory,
+                   optional_yield y) const;
   result_t authenticate(const DoutPrefixProvider* dpp,
-                        const boost::string_view& access_key_id,
-                        const boost::string_view& signature,
-                        const boost::string_view& session_token,
+                        const std::string_view& access_key_id,
+                        const std::string_view& signature,
+                        const std::string_view& session_token,
                         const string_to_sign_t& string_to_sign,
                         const signature_factory_t& signature_factory,
                         const completer_factory_t& completer_factory,
-                        const req_state* s) const override;
-  std::pair<boost::optional<std::string>, int> get_secret_from_keystone(const DoutPrefixProvider* dpp,
-                                                                        const std::string& user_id,
-                                                                        const boost::string_view& access_key_id) const;
+                        const req_state* s,
+			optional_yield y) const override;
+  auto get_secret_from_keystone(const DoutPrefixProvider* dpp,
+                                const std::string& user_id,
+                                const std::string_view& access_key_id,
+                                optional_yield y) const
+      -> std::pair<boost::optional<std::string>, int>;
 public:
   EC2Engine(CephContext* const cct,
             const rgw::auth::s3::AWSEngine::VersionAbstractor* const ver_abstractor,
@@ -189,5 +207,3 @@ public:
 }; /* namespace keystone */
 }; /* namespace auth */
 }; /* namespace rgw */
-
-#endif /* CEPH_RGW_AUTH_KEYSTONE_H */

@@ -60,6 +60,7 @@ public:
   virtual int call(
     std::string_view command,
     const cmdmap_t& cmdmap,
+    const ceph::buffer::list& inbl,
     ceph::Formatter *f,
     std::ostream& errss,
     ceph::buffer::list& out) = 0;
@@ -96,7 +97,7 @@ public:
     // by default, call the synchronous handler and then finish
     ceph::buffer::list out;
     std::ostringstream errss;
-    int r = call(command, cmdmap, f, errss, out);
+    int r = call(command, cmdmap, inbl, f, errss, out);
     on_finish(r, errss.str(), out);
   }
   virtual ~AdminSocketHook() {}
@@ -189,6 +190,7 @@ private:
   std::unique_ptr<AdminSocketHook> version_hook;
   std::unique_ptr<AdminSocketHook> help_hook;
   std::unique_ptr<AdminSocketHook> getdescs_hook;
+  std::unique_ptr<AdminSocketHook> raise_hook;
 
   std::mutex tell_lock;
   std::list<ceph::cref_t<MCommand>> tell_queue;
@@ -203,6 +205,11 @@ private:
 	      std::string_view help)
       : hook(hook), desc(desc), help(help) {}
   };
+
+  /// find the first hook which matches the given prefix and cmdmap
+  std::pair<int, AdminSocketHook*> find_matched_hook(
+    std::string& prefix,
+    const cmdmap_t& cmdmap);
 
   std::multimap<std::string, hook_info, std::less<>> hooks;
 

@@ -7,8 +7,11 @@
 #include "common/errno.h"
 #include "common/Cond.h"
 #include "common/WorkQueue.h"
+#include "librbd/AsioEngine.h"
 #include "librbd/ImageCtx.h"
+#include "librbd/TaskFinisher.h"
 #include "librbd/Utils.h"
+#include "librbd/asio/ContextWQ.h"
 #include "librbd/image/CloseRequest.h"
 #include "librbd/image/OpenRequest.h"
 #include "librbd/image/RefreshRequest.h"
@@ -216,9 +219,10 @@ private:
     auto& thread_pool = m_cct->lookup_or_create_singleton_object<
       ThreadPoolSingleton>("librbd::ImageUpdateWatchers::thread_pool",
 			   false, m_cct);
-    m_work_queue = new ContextWQ("librbd::ImageUpdateWatchers::op_work_queue",
-				 m_cct->_conf.get_val<uint64_t>("rbd_op_thread_timeout"),
-				 &thread_pool);
+    m_work_queue = new ContextWQ("librbd::ImageUpdateWatchers::work_queue",
+                                 ceph::make_timespan(
+                                   m_cct->_conf.get_val<uint64_t>("rbd_op_thread_timeout")),
+                                 &thread_pool);
   }
 
   void destroy_work_queue() {
@@ -232,12 +236,11 @@ private:
 
 class QuiesceWatchers {
 public:
-  explicit QuiesceWatchers(CephContext *cct)
+  explicit QuiesceWatchers(CephContext *cct, asio::ContextWQ* work_queue)
     : m_cct(cct),
+      m_work_queue(work_queue),
       m_lock(ceph::make_mutex(util::unique_lock_name(
         "librbd::QuiesceWatchers::m_lock", this))) {
-    ThreadPool *thread_pool;
-    ImageCtx::get_thread_pool_instance(m_cct, &thread_pool, &m_work_queue);
   }
 
   ~QuiesceWatchers() {
@@ -281,7 +284,8 @@ public:
 
   void notify_quiesce(Context *on_finish) {
     std::lock_guard locker{m_lock};
-    if (m_on_notify != nullptr) {
+    if (m_blocked) {
+      ldout(m_cct, 20) << "QuiesceWatchers::" << __func__ << ": queue" << dendl;
       m_pending_notify.push_back(on_finish);
       return;
     }
@@ -295,7 +299,7 @@ public:
     notify(UNQUIESCE, on_finish);
   }
 
-  void quiesce_complete() {
+  void quiesce_complete(uint64_t handle, int r) {
     Context *on_notify = nullptr;
     {
       std::lock_guard locker{m_lock};
@@ -304,21 +308,29 @@ public:
 
       m_handle_quiesce_cnt--;
 
+      if (r < 0) {
+        ldout(m_cct, 10) << "QuiesceWatchers::" << __func__ << ": watcher "
+                         << handle << " failed" << dendl;
+        m_failed_watchers.insert(handle);
+        m_ret_val = r;
+      }
+
       if (m_handle_quiesce_cnt > 0) {
         return;
       }
 
       std::swap(on_notify, m_on_notify);
+      r = m_ret_val;
     }
 
-    on_notify->complete(0);
+    on_notify->complete(r);
   }
 
 private:
   enum EventType {QUIESCE, UNQUIESCE};
 
   CephContext *m_cct;
-  ContextWQ *m_work_queue;
+  asio::ContextWQ *m_work_queue;
 
   ceph::mutex m_lock;
   std::map<uint64_t, QuiesceWatchCtx*> m_watchers;
@@ -327,6 +339,9 @@ private:
   std::list<Context *> m_pending_notify;
   std::map<uint64_t, Context*> m_pending_unregister;
   uint64_t m_handle_quiesce_cnt = 0;
+  std::set<uint64_t> m_failed_watchers;
+  bool m_blocked = false;
+  int m_ret_val = 0;
 
   void notify(EventType event_type, Context *on_finish) {
     ceph_assert(ceph_mutex_is_locked(m_lock));
@@ -340,7 +355,18 @@ private:
                      << event_type << dendl;
 
     Context *ctx = nullptr;
-    if (event_type == UNQUIESCE) {
+    if (event_type == QUIESCE) {
+      ceph_assert(!m_blocked);
+      ceph_assert(m_handle_quiesce_cnt == 0);
+
+      m_blocked = true;
+      m_handle_quiesce_cnt = m_watchers.size();
+      m_failed_watchers.clear();
+      m_ret_val = 0;
+    } else {
+      ceph_assert(event_type == UNQUIESCE);
+      ceph_assert(m_blocked);
+
       ctx = create_async_context_callback(
         m_work_queue, create_context_callback<
           QuiesceWatchers, &QuiesceWatchers::handle_notify_unquiesce>(this));
@@ -348,12 +374,11 @@ private:
     auto gather_ctx = new C_Gather(m_cct, ctx);
 
     ceph_assert(m_on_notify == nullptr);
-    ceph_assert(m_handle_quiesce_cnt == 0);
 
     m_on_notify = on_finish;
 
-    for (auto it : m_watchers) {
-      send_notify(it.first, it.second, event_type, gather_ctx->new_sub());
+    for (auto &[handle, watcher] : m_watchers) {
+      send_notify(handle, watcher, event_type, gather_ctx->new_sub());
     }
 
     gather_ctx->activate();
@@ -367,10 +392,18 @@ private:
                          << handle << ", event_type=" << event_type << dendl;
         switch (event_type) {
         case QUIESCE:
-          m_handle_quiesce_cnt++;
           watcher->handle_quiesce();
           break;
         case UNQUIESCE:
+          {
+            std::lock_guard locker{m_lock};
+
+            if (m_failed_watchers.count(handle)) {
+              ldout(m_cct, 20) << "QuiesceWatchers::" << __func__
+                               << ": skip for failed watcher" << dendl;
+              break;
+            }
+          }
           watcher->handle_unquiesce();
           break;
         default:
@@ -406,6 +439,9 @@ private:
     Context *on_notify = nullptr;
     std::swap(on_notify, m_on_notify);
 
+    ceph_assert(m_blocked);
+    m_blocked = false;
+
     if (!m_pending_notify.empty()) {
       auto on_finish = m_pending_notify.front();
       m_pending_notify.pop_front();
@@ -423,7 +459,8 @@ ImageState<I>::ImageState(I *image_ctx)
     m_lock(ceph::make_mutex(util::unique_lock_name("librbd::ImageState::m_lock", this))),
     m_last_refresh(0), m_refresh_seq(0),
     m_update_watchers(new ImageUpdateWatchers(image_ctx->cct)),
-    m_quiesce_watchers(new QuiesceWatchers(image_ctx->cct)) {
+    m_quiesce_watchers(new QuiesceWatchers(
+      image_ctx->cct, image_ctx->asio_engine->get_work_queue())) {
 }
 
 template <typename I>
@@ -439,9 +476,6 @@ int ImageState<I>::open(uint64_t flags) {
   open(flags, &ctx);
 
   int r = ctx.wait();
-  if (r < 0) {
-    delete m_image_ctx;
-  }
   return r;
 }
 
@@ -466,7 +500,6 @@ int ImageState<I>::close() {
   close(&ctx);
 
   int r = ctx.wait();
-  delete m_image_ctx;
   return r;
 }
 
@@ -761,11 +794,28 @@ void ImageState<I>::complete_action_unlock(State next_state, int r) {
   m_state = next_state;
   m_lock.unlock();
 
-  for (auto ctx : action_contexts.second) {
-    ctx->complete(r);
-  }
+  if (next_state == STATE_CLOSED ||
+      (next_state == STATE_UNINITIALIZED && r < 0)) {
+    // the ImageCtx must be deleted outside the scope of its callback threads
+    auto ctx = new LambdaContext(
+      [image_ctx=m_image_ctx, contexts=std::move(action_contexts.second)]
+      (int r) {
+        delete image_ctx;
+        for (auto ctx : contexts) {
+          ctx->complete(r);
+        }
+      });
+    TaskFinisherSingleton::get_singleton(m_image_ctx->cct).queue(ctx, r);
+  } else {
+    for (auto ctx : action_contexts.second) {
+      if (next_state == STATE_OPEN) {
+        // we couldn't originally wrap the open callback w/ an async wrapper in
+        // case the image failed to open
+        ctx = create_async_context_callback(*m_image_ctx, ctx);
+      }
+      ctx->complete(r);
+    }
 
-  if (next_state != STATE_UNINITIALIZED && next_state != STATE_CLOSED) {
     m_lock.lock();
     if (!is_transition_state() && !m_actions_contexts.empty()) {
       execute_next_action_unlock();
@@ -783,9 +833,8 @@ void ImageState<I>::send_open_unlock() {
 
   m_state = STATE_OPENING;
 
-  Context *ctx = create_async_context_callback(
-    *m_image_ctx, create_context_callback<
-      ImageState<I>, &ImageState<I>::handle_open>(this));
+  Context *ctx = create_context_callback<
+    ImageState<I>, &ImageState<I>::handle_open>(this);
   image::OpenRequest<I> *req = image::OpenRequest<I>::create(
     m_image_ctx, m_open_flags, ctx);
 
@@ -980,8 +1029,10 @@ void ImageState<I>::notify_unquiesce(Context *on_finish) {
 }
 
 template <typename I>
-void ImageState<I>::quiesce_complete() {
-  m_quiesce_watchers->quiesce_complete();
+void ImageState<I>::quiesce_complete(uint64_t handle, int r) {
+  CephContext *cct = m_image_ctx->cct;
+  ldout(cct, 20) << __func__ << ": handle=" << handle << " r=" << r << dendl;
+  m_quiesce_watchers->quiesce_complete(handle, r);
 }
 
 } // namespace librbd

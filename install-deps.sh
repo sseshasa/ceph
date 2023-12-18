@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# -*- mode:sh; tab-width:8; indent-tabs-mode:t -*-
 #
 # Ceph distributed storage system
 #
@@ -13,18 +12,31 @@
 #  version 2.1 of the License, or (at your option) any later version.
 #
 set -e
+
+if ! [ "${_SOURCED_LIB_BUILD}" = 1 ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    CEPH_ROOT="${SCRIPT_DIR}"
+    . "${CEPH_ROOT}/src/script/lib-build.sh" || exit 2
+fi
+
+
 DIR=/tmp/install-deps.$$
 trap "rm -fr $DIR" EXIT
 mkdir -p $DIR
 if test $(id -u) != 0 ; then
     SUDO=sudo
 fi
-export LC_ALL=C # the following is vulnerable to i18n
+# enable UTF-8 encoding for programs like pip that expect to
+# print more than just ascii chars
+export LC_ALL=C.UTF-8
 
 ARCH=$(uname -m)
 
+
 function munge_ceph_spec_in {
     local with_seastar=$1
+    shift
+    local with_zbd=$1
     shift
     local for_make_check=$1
     shift
@@ -34,6 +46,9 @@ function munge_ceph_spec_in {
     if $with_seastar; then
         sed -i -e 's/%bcond_with seastar/%bcond_without seastar/g' $OUTFILE
     fi
+    if $with_zbd; then
+        sed -i -e 's/%bcond_with zbd/%bcond_without zbd/g' $OUTFILE
+    fi
     if $for_make_check; then
         sed -i -e 's/%bcond_with make_check/%bcond_without make_check/g' $OUTFILE
     fi
@@ -42,44 +57,34 @@ function munge_ceph_spec_in {
 function munge_debian_control {
     local version=$1
     shift
-    local with_seastar=$1
-    shift
-    local for_make_check=$1
-    shift
     local control=$1
     case "$version" in
         *squeeze*|*wheezy*)
-	    control="/tmp/control.$$"
-	    grep -v babeltrace debian/control > $control
-	    ;;
+            control="/tmp/control.$$"
+            grep -v babeltrace debian/control > $control
+            ;;
     esac
-    if $with_seastar; then
-	sed -i -e 's/^# Crimson[[:space:]]//g' $control
-    fi
-    if $for_make_check; then
-        sed -i 's/^# Make-Check[[:space:]]/             /g' $control
-    fi
     echo $control
 }
 
 function ensure_decent_gcc_on_ubuntu {
+    ci_debug "Start ensure_decent_gcc_on_ubuntu() in install-deps.sh"
     # point gcc to the one offered by g++-7 if the used one is not
     # new enough
     local old=$(gcc -dumpfullversion -dumpversion)
     local new=$1
     local codename=$2
     if dpkg --compare-versions $old ge ${new}.0; then
-	return
+        return
     fi
 
     if [ ! -f /usr/bin/g++-${new} ]; then
-	$SUDO tee /etc/apt/sources.list.d/ubuntu-toolchain-r.list <<EOF
+        $SUDO tee /etc/apt/sources.list.d/ubuntu-toolchain-r.list <<EOF
 deb [lang=none] http://ppa.launchpad.net/ubuntu-toolchain-r/test/ubuntu $codename main
 deb [arch=amd64 lang=none] http://mirror.nullivex.com/ppa/ubuntu-toolchain-r-test $codename main
-deb [arch=amd64 lang=none] http://deb.rug.nl/ppa/mirror/ppa.launchpad.net/ubuntu-toolchain-r/test/ubuntu $codename main
 EOF
-	# import PPA's signing key into APT's keyring
-	cat << ENDOFKEY | $SUDO apt-key add -
+        # import PPA's signing key into APT's keyring
+        cat << ENDOFKEY | $SUDO apt-key add -
 -----BEGIN PGP PUBLIC KEY BLOCK-----
 Version: SKS 1.1.6
 Comment: Hostname: keyserver.ubuntu.com
@@ -94,37 +99,24 @@ msyaQpNl/m/lNtOLhR64v5ZybofB2EWkMxUzX8D/FQ==
 =LcUQ
 -----END PGP PUBLIC KEY BLOCK-----
 ENDOFKEY
-	$SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -y || true
-	$SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y g++-${new}
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -y || true
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y g++-${new}
     fi
+}
 
-    case "$codename" in
-        trusty)
-            old=4.8;;
-        xenial)
-            old=5;;
-        bionic)
-            old=7;;
-    esac
-    $SUDO update-alternatives --remove-all gcc || true
-    $SUDO update-alternatives \
-	 --install /usr/bin/gcc gcc /usr/bin/gcc-${new} 20 \
-	 --slave   /usr/bin/g++ g++ /usr/bin/g++-${new}
-
-    if [ -f /usr/bin/g++-${old} ]; then
-      $SUDO update-alternatives \
-  	 --install /usr/bin/gcc gcc /usr/bin/gcc-${old} 10 \
-  	 --slave   /usr/bin/g++ g++ /usr/bin/g++-${old}
+function ensure_python3_sphinx_on_ubuntu {
+    ci_debug "Running ensure_python3_sphinx_on_ubuntu() in install-deps.sh"
+    local sphinx_command=/usr/bin/sphinx-build
+    # python-sphinx points $sphinx_command to
+    # ../share/sphinx/scripts/python2/sphinx-build when it's installed
+    # let's "correct" this
+    if test -e $sphinx_command  && head -n1 $sphinx_command | grep -q python$; then
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get -y remove python-sphinx
     fi
-
-    $SUDO update-alternatives --auto gcc
-
-    # cmake uses the latter by default
-    $SUDO ln -nsf /usr/bin/gcc /usr/bin/${ARCH}-linux-gnu-gcc
-    $SUDO ln -nsf /usr/bin/g++ /usr/bin/${ARCH}-linux-gnu-g++
 }
 
 function install_pkg_on_ubuntu {
+    ci_debug "Running install_pkg_on_ubuntu() in install-deps.sh"
     local project=$1
     shift
     local sha1=$1
@@ -136,52 +128,143 @@ function install_pkg_on_ubuntu {
     local pkgs=$@
     local missing_pkgs
     if [ $force = "force" ]; then
-	missing_pkgs="$@"
+        missing_pkgs="$@"
     else
-	for pkg in $pkgs; do
-	    if ! apt -qq list $pkg 2>/dev/null | grep -q installed; then
-		missing_pkgs+=" $pkg"
-	    fi
-	done
+        for pkg in $pkgs; do
+            if ! apt -qq list $pkg 2>/dev/null | grep -q installed; then
+                missing_pkgs+=" $pkg"
+                ci_debug "missing_pkgs=$missing_pkgs"
+            fi
+        done
     fi
     if test -n "$missing_pkgs"; then
-	local shaman_url="https://shaman.ceph.com/api/repos/${project}/master/${sha1}/ubuntu/${codename}/repo"
-	$SUDO curl --silent --location $shaman_url --output /etc/apt/sources.list.d/$project.list
-	$SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -y -o Acquire::Languages=none -o Acquire::Translation=none || true
-	$SUDO env DEBIAN_FRONTEND=noninteractive apt-get install --allow-unauthenticated -y $missing_pkgs
+        local shaman_url="https://shaman.ceph.com/api/repos/${project}/master/${sha1}/ubuntu/${codename}/repo"
+        in_jenkins && echo -n "CI_DEBUG: Downloading $shaman_url ... "
+        $SUDO curl --silent --fail --write-out "%{http_code}" --location $shaman_url --output /etc/apt/sources.list.d/$project.list
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -y -o Acquire::Languages=none -o Acquire::Translation=none || true
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install --allow-unauthenticated -y $missing_pkgs
+    fi
+}
+
+boost_ver=1.82
+
+function clean_boost_on_ubuntu {
+    ci_debug "Running clean_boost_on_ubuntu() in install-deps.sh"
+    # Find currently installed version. If there are multiple
+    # versions, they end up newline separated
+    local installed_ver=$(apt -qq list --installed ceph-libboost*-dev 2>/dev/null |
+                              cut -d' ' -f2 |
+                              cut -d'.' -f1,2 |
+			      sort -u)
+    # If installed_ver contains whitespace, we can't really count on it,
+    # but otherwise, bail out if the version installed is the version
+    # we want.
+    if test -n "$installed_ver" &&
+	    echo -n "$installed_ver" | tr '[:space:]' ' ' | grep -v -q ' '; then
+	if echo "$installed_ver" | grep -q "^$boost_ver"; then
+	    return
+        fi
+    fi
+
+    # Historical packages
+    $SUDO rm -f /etc/apt/sources.list.d/ceph-libboost*.list
+    # Currently used
+    $SUDO rm -f /etc/apt/sources.list.d/libboost.list
+    # Refresh package list so things aren't in the available list.
+    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -y || true
+    # Remove all ceph-libboost packages. We have an early return if
+    # the desired version is already (and the only) version installed,
+    # so no need to spare it.
+    if test -n "$installed_ver"; then
+	$SUDO env DEBIAN_FRONTEND=noninteractive apt-get -y --fix-missing remove "ceph-libboost*"
     fi
 }
 
 function install_boost_on_ubuntu {
-    local codename=$1
-    if apt -qq list ceph-libboost1.67-dev 2>/dev/null | grep -q installed; then
-	$SUDO env DEBIAN_FRONTEND=noninteractive apt-get -y remove 'ceph-libboost.*1.67.*'
-	$SUDO rm /etc/apt/sources.list.d/ceph-libboost1.67.list
+    ci_debug "Running install_boost_on_ubuntu() in install-deps.sh"
+    # Once we get to this point, clean_boost_on_ubuntu() should ensure
+    # that there is no more than one installed version.
+    local installed_ver=$(apt -qq list --installed ceph-libboost*-dev 2>/dev/null |
+                              grep -e 'libboost[0-9].[0-9]\+-dev' |
+                              cut -d' ' -f2 |
+                              cut -d'.' -f1,2)
+    if test -n "$installed_ver"; then
+        if echo "$installed_ver" | grep -q "^$boost_ver"; then
+            return
+        fi
     fi
+    local codename=$1
     local project=libboost
-    local ver=1.72
-    local sha1=1d7c7a00cc3f37e340bae0360191a757b44ec80c
+    local sha1=2804368f5b807ba8334b0ccfeb8af191edeb996f
     install_pkg_on_ubuntu \
-	$project \
-	$sha1 \
-	$codename \
-	check \
-	ceph-libboost-atomic$ver-dev \
-	ceph-libboost-chrono$ver-dev \
-	ceph-libboost-container$ver-dev \
-	ceph-libboost-context$ver-dev \
-	ceph-libboost-coroutine$ver-dev \
-	ceph-libboost-date-time$ver-dev \
-	ceph-libboost-filesystem$ver-dev \
-	ceph-libboost-iostreams$ver-dev \
-	ceph-libboost-program-options$ver-dev \
-	ceph-libboost-python$ver-dev \
-	ceph-libboost-random$ver-dev \
-	ceph-libboost-regex$ver-dev \
-	ceph-libboost-system$ver-dev \
-	ceph-libboost-test$ver-dev \
-	ceph-libboost-thread$ver-dev \
-	ceph-libboost-timer$ver-dev
+        $project \
+        $sha1 \
+        $codename \
+        check \
+        ceph-libboost-atomic${boost_ver}-dev \
+        ceph-libboost-chrono${boost_ver}-dev \
+        ceph-libboost-container${boost_ver}-dev \
+        ceph-libboost-context${boost_ver}-dev \
+        ceph-libboost-coroutine${boost_ver}-dev \
+        ceph-libboost-date-time${boost_ver}-dev \
+        ceph-libboost-filesystem${boost_ver}-dev \
+        ceph-libboost-iostreams${boost_ver}-dev \
+        ceph-libboost-program-options${boost_ver}-dev \
+        ceph-libboost-python${boost_ver}-dev \
+        ceph-libboost-random${boost_ver}-dev \
+        ceph-libboost-regex${boost_ver}-dev \
+        ceph-libboost-system${boost_ver}-dev \
+        ceph-libboost-test${boost_ver}-dev \
+        ceph-libboost-thread${boost_ver}-dev \
+        ceph-libboost-timer${boost_ver}-dev \
+	|| ci_debug "ceph-libboost package unavailable, you can build the submodule"
+
+}
+
+function install_libzbd_on_ubuntu {
+    ci_debug "Running install_libzbd_on_ubuntu() in install-deps.sh"
+    local codename=$1
+    local project=libzbd
+    local sha1=1fadde94b08fab574b17637c2bebd2b1e7f9127b
+    install_pkg_on_ubuntu \
+        $project \
+        $sha1 \
+        $codename \
+        check \
+        libzbd-dev
+}
+
+motr_pkgs_url='https://github.com/Seagate/cortx-motr/releases/download/2.0.0-rgw'
+
+function install_cortx_motr_on_ubuntu {
+    if dpkg -l cortx-motr-dev &> /dev/null; then
+        return
+    fi
+    if [ "$(lsb_release -sc)" = "jammy" ]; then
+      install_pkg_on_ubuntu \
+        cortx-motr \
+        39f89fa1c6945040433a913f2687c4b4e6cbeb3f \
+        jammy \
+        check \
+        cortx-motr \
+        cortx-motr-dev
+    else
+        local deb_arch=$(dpkg --print-architecture)
+        local motr_pkg="cortx-motr_2.0.0.git3252d623_$deb_arch.deb"
+        local motr_dev_pkg="cortx-motr-dev_2.0.0.git3252d623_$deb_arch.deb"
+        $SUDO curl -sL -o/var/cache/apt/archives/$motr_pkg $motr_pkgs_url/$motr_pkg
+        $SUDO curl -sL -o/var/cache/apt/archives/$motr_dev_pkg $motr_pkgs_url/$motr_dev_pkg
+        # For some reason libfabric pkg is not available in arm64 version
+        # of Ubuntu 20.04 (Focal Fossa), so we borrow it from more recent
+        # versions for now.
+        if [[ "$deb_arch" == 'arm64' ]]; then
+            local lf_pkg='libfabric1_1.11.0-2_arm64.deb'
+            $SUDO curl -sL -o/var/cache/apt/archives/$lf_pkg http://ports.ubuntu.com/pool/universe/libf/libfabric/$lf_pkg
+            $SUDO apt-get install -y /var/cache/apt/archives/$lf_pkg
+        fi
+        $SUDO apt-get install -y /var/cache/apt/archives/{$motr_pkg,$motr_dev_pkg}
+        $SUDO apt-get install -y libisal-dev
+    fi
 }
 
 function version_lt {
@@ -190,27 +273,82 @@ function version_lt {
 
 function ensure_decent_gcc_on_rh {
     local old=$(gcc -dumpversion)
-    local expected=5.1
     local dts_ver=$1
-    if version_lt $old $expected; then
-	if test -t 1; then
-	    # interactive shell
-	    cat <<EOF
+    if version_lt $old $dts_ver; then
+        if test -t 1; then
+            # interactive shell
+            cat <<EOF
 Your GCC is too old. Please run following command to add DTS to your environment:
 
-scl enable devtoolset-8 bash
+scl enable gcc-toolset-$dts_ver bash
 
-Or add following line to the end of ~/.bashrc to add it permanently:
+Or add the following line to the end of ~/.bashrc and run "source ~/.bashrc" to add it permanently:
 
-source scl_source enable devtoolset-8
-
-see https://www.softwarecollections.org/en/scls/rhscl/devtoolset-7/ for more details.
+source scl_source enable gcc-toolset-$dts_ver
 EOF
-	else
-	    # non-interactive shell
-	    source /opt/rh/devtoolset-$dts_ver/enable
-	fi
+        else
+            # non-interactive shell
+            source /opt/rh/gcc-toolset-$dts_ver/enable
+        fi
     fi
+}
+
+function populate_wheelhouse() {
+    ci_debug "Running populate_wheelhouse() in install-deps.sh"
+    local install=$1
+    shift
+
+    # although pip comes with virtualenv, having a recent version
+    # of pip matters when it comes to using wheel packages
+    PIP_OPTS="--timeout 300 --exists-action i"
+    pip $PIP_OPTS $install \
+      'setuptools >= 0.8' 'pip >= 21.0' 'wheel >= 0.24' 'tox >= 2.9.1' || return 1
+    if test $# != 0 ; then
+        pip $PIP_OPTS $install $@ || return 1
+    fi
+}
+
+function activate_virtualenv() {
+    ci_debug "Running activate_virtualenv() in install-deps.sh"
+    local top_srcdir=$1
+    local env_dir=$top_srcdir/install-deps-python3
+
+    if ! test -d $env_dir ; then
+        python3 -m venv ${env_dir}
+        . $env_dir/bin/activate
+        if ! populate_wheelhouse install ; then
+            rm -rf $env_dir
+            return 1
+        fi
+    fi
+    . $env_dir/bin/activate
+}
+
+function preload_wheels_for_tox() {
+    ci_debug "Running preload_wheels_for_tox() in install-deps.sh"
+    local ini=$1
+    shift
+    pushd . > /dev/null
+    cd $(dirname $ini)
+    local require_files=$(ls *requirements*.txt 2>/dev/null) || true
+    local constraint_files=$(ls *constraints*.txt 2>/dev/null) || true
+    local require=$(echo -n "$require_files" | sed -e 's/^/-r /')
+    local constraint=$(echo -n "$constraint_files" | sed -e 's/^/-c /')
+    local md5=wheelhouse/md5
+    if test "$require"; then
+        if ! test -f $md5 || ! md5sum -c $md5 > /dev/null; then
+            rm -rf wheelhouse
+        fi
+    fi
+    if test "$require" && ! test -d wheelhouse ; then
+        type python3 > /dev/null 2>&1 || continue
+        activate_virtualenv $top_srcdir || exit 1
+        python3 -m pip install --upgrade pip
+        populate_wheelhouse "wheel -w $wip_wheelhouse" $require $constraint || exit 1
+        mv $wip_wheelhouse wheelhouse
+        md5sum $require_files $constraint_files > $md5
+    fi
+    popd > /dev/null
 }
 
 for_make_check=false
@@ -224,6 +362,10 @@ else
 fi
 
 if [ x$(uname)x = xFreeBSDx ]; then
+    if [ "$INSTALL_EXTRA_PACKAGES" ]; then
+        echo "Installing extra packages not supported on FreeBSD" >&2
+        exit 1
+    fi
     $SUDO pkg install -yq \
         devel/babeltrace \
         devel/binutils \
@@ -231,7 +373,7 @@ if [ x$(uname)x = xFreeBSDx ]; then
         devel/gperf \
         devel/gmake \
         devel/cmake \
-        devel/yasm \
+        devel/nasm \
         devel/boost-all \
         devel/boost-python-libs \
         devel/valgrind \
@@ -240,8 +382,6 @@ if [ x$(uname)x = xFreeBSDx ]; then
         devel/libtool \
         devel/google-perftools \
         lang/cython \
-        devel/py-virtualenv \
-        databases/leveldb \
         net/openldap24-client \
         archivers/snappy \
         archivers/liblz4 \
@@ -265,6 +405,7 @@ if [ x$(uname)x = xFreeBSDx ]; then
         devel/py-argparse \
         devel/py-nose \
         devel/py-prettytable \
+        devel/py-yaml \
         www/py-routes \
         www/py-flask \
         www/node \
@@ -276,25 +417,51 @@ if [ x$(uname)x = xFreeBSDx ]; then
         sysutils/flock \
         sysutils/fusefs-libs \
 
-	# Now use pip to install some extra python modules
-	pip install pecan
+        # Now use pip to install some extra python modules
+        pip install pecan
 
     exit
 else
     [ $WITH_SEASTAR ] && with_seastar=true || with_seastar=false
+    [ $WITH_ZBD ] && with_zbd=true || with_zbd=false
+    [ $WITH_PMEM ] && with_pmem=true || with_pmem=false
+    [ $WITH_RADOSGW_MOTR ] && with_rgw_motr=true || with_rgw_motr=false
     source /etc/os-release
     case "$ID" in
-    debian|ubuntu|devuan)
+    debian|ubuntu|devuan|elementary|softiron)
         echo "Using apt-get to install dependencies"
+	# Put this before any other invocation of apt so it can clean
+	# up in a broken case.
+        clean_boost_on_ubuntu
+        if [ "$INSTALL_EXTRA_PACKAGES" ]; then
+            if ! $SUDO apt-get install -y $INSTALL_EXTRA_PACKAGES ; then
+                # try again. ported over from run-make.sh (orignally e278295)
+                # In the case that apt-get is interrupted, like when a jenkins
+                # job is cancelled, the package manager will be in an inconsistent
+                # state. Run the command again after `dpkg --configure -a` to
+                # bring package manager back into a clean state.
+                $SUDO dpkg --configure -a
+                ci_debug "trying to install $INSTALL_EXTRA_PACKAGES again"
+                $SUDO apt-get install -y $INSTALL_EXTRA_PACKAGES
+            fi
+        fi
         $SUDO apt-get install -y devscripts equivs
         $SUDO apt-get install -y dpkg-dev
+        ensure_python3_sphinx_on_ubuntu
         case "$VERSION" in
             *Bionic*)
                 ensure_decent_gcc_on_ubuntu 9 bionic
                 [ ! $NO_BOOST_PKGS ] && install_boost_on_ubuntu bionic
+                $with_zbd && install_libzbd_on_ubuntu bionic
                 ;;
-            *Disco*)
-                [ ! $NO_BOOST_PKGS ] && apt-get install -y libboost1.67-all-dev
+            *Focal*)
+                ensure_decent_gcc_on_ubuntu 11 focal
+                [ ! $NO_BOOST_PKGS ] && install_boost_on_ubuntu focal
+                $with_zbd && install_libzbd_on_ubuntu focal
+                ;;
+            *Jammy*)
+                [ ! $NO_BOOST_PKGS ] && install_boost_on_ubuntu jammy
+                $SUDO apt-get install -y gcc
                 ;;
             *)
                 $SUDO apt-get install -y gcc
@@ -306,168 +473,117 @@ else
         fi
         touch $DIR/status
 
-	backports=""
-	control=$(munge_debian_control "$VERSION" "$with_seastar" "$for_make_check" "debian/control")
+        ci_debug "Running munge_debian_control() in install-deps.sh"
+        backports=""
+        control=$(munge_debian_control "$VERSION" "debian/control")
         case "$VERSION" in
             *squeeze*|*wheezy*)
                 backports="-t $codename-backports"
                 ;;
         esac
 
-	# make a metapackage that expresses the build dependencies,
-	# install it, rm the .deb; then uninstall the package as its
-	# work is done
-	$SUDO env DEBIAN_FRONTEND=noninteractive mk-build-deps --install --remove --tool="apt-get -y --no-install-recommends $backports" $control || exit 1
-	$SUDO env DEBIAN_FRONTEND=noninteractive apt-get -y remove ceph-build-deps
-	if [ "$control" != "debian/control" ] ; then rm $control; fi
-        ;;
-    centos|fedora|rhel|ol|virtuozzo)
-        yumdnf="dnf"
-        builddepcmd="dnf -y builddep --allowerasing"
-        if [[ $ID =~ centos|rhel ]] && version_lt $VERSION_ID 8; then
-            yumdnf="yum"
-            builddepcmd="yum-builddep -y --setopt=*.skip_if_unavailable=true"
+        # make a metapackage that expresses the build dependencies,
+        # install it, rm the .deb; then uninstall the package as its
+        # work is done
+        build_profiles=""
+        if $for_make_check; then
+            build_profiles+=",pkg.ceph.check"
         fi
-        echo "Using $yumdnf to install dependencies"
-	if [ "$ID" = "centos" -a "$ARCH" = "aarch64" ]; then
-	    $SUDO yum-config-manager --disable centos-sclo-sclo || true
-	    $SUDO yum-config-manager --disable centos-sclo-rh || true
-	    $SUDO yum remove centos-release-scl || true
-	fi
+        if $with_seastar; then
+            build_profiles+=",pkg.ceph.crimson"
+        fi
+        if $with_pmem; then
+            build_profiles+=",pkg.ceph.pmdk"
+        fi
+
+        ci_debug "for_make_check=$for_make_check"
+        ci_debug "with_seastar=$with_seastar"
+        ci_debug "with_jaeger=$with_jaeger"
+        ci_debug "build_profiles=$build_profiles"
+        ci_debug "Now running 'mk-build-deps' and installing ceph-build-deps package"
+
+        $SUDO env DEBIAN_FRONTEND=noninteractive mk-build-deps \
+              --build-profiles "${build_profiles#,}" \
+              --install --remove \
+              --tool="apt-get -y --no-install-recommends $backports" $control || exit 1
+        ci_debug "Removing ceph-build-deps"
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get -y remove ceph-build-deps
+        if [ "$control" != "debian/control" ] ; then rm $control; fi
+
+        # for rgw motr backend build checks
+        if $with_rgw_motr; then
+            install_cortx_motr_on_ubuntu
+        fi
+        ;;
+    rocky|centos|fedora|rhel|ol|virtuozzo)
+        builddepcmd="dnf -y builddep --allowerasing"
+        echo "Using dnf to install dependencies"
         case "$ID" in
             fedora)
-                $SUDO $yumdnf install -y $yumdnf-utils
+                $SUDO dnf install -y dnf-utils
                 ;;
-            centos|rhel|ol|virtuozzo)
+            rocky|centos|rhel|ol|virtuozzo)
                 MAJOR_VERSION="$(echo $VERSION_ID | cut -d. -f1)"
-                $SUDO $yumdnf install -y $yumdnf-utils
+                $SUDO dnf install -y dnf-utils selinux-policy-targeted
                 rpm --quiet --query epel-release || \
-		    $SUDO $yumdnf -y install --nogpgcheck https://dl.fedoraproject.org/pub/epel/epel-release-latest-$MAJOR_VERSION.noarch.rpm
+                    $SUDO dnf -y install --nogpgcheck https://dl.fedoraproject.org/pub/epel/epel-release-latest-$MAJOR_VERSION.noarch.rpm
                 $SUDO rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-EPEL-$MAJOR_VERSION
                 $SUDO rm -f /etc/yum.repos.d/dl.fedoraproject.org*
-                if test $ID = centos -a $MAJOR_VERSION = 7 ; then
-		    case "$ARCH" in
-			x86_64)
-			    $SUDO $yumdnf -y install centos-release-scl
-			    dts_ver=8
-			    ;;
-			aarch64)
-			    $SUDO $yumdnf -y install centos-release-scl-rh
-			    $SUDO yum-config-manager --disable centos-sclo-rh
-			    $SUDO yum-config-manager --enable centos-sclo-rh-testing
-			    dts_ver=8
-			    ;;
-		    esac
-                elif test $ID = rhel -a $MAJOR_VERSION = 7 ; then
-                    $SUDO yum-config-manager \
-			  --enable rhel-server-rhscl-7-rpms \
-			  --enable rhel-7-server-optional-rpms \
-			  --enable rhel-7-server-devtools-rpms
-                    dts_ver=8
-                elif test $ID = centos -a $MAJOR_VERSION = 8 ; then
-                    $SUDO dnf config-manager --set-enabled PowerTools
-		    # before EPEL8 and PowerTools provide all dependencies, we use sepia for the dependencies
+                if test $ID = centos -a $MAJOR_VERSION = 8 ; then
+                    # Enable 'powertools' or 'PowerTools' repo
+                    $SUDO dnf config-manager --set-enabled $(dnf repolist --all 2>/dev/null|gawk 'tolower($0) ~ /^powertools\s/{print $1}')
+                    dts_ver=11
+                    # before EPEL8 and PowerTools provide all dependencies, we use sepia for the dependencies
                     $SUDO dnf config-manager --add-repo http://apt-mirror.front.sepia.ceph.com/lab-extras/8/
                     $SUDO dnf config-manager --setopt=apt-mirror.front.sepia.ceph.com_lab-extras_8_.gpgcheck=0 --save
-                    $SUDO dnf copr enable -y ktdreyer/ceph-el8
+                    $SUDO dnf -y module enable javapackages-tools
                 elif test $ID = rhel -a $MAJOR_VERSION = 8 ; then
-                    $SUDO subscription-manager repos --enable "codeready-builder-for-rhel-8-*-rpms"
-		    $SUDO dnf config-manager --add-repo http://apt-mirror.front.sepia.ceph.com/lab-extras/8/
-		    $SUDO dnf config-manager --setopt=apt-mirror.front.sepia.ceph.com_lab-extras_8_.gpgcheck=0 --save
-		    $SUDO dnf copr enable -y ktdreyer/ceph-el8
+                    dts_ver=11
+                    $SUDO dnf config-manager --set-enabled "codeready-builder-for-rhel-8-${ARCH}-rpms"
+                    $SUDO dnf config-manager --add-repo http://apt-mirror.front.sepia.ceph.com/lab-extras/8/
+                    $SUDO dnf config-manager --setopt=apt-mirror.front.sepia.ceph.com_lab-extras_8_.gpgcheck=0 --save
+                    $SUDO dnf -y module enable javapackages-tools
                 fi
                 ;;
         esac
-        munge_ceph_spec_in $with_seastar $for_make_check $DIR/ceph.spec
+        if [ "$INSTALL_EXTRA_PACKAGES" ]; then
+            $SUDO dnf install -y $INSTALL_EXTRA_PACKAGES
+        fi
+        munge_ceph_spec_in $with_seastar $with_zbd $for_make_check $DIR/ceph.spec
         # for python3_pkgversion macro defined by python-srpm-macros, which is required by python3-devel
-        $SUDO $yumdnf install -y python3-devel
+        $SUDO dnf install -y python3-devel
         $SUDO $builddepcmd $DIR/ceph.spec 2>&1 | tee $DIR/yum-builddep.out
         [ ${PIPESTATUS[0]} -ne 0 ] && exit 1
-	if [ -n "$dts_ver" ]; then
+        if [ -n "$dts_ver" ]; then
             ensure_decent_gcc_on_rh $dts_ver
-	fi
+        fi
         IGNORE_YUM_BUILDEP_ERRORS="ValueError: SELinux policy is not managed or store cannot be accessed."
-        sed "/$IGNORE_YUM_BUILDEP_ERRORS/d" $DIR/yum-builddep.out | grep -qi "error:" && exit 1
+        sed "/$IGNORE_YUM_BUILDEP_ERRORS/d" $DIR/yum-builddep.out | grep -i "error:" && exit 1
+        # for rgw motr backend build checks
+        if ! rpm --quiet -q cortx-motr-devel &&
+              { [[ $FOR_MAKE_CHECK ]] || $with_rgw_motr; }; then
+            $SUDO dnf install -y \
+                  "$motr_pkgs_url/isa-l-2.30.0-1.el7.${ARCH}.rpm" \
+                  "$motr_pkgs_url/cortx-motr-2.0.0-1_git3252d623_any.el8.${ARCH}.rpm" \
+                  "$motr_pkgs_url/cortx-motr-devel-2.0.0-1_git3252d623_any.el8.${ARCH}.rpm"
+        fi
         ;;
     opensuse*|suse|sles)
         echo "Using zypper to install dependencies"
         zypp_install="zypper --gpg-auto-import-keys --non-interactive install --no-recommends"
         $SUDO $zypp_install systemd-rpm-macros rpm-build || exit 1
-        munge_ceph_spec_in $with_seastar $for_make_check $DIR/ceph.spec
+        if [ "$INSTALL_EXTRA_PACKAGES" ]; then
+            $SUDO $zypp_install $INSTALL_EXTRA_PACKAGES
+        fi
+        munge_ceph_spec_in $with_seastar false $for_make_check $DIR/ceph.spec
         $SUDO $zypp_install $(rpmspec -q --buildrequires $DIR/ceph.spec) || exit 1
-        ;;
-    alpine)
-        # for now we need the testing repo for leveldb
-        TESTREPO="http://nl.alpinelinux.org/alpine/edge/testing"
-        if ! grep -qF "$TESTREPO" /etc/apk/repositories ; then
-            $SUDO echo "$TESTREPO" | sudo tee -a /etc/apk/repositories > /dev/null
-        fi
-        source alpine/APKBUILD.in
-        $SUDO apk --update add abuild build-base ccache $makedepends
-        if id -u build >/dev/null 2>&1 ; then
-           $SUDO addgroup build abuild
-        fi
         ;;
     *)
         echo "$ID is unknown, dependencies will have to be installed manually."
-	exit 1
+        exit 1
         ;;
     esac
 fi
-
-function populate_wheelhouse() {
-    local install=$1
-    shift
-
-    # although pip comes with virtualenv, having a recent version
-    # of pip matters when it comes to using wheel packages
-    PIP_OPTS="--timeout 300 --exists-action i"
-    pip $PIP_OPTS $install \
-      'setuptools >= 0.8' 'pip >= 7.0' 'wheel >= 0.24' 'tox >= 2.9.1' || return 1
-    if test $# != 0 ; then
-        pip $PIP_OPTS $install $@ || return 1
-    fi
-}
-
-function activate_virtualenv() {
-    local top_srcdir=$1
-    local env_dir=$top_srcdir/install-deps-python3
-
-    if ! test -d $env_dir ; then
-        virtualenv --python=python3 ${env_dir}
-        . $env_dir/bin/activate
-        if ! populate_wheelhouse install ; then
-            rm -rf $env_dir
-            return 1
-        fi
-    fi
-    . $env_dir/bin/activate
-}
-
-function preload_wheels_for_tox() {
-    local ini=$1
-    shift
-    pushd . > /dev/null
-    cd $(dirname $ini)
-    local require_files=$(ls *requirements*.txt 2>/dev/null) || true
-    local constraint_files=$(ls *constraints*.txt 2>/dev/null) || true
-    local require=$(echo -n "$require_files" | sed -e 's/^/-r /')
-    local constraint=$(echo -n "$constraint_files" | sed -e 's/^/-c /')
-    local md5=wheelhouse/md5
-    if test "$require"; then
-        if ! test -f $md5 || ! md5sum -c $md5 > /dev/null; then
-            rm -rf wheelhouse
-        fi
-    fi
-    if test "$require" && ! test -d wheelhouse ; then
-        type python3 > /dev/null 2>&1 || continue
-        activate_virtualenv $top_srcdir || exit 1
-        populate_wheelhouse "wheel -w $wip_wheelhouse" $require $constraint || exit 1
-        mv $wip_wheelhouse wheelhouse
-        md5sum $require_files $constraint_files > $md5
-    fi
-    popd > /dev/null
-}
 
 # use pip cache if possible but do not store it outside of the source
 # tree
@@ -487,3 +603,5 @@ if $for_make_check; then
     rm -rf $XDG_CACHE_HOME
     type git > /dev/null || (echo "Dashboard uses git to pull dependencies." ; false)
 fi
+
+ci_debug "End install-deps.sh" || true

@@ -1,17 +1,12 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
 
 import json
-
-from orchestrator import OrchestratorError
 
 try:
     from urlparse import urlparse
 except ImportError:
     from urllib.parse import urlparse
 
-from mgr_util import merge_dicts
-from .orchestrator import OrchClient
 from .. import mgr
 
 
@@ -59,10 +54,10 @@ class IscsiGatewaysConfig(object):
         If Ceph Dashboard were configured before v10, we try to update our internal gateways
         database automatically.
         """
-        for gateway_name, gateway_config in config['gateways'].items():
+        for gateway_name, gateway_config in list(config['gateways'].items()):
             if '.' not in gateway_name:
-                from .iscsi_client import IscsiClient
                 from ..rest_client import RequestException
+                from .iscsi_client import IscsiClient  # pylint: disable=cyclic-import
                 try:
                     service_url = gateway_config['service_url']
                     new_gateway_name = IscsiClient.instance(
@@ -72,22 +67,9 @@ class IscsiGatewaysConfig(object):
                         del config['gateways'][gateway_name]
                         cls._save_config(config)
                 except RequestException:
-                    # If gateway is not acessible, it should be removed manually
+                    # If gateway is not accessible, it should be removed manually
                     # or we will try to update automatically next time
                     continue
-
-    @staticmethod
-    def _load_config_from_orchestrator():
-        config = {'gateways': {}}  # type: dict
-        try:
-            instances = OrchClient.instance().services.list("iscsi")
-            for instance in instances:
-                config['gateways'][instance.hostname] = {
-                    'service_url': instance.service_url
-                }
-        except (RuntimeError, OrchestratorError, ImportError):
-            pass
-        return config
 
     @classmethod
     def _save_config(cls, config):
@@ -110,9 +92,6 @@ class IscsiGatewaysConfig(object):
 
     @classmethod
     def remove_gateway(cls, name):
-        if name in cls._load_config_from_orchestrator()['gateways']:
-            raise ManagedByOrchestratorException()
-
         config = cls._load_config_from_store()
         if name not in config['gateways']:
             raise IscsiGatewayDoesNotExist(name)
@@ -122,10 +101,7 @@ class IscsiGatewaysConfig(object):
 
     @classmethod
     def get_gateways_config(cls):
-        orch_config = cls._load_config_from_orchestrator()
-        local_config = cls._load_config_from_store()
-
-        return {'gateways': merge_dicts(orch_config['gateways'], local_config['gateways'])}
+        return cls._load_config_from_store()
 
     @classmethod
     def get_gateway_config(cls, name):

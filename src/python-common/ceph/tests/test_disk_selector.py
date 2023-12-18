@@ -1,9 +1,11 @@
 # flake8: noqa
 import pytest
 
+from ceph.deployment.drive_selection.matchers import _MatchInvalid
 from ceph.deployment.inventory import Devices, Device
 
-from ceph.deployment.drive_group import DriveGroupSpec, DeviceSelection
+from ceph.deployment.drive_group import DriveGroupSpec, DeviceSelection, \
+        DriveGroupValidationError
 
 from ceph.deployment import drive_selection
 from ceph.deployment.service_spec import PlacementSpec
@@ -120,6 +122,12 @@ class TestSizeMatcher(object):
         assert matcher.low[0] == '50'
         assert matcher.low[1] == 'GB'
 
+    def test_to_byte_KB(self):
+        """ I doubt anyone ever thought we'd need to understand KB """
+
+        ret = drive_selection.SizeMatcher('size', '4K').to_byte(('4', 'KB'))
+        assert ret == 4 * 1e+3
+
     def test_to_byte_GB(self):
         """ Pretty nonesense test.."""
 
@@ -141,7 +149,7 @@ class TestSizeMatcher(object):
     def test_to_byte_PB(self):
         """ Expect to raise """
 
-        with pytest.raises(ValueError):
+        with pytest.raises(_MatchInvalid):
             drive_selection.SizeMatcher('size', '10P').to_byte(('10', 'PB'))
         assert 'Unit \'P\' is not supported'
 
@@ -149,6 +157,13 @@ class TestSizeMatcher(object):
 
         matcher = drive_selection.SizeMatcher('size', '20GB')
         disk_dict = Device(path='/dev/vdb', sys_api=dict(size='20.00 GB'))
+        ret = matcher.compare(disk_dict)
+        assert ret is True
+
+    def test_compare_exact_decimal(self):
+
+        matcher = drive_selection.SizeMatcher('size', '20.12GB')
+        disk_dict = Device(path='/dev/vdb', sys_api=dict(size='20.12 GB'))
         ret = matcher.compare(disk_dict)
         assert ret is True
 
@@ -261,7 +276,7 @@ class TestSizeMatcher(object):
 
     def test_normalize_suffix_raises(self):
 
-        with pytest.raises(ValueError):
+        with pytest.raises(_MatchInvalid):
             drive_selection.SizeMatcher('10P', 'size')._normalize_suffix("P")
             pytest.fail("Unit 'P' not supported")
 
@@ -277,6 +292,7 @@ class TestDriveGroup(object):
                              disk_format='bluestore'):
             raw_sample_bluestore = {
                 'service_type': 'osd',
+                'service_id': 'foo',
                 'placement': {'host_pattern': 'data*'},
                 'data_devices': {
                     'size': '30G:50G',
@@ -302,6 +318,7 @@ class TestDriveGroup(object):
             }
             raw_sample_filestore = {
                 'service_type': 'osd',
+                'service_id': 'foo',
                 'placement': {'host_pattern': 'data*'},
                 'objectstore': 'filestore',
                 'data_devices': {
@@ -325,7 +342,11 @@ class TestDriveGroup(object):
             if empty:
                 raw_sample = {
                     'service_type': 'osd',
-                    'placement': {'host_pattern': 'data*'}
+                    'service_id': 'foo',
+                    'placement': {'host_pattern': 'data*'},
+                    'data_devices': {
+                        'all': True
+                    },
                 }
 
             dgo = DriveGroupSpec.from_json(raw_sample)
@@ -359,7 +380,7 @@ class TestDriveGroup(object):
 
     def test_block_wal_size_prop(self, test_fix):
         test_fix = test_fix()
-        assert test_fix.block_wal_size == 5000000000
+        assert test_fix.block_wal_size == '5G'
 
     def test_block_wal_size_prop_empty(self, test_fix):
         test_fix = test_fix(empty=True)
@@ -367,7 +388,7 @@ class TestDriveGroup(object):
 
     def test_block_db_size_prop(self, test_fix):
         test_fix = test_fix()
-        assert test_fix.block_db_size == 10000000000
+        assert test_fix.block_db_size == '10G'
 
     def test_block_db_size_prop_empty(self, test_fix):
         test_fix = test_fix(empty=True)
@@ -384,7 +405,7 @@ class TestDriveGroup(object):
 
     def test_data_devices_prop_empty(self, test_fix):
         test_fix = test_fix(empty=True)
-        assert test_fix.data_devices is None
+        assert test_fix.db_devices is None
 
     def test_db_devices_prop(self, test_fix):
         test_fix = test_fix()
@@ -404,19 +425,9 @@ class TestDriveGroup(object):
             limit=0,
         )
 
-    def test_journal_device_prop(self, test_fix):
-        test_fix = test_fix(disk_format='filestore')
-        assert test_fix.journal_devices == DeviceSelection(
-            size=':20G'
-        )
-
     def test_wal_device_prop_empty(self, test_fix):
         test_fix = test_fix(empty=True)
         assert test_fix.wal_devices is None
-
-    def test_filestore_format_prop(self, test_fix):
-        test_fix = test_fix(disk_format='filestore')
-        assert test_fix.objectstore == 'filestore'
 
     def test_bluestore_format_prop(self, test_fix):
         test_fix = test_fix(disk_format='bluestore')
@@ -425,10 +436,6 @@ class TestDriveGroup(object):
     def test_default_format_prop(self, test_fix):
         test_fix = test_fix(empty=True)
         assert test_fix.objectstore == 'bluestore'
-
-    def test_journal_size(self, test_fix):
-        test_fix = test_fix(disk_format='filestore')
-        assert test_fix.journal_size == 5000000000
 
     def test_osds_per_device(self, test_fix):
         test_fix = test_fix(osds_per_device='3')
@@ -486,13 +493,17 @@ class TestDriveSelection(object):
 
     testdata = [
         (
-            DriveGroupSpec(placement=PlacementSpec(host_pattern='*'), data_devices=DeviceSelection(all=True)),
+            DriveGroupSpec(
+                placement=PlacementSpec(host_pattern='*'),
+                service_id='foobar',
+                data_devices=DeviceSelection(all=True)),
             _mk_inventory(_mk_device() * 5),
             ['/dev/sda', '/dev/sdb', '/dev/sdc', '/dev/sdd', '/dev/sde'], []
         ),
         (
             DriveGroupSpec(
                 placement=PlacementSpec(host_pattern='*'),
+                service_id='foobar',
                 data_devices=DeviceSelection(all=True, limit=3),
                 db_devices=DeviceSelection(all=True)
             ),
@@ -502,6 +513,7 @@ class TestDriveSelection(object):
         (
             DriveGroupSpec(
                 placement=PlacementSpec(host_pattern='*'),
+                service_id='foobar',
                 data_devices=DeviceSelection(rotational=True),
                 db_devices=DeviceSelection(rotational=False)
             ),
@@ -511,6 +523,7 @@ class TestDriveSelection(object):
         (
             DriveGroupSpec(
                 placement=PlacementSpec(host_pattern='*'),
+                service_id='foobar',
                 data_devices=DeviceSelection(rotational=True),
                 db_devices=DeviceSelection(rotational=False)
             ),
@@ -520,6 +533,7 @@ class TestDriveSelection(object):
         (
             DriveGroupSpec(
                 placement=PlacementSpec(host_pattern='*'),
+                service_id='foobar',
                 data_devices=DeviceSelection(rotational=True),
                 db_devices=DeviceSelection(rotational=False)
             ),
@@ -533,3 +547,53 @@ class TestDriveSelection(object):
         sel = drive_selection.DriveSelection(spec, inventory)
         assert [d.path for d in sel.data_devices()] == expected_data
         assert [d.path for d in sel.db_devices()] == expected_db
+
+    def test_disk_selection_raise(self):
+        spec = DriveGroupSpec(
+                placement=PlacementSpec(host_pattern='*'),
+                service_id='foobar',
+                data_devices=DeviceSelection(size='wrong'),
+            )
+        inventory = _mk_inventory(_mk_device(rotational=True)*2)
+        m = 'Failed to validate OSD spec "foobar.data_devices": No filters applied'
+        with pytest.raises(DriveGroupValidationError, match=m):
+            drive_selection.DriveSelection(spec, inventory)
+
+
+class TestDeviceSelectionLimit:
+
+    def test_limit_existing_devices(self):
+        # Initial setup for this test is meant to be that /dev/sda
+        # is already being used for an OSD, hence it being marked
+        # as a ceph_device. /dev/sdb and /dev/sdc are not being used
+        # for OSDs yet. The limit will be set to 2 and the DriveSelection
+        # is set to have 1 pre-existing device (corresponding to /dev/sda)
+        dev_a = Device('/dev/sda', ceph_device=True, available=False)
+        dev_b = Device('/dev/sdb', ceph_device=False, available=True)
+        dev_c = Device('/dev/sdc', ceph_device=False, available=True)
+        all_devices: List[Device] = [dev_a, dev_b, dev_c]
+        processed_devices: List[Device] = []
+        filter = DeviceSelection(all=True, limit=2)
+        dgs = DriveGroupSpec(data_devices=filter)
+        ds = drive_selection.DriveSelection(dgs, all_devices, existing_daemons=1)
+
+        # Check /dev/sda. It's already being used for an OSD and will
+        # be counted in existing_daemons. This check should return False
+        # as we are not over the limit.
+        assert not ds._limit_reached(filter, processed_devices, '/dev/sda')
+        processed_devices.append(dev_a)
+
+        # We should still not be over the limit here with /dev/sdb since
+        # we will have only one pre-existing daemon /dev/sdb itself. This
+        # case previously failed as devices that contributed to existing_daemons
+        # would be double counted both as devices and daemons.
+        assert not ds._limit_reached(filter, processed_devices, '/dev/sdb')
+        processed_devices.append(dev_b)
+
+        # Now, with /dev/sdb and the pre-existing daemon taking up the 2
+        # slots, /dev/sdc should be rejected for us being over the limit.
+        assert ds._limit_reached(filter, processed_devices, '/dev/sdc')
+
+        # DriveSelection does device assignment on initialization. Let's check
+        # it picked up the expected devices
+        assert ds._data == [dev_a, dev_b]

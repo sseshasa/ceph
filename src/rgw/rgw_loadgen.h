@@ -1,8 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef CEPH_RGW_LOADGEN_H
-#define CEPH_RGW_LOADGEN_H
+#pragma once
 
 #include <map>
 #include <string>
@@ -27,7 +26,7 @@ struct RGWLoadGenRequestEnv {
   }
 
   void set_date(utime_t& tm);
-  int sign(RGWAccessKey& access_key);
+  int sign(const DoutPrefixProvider *dpp, RGWAccessKey& access_key);
 };
 
 /* XXX does RGWLoadGenIO actually want to perform stream/HTTP I/O,
@@ -50,8 +49,8 @@ public:
 
   size_t send_status(int status, const char *status_name) override;
   size_t send_100_continue() override;
-  size_t send_header(const boost::string_ref& name,
-                     const boost::string_ref& value) override;
+  size_t send_header(const std::string_view& name,
+                     const std::string_view& value) override;
   size_t complete_header() override;
   size_t send_content_length(uint64_t len) override;
 
@@ -71,5 +70,3 @@ public:
 
   size_t complete_request() override;
 };
-
-#endif

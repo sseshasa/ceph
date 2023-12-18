@@ -2,7 +2,7 @@
 // vim: ts=8 sw=2 smarttab
 #include "gtest/gtest.h"
 
-#include "rgw/rgw_compression.h"
+#include "rgw_compression.h"
 
 class ut_get_sink : public RGWGetObj_Filter {
   bufferlist sink;
@@ -48,7 +48,7 @@ public:
   }
 };
 
-class ut_put_sink: public rgw::putobj::DataProcessor
+class ut_put_sink: public rgw::sal::DataProcessor
 {
   bufferlist sink;
 public:
@@ -129,7 +129,8 @@ TEST(Compress, LimitedChunkSize)
     RGWCompressionInfo cs_info;
     cs_info.compression_type = plugin->get_type_name();
     cs_info.orig_size = s;
-    cs_info.blocks = move(compressor.get_compression_blocks());
+    cs_info.compressor_message = compressor.get_compressor_message();
+    cs_info.blocks = std::move(compressor.get_compression_blocks());
 
     ut_get_sink_size d_sink;
     RGWGetObj_Decompress decompress(g_ceph_context, &cs_info, false, &d_sink);
@@ -167,7 +168,8 @@ TEST(Compress, BillionZeros)
   RGWCompressionInfo cs_info;
   cs_info.compression_type = plugin->get_type_name();
   cs_info.orig_size = size*1000;
-  cs_info.blocks = move(compressor.get_compression_blocks());
+  cs_info.compressor_message = compressor.get_compressor_message();
+  cs_info.blocks = std::move(compressor.get_compression_blocks());
 
   ut_get_sink d_sink;
   RGWGetObj_Decompress decompress(g_ceph_context, &cs_info, false, &d_sink);

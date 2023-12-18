@@ -20,10 +20,12 @@ tasks:
           iops_avg: '(or (greater) (near 0.05))'
           iops_stddev: '(or (less) (near 2.00))'
           latency_avg: '(or (less) (near 0.05))'
+          cpu_cycles_per_op: '(or (less) (near 0.05))'
     monitoring_profiles:
       perf:
         nodes:
           - osds
+        perf_cmd: 'perf'
         args: 'stat -p {pid} -o {perf_dir}/perf_stat.{pid}'
     cluster:
       osds_per_node: 3

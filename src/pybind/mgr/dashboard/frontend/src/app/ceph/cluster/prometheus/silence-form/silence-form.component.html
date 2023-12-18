@@ -3,12 +3,13 @@
              let-index="index">
   <div class="input-group my-2">
     <ng-container *ngFor="let config of matcherConfig">
-      <div class="input-group-prepend">
-        <span class="input-group-text"
-              [tooltip]="config.tooltip">
-          <i [ngClass]="[config.icon]"></i>
-        </span>
-      </div>
+      <span class="input-group-text"
+            *ngIf="config.attribute === 'isRegex'">
+        <i *ngIf="matcher[config.attribute]"
+           [ngbTooltip]="config.tooltip">~</i>
+        <i *ngIf="!matcher[config.attribute]"
+           ngbTooltip="Equals">=</i>
+      </span>
 
       <ng-container *ngIf="config.attribute !== 'isRegex'">
         <input type="text"
@@ -18,39 +19,25 @@
                disabled
                readonly>
       </ng-container>
-
-      <ng-container *ngIf="config.attribute === 'isRegex'">
-        <div class="input-group-append">
-          <div class="input-group-text">
-            <input type="checkbox"
-                   id="matcher-{{config.attribute}}-{{index}}"
-                   [checked]="matcher[config.attribute]"
-                   disabled
-                   readonly>
-          </div>
-        </div>
-      </ng-container>
     </ng-container>
 
     <!-- Matcher actions -->
-    <span class="input-group-append">
-      <button type="button"
-              class="btn btn-light"
-              id="matcher-edit-{{index}}"
-              i18n-tooltip
-              tooltip="Edit"
-              (click)="showMatcherModal(index)">
-        <i [ngClass]="[icons.edit]"></i>
-      </button>
-      <button type="button"
-              class="btn btn-light"
-              id="matcher-delete-{{index}}"
-              i18n-tooltip
-              tooltip="Delete"
-              (click)="deleteMatcher(index)">
-        <i [ngClass]="[icons.trash]"></i>
-      </button>
-    </span>
+    <button type="button"
+            class="btn btn-light"
+            id="matcher-edit-{{index}}"
+            i18n-ngbTooltip
+            ngbTooltip="Edit"
+            (click)="showMatcherModal(index)">
+      <i [ngClass]="[icons.edit]"></i>
+    </button>
+    <button type="button"
+            class="btn btn-light"
+            id="matcher-delete-{{index}}"
+            i18n-ngbTooltip
+            ngbTooltip="Delete"
+            (click)="deleteMatcher(index)">
+      <i [ngClass]="[icons.trash]"></i>
+    </button>
   </div>
   <span class="help-block"></span>
 </ng-template>
@@ -63,9 +50,7 @@
         novalidate>
     <div class="card">
       <div class="card-header">
-        <span i18n="@@formTitle">
-          {{ action | titlecase }} {{ resource | upperFirst }}
-        </span>
+        <span i18n>{{ action | titlecase }} {{ resource | upperFirst }}</span>
         <cd-helper *ngIf="edit"
                    i18n>Editing a silence will expire the old silence and recreate it as a new silence</cd-helper>
       </div>
@@ -115,12 +100,13 @@
             <cd-helper i18n>If the start time lies in the past the creation time will be used</cd-helper>
           </label>
           <div class="cd-col-form-input">
-            <input [bsConfig]="bsConfig"
-                   bsDatepicker
-                   class="form-control"
+            <input class="form-control"
                    formControlName="startsAt"
-                   id="starts-at"
-                   name="starts-at">
+                   [ngbPopover]="popStart"
+                   triggers="manual"
+                   #ps="ngbPopover"
+                   (click)="ps.open()"
+                   (keypress)="ps.close()">
             <span *ngIf="form.showError('startsAt', formDir, 'required')"
                   class="invalid-feedback"
                   i18n>This field is required!</span>
@@ -150,12 +136,13 @@
                  for="ends-at"
                  i18n>End time</label>
           <div class="cd-col-form-input">
-            <input [bsConfig]="bsConfig"
-                   bsDatepicker
-                   class="form-control"
+            <input class="form-control"
                    formControlName="endsAt"
-                   id="ends-at"
-                   name="ends-at">
+                   [ngbPopover]="popEnd"
+                   triggers="manual"
+                   #pe="ngbPopover"
+                   (click)="pe.open()"
+                   (keypress)="pe.close()">
             <span *ngIf="form.showError('endsAt', formDir, 'required')"
                   class="invalid-feedback"
                   i18n>This field is required!</span>
@@ -181,7 +168,7 @@
               <div class="col-12">
                 <button type="button"
                         id="add-matcher"
-                        class="btn btn-light float-right my-3"
+                        class="btn btn-light float-end my-3"
                         [ngClass]="{'btn-warning': formDir.submitted && matchers.length === 0 }"
                         (click)="showMatcherModal()">
                   <i [ngClass]="[icons.add]"></i>
@@ -203,14 +190,22 @@
 
       <div class="card-footer">
         <div class="text-right">
-          <cd-submit-button (submitAction)="submit()"
-                            [form]="formDir"
-                            i18n="@@formTitle">
-            {{ action | titlecase }} {{ resource | upperFirst }}
-          </cd-submit-button>
-          <cd-back-button></cd-back-button>
+          <cd-form-button-panel (submitActionEvent)="submit()"
+                                [form]="form"
+                                [submitText]="(action | titlecase) + ' ' + (resource | upperFirst)"></cd-form-button-panel>
         </div>
       </div>
     </div>
   </form>
 </div>
+
+<ng-template #popStart>
+  <cd-date-time-picker [control]="form.get('startsAt')"
+                       [hasSeconds]="false"></cd-date-time-picker>
+</ng-template>
+
+
+<ng-template #popEnd>
+  <cd-date-time-picker [control]="form.get('endsAt')"
+                       [hasSeconds]="false"></cd-date-time-picker>
+</ng-template>

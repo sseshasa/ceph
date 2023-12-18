@@ -1,4 +1,4 @@
-// -*- mode:C; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
 #include "include/types.h"
@@ -15,6 +15,8 @@
 #include <errno.h>
 #include <string>
 #include <vector>
+
+using namespace std;
 
 /// creates a temporary pool and initializes an IoCtx for each test
 class cls_log : public ::testing::Test {
@@ -77,6 +79,7 @@ void generate_log(librados::IoCtx& ioctx, string& oid, int max, utime_t& start_t
   int i;
 
   for (i = 0; i < max; i++) {
+    // coverity[store_truncates_time_t:SUPPRESS]
     uint32_t secs = start_time.sec();
     if (modify_time)
       secs += i;
@@ -92,6 +95,7 @@ void generate_log(librados::IoCtx& ioctx, string& oid, int max, utime_t& start_t
 
 utime_t get_time(utime_t& start_time, int i, bool modify_time)
 {
+  // coverity[store_truncates_time_t:SUPPRESS]
   uint32_t secs = start_time.sec();
   if (modify_time)
     secs += i;

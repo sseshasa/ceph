@@ -60,33 +60,60 @@ Parameters:
     **WebIdentityToken** (String/ Required): The OpenID Connect/ OAuth2.0 token, which the
     application gets in return after authenticating its user with an IDP.
 
+Before invoking AssumeRoleWithWebIdentity, an OpenID Connect Provider entity (which the web application
+authenticates with), needs to be created in RGW.
+
+The trust between the IDP and the role is created by adding a condition to the role's trust policy, which
+allows access only to applications which satisfy the given condition.
+All claims of the JWT are supported in the condition of the role's trust policy.
+An example of a policy that uses the 'aud' claim in the condition is of the form::
+
+    '''{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":["arn:aws:iam:::oidc-provider/<URL of IDP>"]},"Action":["sts:AssumeRoleWithWebIdentity"],"Condition":{"StringEquals":{"<URL of IDP> :app_id":"<aud>"}}}]}'''
+
+The app_id in the condition above must match the 'aud' claim of the incoming token.
+
+An example of a policy that uses the 'sub' claim in the condition is of the form::
+
+    "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Federated\":[\"arn:aws:iam:::oidc-provider/<URL of IDP>\"]},\"Action\":[\"sts:AssumeRoleWithWebIdentity\"],\"Condition\":{\"StringEquals\":{\"<URL of IDP> :sub\":\"<sub>\"\}\}\}\]\}"
+
+Similarly, an example of a policy that uses 'azp' claim in the condition is of the form::
+
+    "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Federated\":[\"arn:aws:iam:::oidc-provider/<URL of IDP>\"]},\"Action\":[\"sts:AssumeRoleWithWebIdentity\"],\"Condition\":{\"StringEquals\":{\"<URL of IDP> :azp\":\"<azp>\"\}\}\}\]\}"
+
+A shadow user is created corresponding to every federated user. The user id is derived from the 'sub' field of the incoming web token.
+The user is created in a separate namespace - 'oidc' such that the user id doesn't clash with any other user ids in rgw. The format of the user id
+is - <tenant>$<user-namespace>$<sub> where user-namespace is 'oidc' for users that authenticate with oidc providers.
+
+RGW now supports Session tags that can be passed in the web token to AssumeRoleWithWebIdentity call. More information related to Session Tags can be found here
+:doc:`session-tags`.
+
 STS Configuration
 =================
 
 The following configurable options have to be added for STS integration::
 
-  [client.radosgw.gateway]
-  rgw sts key = {sts key for encrypting the session token}
-  rgw s3 auth use sts = true
+  [client.{your-rgw-name}]
+  rgw_sts_key = {sts key for encrypting the session token}
+  rgw_s3_auth_use_sts = true
 
-The following additional configurables have to be added to use Keycloak for
-AssumeRoleWithWebIdentity calls::
+Notes: 
 
-  [client.radosgw.gateway]
-  rgw_sts_token_introspection_url = {token introspection URL}
-  rgw_sts_client_id = {client id registered with Keycloak}
-  rgw_sts_client_secret = {client password registered with Keycloak}
-
-Note: By default, STS and S3 APIs co-exist in the same namespace, and both S3
-and STS APIs can be accessed via the same endpoint in Ceph Object Gateway.
+* By default, STS and S3 APIs co-exist in the same namespace, and both S3
+  and STS APIs can be accessed via the same endpoint in Ceph Object Gateway.
+* The ``rgw_sts_key`` needs to be a hex-string consisting of exactly 16 characters.
 
 Examples
 ========
+1. In order to get the example to work, make sure that the user TESTER has the ``roles`` capability assigned:
 
-1. The following is an example of AssumeRole API call, which shows steps to create a role, assign a policy to it
-(that allows access to S3 resources), assuming a role to get temporary credentials and accessing s3 resources using
-those credentials. In this example, TESTER1 assumes a role created by TESTER, to access S3 resources owned by TESTER,
-according to the permission policy attached to the role.
+.. code-block:: console
+
+   radosgw-admin caps add --uid="TESTER" --caps="roles=*"
+
+2. The following is an example of the AssumeRole API call, which shows steps to create a role, assign a policy to it
+   (that allows access to S3 resources), assuming a role to get temporary credentials and accessing S3 resources using
+   those credentials. In this example, TESTER1 assumes a role created by TESTER, to access S3 resources owned by TESTER,
+   according to the permission policy attached to the role.
 
 .. code-block:: python
 
@@ -99,7 +126,7 @@ according to the permission policy attached to the role.
     region_name=''
     )
 
-    policy_document = "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":[\"arn:aws:iam:::user/TESTER1\"]},\"Action\":[\"sts:AssumeRole\"]}]}"
+    policy_document = '''{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["arn:aws:iam:::user/TESTER1"]},"Action":["sts:AssumeRole"]}]}'''
 
     role_response = iam_client.create_role(
     AssumeRolePolicyDocument=policy_document,
@@ -107,7 +134,7 @@ according to the permission policy attached to the role.
     RoleName='S3Access',
     )
 
-    role_policy = "{\"Version\":\"2012-10-17\",\"Statement\":{\"Effect\":\"Allow\",\"Action\":\"s3:*\",\"Resource\":\"arn:aws:s3:::*\"}}"
+    role_policy = '''{"Version":"2012-10-17","Statement":{"Effect":"Allow","Action":"s3:*","Resource":"arn:aws:s3:::*"}}'''
 
     response = iam_client.put_role_policy(
     RoleName='S3Access',
@@ -154,14 +181,24 @@ according to permission policy of the role.
     region_name=''
     )
 
-    policy_document = "{\"Version\":\"2012-10-17\",\"Statement\":\[\{\"Effect\":\"Allow\",\"Principal\":\{\"Federated\":\[\"arn:aws:iam:::oidc-provider/localhost:8080/auth/realms/demo\"\]\},\"Action\":\[\"sts:AssumeRoleWithWebIdentity\"\],\"Condition\":\{\"StringEquals\":\{\"localhost:8080/auth/realms/demo:app_id\":\"customer-portal\"\}\}\}\]\}"
+    oidc_response = iam_client.create_open_id_connect_provider(
+        Url=<URL of the OpenID Connect Provider,
+        ClientIDList=[
+            <Client id registered with the IDP>
+        ],
+        ThumbprintList=[
+            <Thumbprint of the IDP>
+     ]
+    )
+
+    policy_document = '''{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":["arn:aws:iam:::oidc-provider/localhost:8080/auth/realms/demo"]},"Action":["sts:AssumeRoleWithWebIdentity"],"Condition":{"StringEquals":{"localhost:8080/auth/realms/demo:app_id":"customer-portal"}}}]}'''
     role_response = iam_client.create_role(
     AssumeRolePolicyDocument=policy_document,
     Path='/',
     RoleName='S3Access',
     )
 
-    role_policy = "{\"Version\":\"2012-10-17\",\"Statement\":{\"Effect\":\"Allow\",\"Action\":\"s3:*\",\"Resource\":\"arn:aws:s3:::*\"}}"
+    role_policy = '''{"Version":"2012-10-17","Statement":{"Effect":"Allow","Action":"s3:*","Resource":"arn:aws:s3:::*"}}'''
 
     response = iam_client.put_role_policy(
         RoleName='S3Access',
@@ -194,11 +231,59 @@ according to permission policy of the role.
     s3bucket = s3client.create_bucket(Bucket=bucket_name)
     resp = s3client.list_buckets()
 
+How to obtain thumbprint of an OpenID Connect Provider IDP
+==========================================================
+1. Take the OpenID connect provider's URL and add /.well-known/openid-configuration
+to it to get the URL to get the IDP's configuration document. For example, if the URL
+of the IDP is http://localhost:8000/auth/realms/quickstart, then the URL to get the
+document from is http://localhost:8000/auth/realms/quickstart/.well-known/openid-configuration
+
+2. Use the following curl command to get the configuration document from the URL described
+in step 1::
+
+    curl -k -v \
+      -X GET \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      "http://localhost:8000/auth/realms/quickstart/.well-known/openid-configuration" \
+    | jq .
+
+ 3. From the response of step 2, use the value of "jwks_uri" to get the certificate of the IDP,
+ using the following code::
+     curl -k -v \
+      -X GET \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      "http://$KC_SERVER/$KC_CONTEXT/realms/$KC_REALM/protocol/openid-connect/certs" \
+      | jq .
+
+3. Copy the result of "x5c" in the response above, in a file certificate.crt, and add
+'-----BEGIN CERTIFICATE-----' at the beginning and "-----END CERTIFICATE-----"
+at the end.
+
+4. Use the following OpenSSL command to get the certificate thumbprint::
+
+    openssl x509 -in certificate.crt -fingerprint -noout
+
+5. The result of the above command in step 4, will be a SHA1 fingerprint, like the following::
+
+    SHA1 Fingerprint=F7:D7:B3:51:5D:D0:D3:19:DD:21:9A:43:A9:EA:72:7A:D6:06:52:87
+
+6.  Remove the colons from the result above to get the final thumbprint which can be as input
+while creating the OpenID Connect Provider entity in IAM::
+
+    F7D7B3515DD0D319DD219A43A9EA727AD6065287
+
 Roles in RGW
 ============
 
 More information for role manipulation can be found here
 :doc:`role`.
+
+OpenID Connect Provider in RGW
+==============================
+
+More information for OpenID Connect Provider entity manipulation
+can be found here
+:doc:`oidc`.
 
 Keycloak integration with Radosgw
 =================================

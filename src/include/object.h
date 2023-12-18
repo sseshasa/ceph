@@ -17,20 +17,19 @@
 
 #include <cstdint>
 #include <cstdio>
-#include <iosfwd>
 #include <iomanip>
+#include <iosfwd>
 #include <string>
-
+#include <string>
+#include <string_view>
 
 #include "include/rados.h"
 #include "include/unordered_map.h"
+#include "common/Formatter.h"
 
 #include "hash.h"
 #include "encoding.h"
 #include "ceph_hash.h"
-#include "cmp.h"
-
-using namespace std;
 
 struct object_t {
   std::string name;
@@ -40,6 +39,10 @@ struct object_t {
   object_t(const char *s) : name(s) {}
   // cppcheck-suppress noExplicitConstructor
   object_t(const std::string& s) : name(s) {}
+  object_t(std::string&& s) : name(std::move(s)) {}
+  object_t(std::string_view s) : name(s) {}
+
+  auto operator<=>(const object_t&) const noexcept = default;
 
   void swap(object_t& o) {
     name.swap(o.name);
@@ -56,27 +59,18 @@ struct object_t {
     using ceph::decode;
     decode(name, bl);
   }
+
+  void dump(ceph::Formatter *f) const {
+    f->dump_string("name", name);
+  }
+
+  static void generate_test_instances(std::list<object_t*>& o) {
+    o.push_back(new object_t);
+    o.push_back(new object_t("myobject"));
+  }
 };
 WRITE_CLASS_ENCODER(object_t)
 
-inline bool operator==(const object_t& l, const object_t& r) {
-  return l.name == r.name;
-}
-inline bool operator!=(const object_t& l, const object_t& r) {
-  return l.name != r.name;
-}
-inline bool operator>(const object_t& l, const object_t& r) {
-  return l.name > r.name;
-}
-inline bool operator<(const object_t& l, const object_t& r) {
-  return l.name < r.name;
-}
-inline bool operator>=(const object_t& l, const object_t& r) {
-  return l.name >= r.name;
-}
-inline bool operator<=(const object_t& l, const object_t& r) {
-  return l.name <= r.name;
-}
 inline std::ostream& operator<<(std::ostream& out, const object_t& o) {
   return out << o.name;
 }
@@ -167,6 +161,8 @@ struct sobject_t {
   sobject_t() : snap(0) {}
   sobject_t(object_t o, snapid_t s) : oid(o), snap(s) {}
 
+  auto operator<=>(const sobject_t&) const noexcept = default;
+
   void swap(sobject_t& o) {
     oid.swap(o.oid);
     snapid_t t = snap;
@@ -184,27 +180,17 @@ struct sobject_t {
     decode(oid, bl);
     decode(snap, bl);
   }
+  void dump(ceph::Formatter *f) const {
+    f->dump_stream("oid") << oid;
+    f->dump_stream("snap") << snap;
+  }
+  static void generate_test_instances(std::list<sobject_t*>& o) {
+    o.push_back(new sobject_t);
+    o.push_back(new sobject_t(object_t("myobject"), 123));
+  }
 };
 WRITE_CLASS_ENCODER(sobject_t)
 
-inline bool operator==(const sobject_t &l, const sobject_t &r) {
-  return l.oid == r.oid && l.snap == r.snap;
-}
-inline bool operator!=(const sobject_t &l, const sobject_t &r) {
-  return l.oid != r.oid || l.snap != r.snap;
-}
-inline bool operator>(const sobject_t &l, const sobject_t &r) {
-  return l.oid > r.oid || (l.oid == r.oid && l.snap > r.snap);
-}
-inline bool operator<(const sobject_t &l, const sobject_t &r) {
-  return l.oid < r.oid || (l.oid == r.oid && l.snap < r.snap);
-}
-inline bool operator>=(const sobject_t &l, const sobject_t &r) {
-  return l.oid > r.oid || (l.oid == r.oid && l.snap >= r.snap);
-}
-inline bool operator<=(const sobject_t &l, const sobject_t &r) {
-  return l.oid < r.oid || (l.oid == r.oid && l.snap <= r.snap);
-}
 inline std::ostream& operator<<(std::ostream& out, const sobject_t &o) {
   return out << o.oid << "/" << o.snap;
 }

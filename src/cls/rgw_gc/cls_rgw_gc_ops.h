@@ -1,8 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
-#ifndef CEPH_CLS_RGW_GC_OPS_H
-#define CEPH_CLS_RGW_GC_OPS_H
+#pragma once
 
 #include "cls/rgw/cls_rgw_types.h"
 
@@ -26,6 +25,16 @@ struct cls_rgw_gc_queue_init_op {
     DECODE_FINISH(bl);
   }
 
+  void dump(ceph::Formatter *f) const {
+    f->dump_unsigned("size", size);
+    f->dump_unsigned("num_deferred_entries", num_deferred_entries);
+  }
+
+  static void generate_test_instances(std::list<cls_rgw_gc_queue_init_op*>& o) {
+    o.push_back(new cls_rgw_gc_queue_init_op);
+    o.back()->size = 1024;
+    o.back()->num_deferred_entries = 512;
+  }
 };
 WRITE_CLASS_ENCODER(cls_rgw_gc_queue_init_op)
 
@@ -68,4 +77,3 @@ struct cls_rgw_gc_queue_defer_entry_op {
   }
 };
 WRITE_CLASS_ENCODER(cls_rgw_gc_queue_defer_entry_op)
-#endif /* CEPH_CLS_RGW_GC_OPS_H */

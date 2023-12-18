@@ -1,34 +1,26 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
-
 import uuid
 from contextlib import contextmanager
+from typing import Any, Dict, List, Optional
+from unittest import mock
 
-try:
-    import mock
-except ImportError:
-    from unittest import mock
-from ceph.deployment.drive_group import DeviceSelection, DriveGroupSpec
+from ceph.deployment.drive_group import DeviceSelection, DriveGroupSpec  # type: ignore
 from ceph.deployment.service_spec import PlacementSpec
 
-from . import ControllerTestCase
-from ..controllers.osd import Osd
-from ..tools import NotificationQueue, TaskManager
 from .. import mgr
-from .helper import update_dict
-
-try:
-    from typing import List, Dict, Any  # pylint: disable=unused-import
-except ImportError:
-    pass  # Only requried for type hints
+from ..controllers.osd import Osd, OsdUi
+from ..services.osd import OsdDeploymentOptions
+from ..tests import ControllerTestCase
+from ..tools import NotificationQueue, TaskManager
+from .helper import update_dict  # pylint: disable=import-error
 
 
 class OsdHelper(object):
     DEFAULT_OSD_IDS = [0, 1, 2]
 
     @staticmethod
-    def _gen_osdmap_tree_node(node_id, node_type, children=None, update_data=None):
-        # type: (int, str, List[int], Dict[str, Any]) -> Dict[str, Any]
+    def _gen_osdmap_tree_node(node_id: int, node_type: str, children: Optional[List[int]] = None,
+                              update_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         assert node_type in ['root', 'host', 'osd']
         if node_type in ['root', 'host']:
             assert children is not None
@@ -69,8 +61,7 @@ class OsdHelper(object):
         return update_dict(node, update_data) if update_data else node
 
     @staticmethod
-    def _gen_osd_stats(osd_id, update_data=None):
-        # type: (int, Dict[str, Any]) -> Dict[str, Any]
+    def _gen_osd_stats(osd_id: int, update_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         stats = {
             'osd': osd_id,
             'up_from': 11,
@@ -112,8 +103,7 @@ class OsdHelper(object):
         return stats if not update_data else update_dict(stats, update_data)
 
     @staticmethod
-    def _gen_osd_map_osd(osd_id):
-        # type: (int) -> Dict[str, Any]
+    def _gen_osd_map_osd(osd_id: int) -> Dict[str, Any]:
         return {
             'osd': osd_id,
             'up': 1,
@@ -180,34 +170,53 @@ class OsdHelper(object):
         }
 
     @classmethod
-    def gen_osdmap(cls, ids=None):
-        # type: (List[int]) -> Dict[str, Any]
+    def gen_osdmap(cls, ids: Optional[List[int]] = None) -> Dict[str, Any]:
         return {str(i): cls._gen_osd_map_osd(i) for i in ids or cls.DEFAULT_OSD_IDS}
 
     @classmethod
-    def gen_osd_stats(cls, ids=None):
-        # type: (List[int]) -> List[Dict[str, Any]]
+    def gen_osd_stats(cls, ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
         return [cls._gen_osd_stats(i) for i in ids or cls.DEFAULT_OSD_IDS]
 
     @classmethod
-    def gen_osdmap_tree_nodes(cls, ids=None):
-        # type: (List[int]) -> List[Dict[str, Any]]
+    def gen_osdmap_tree_nodes(cls, ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
         return [
             cls._gen_osdmap_tree_node(-1, 'root', [-3]),
             cls._gen_osdmap_tree_node(-3, 'host', ids or cls.DEFAULT_OSD_IDS),
         ] + [cls._gen_osdmap_tree_node(node_id, 'osd') for node_id in ids or cls.DEFAULT_OSD_IDS]
 
     @classmethod
-    def gen_mgr_get_counter(cls):
-        # type: () -> List[List[int]]
+    def gen_mgr_get_counter(cls) -> List[List[int]]:
         return [[1551973855, 35], [1551973860, 35], [1551973865, 35], [1551973870, 35]]
+
+    @staticmethod
+    def mock_inventory_host(orch_client_mock, devices_data: Dict[str, str]) -> None:
+        class MockDevice:
+            def __init__(self, human_readable_type, path, available=True):
+                self.human_readable_type = human_readable_type
+                self.available = available
+                self.path = path
+
+        def create_inventory_host(host, devices_data):
+            inventory_host = mock.Mock()
+            inventory_host.devices.devices = []
+            for data in devices_data:
+                if data['host'] != host:
+                    continue
+                inventory_host.devices.devices.append(MockDevice(data['type'], data['path']))
+            return inventory_host
+
+        hosts = set()
+        for device in devices_data:
+            hosts.add(device['host'])
+
+        inventory = [create_inventory_host(host, devices_data) for host in hosts]
+        orch_client_mock.inventory.list.return_value = inventory
 
 
 class OsdTest(ControllerTestCase):
     @classmethod
     def setup_server(cls):
-        Osd._cp_config['tools.authenticate.on'] = False  # pylint: disable=protected-access
-        cls.setup_controllers([Osd])
+        cls.setup_controllers([Osd, OsdUi])
         NotificationQueue.start_queue()
         TaskManager.init()
 
@@ -234,7 +243,25 @@ class OsdTest(ControllerTestCase):
             with mock.patch.object(mgr, 'get', side_effect=mgr_get_replacement):
                 with mock.patch.object(mgr, 'get_counter', side_effect=mgr_get_counter_replacement):
                     with mock.patch.object(mgr, 'get_latest', return_value=1146609664):
-                        yield
+                        with mock.patch.object(Osd, 'get_removing_osds', return_value=[]):
+                            yield
+
+    def _get_drive_group_data(self, service_id='all_hdd', host_pattern_k='host_pattern',
+                              host_pattern_v='*'):
+        return {
+            'method': 'drive_groups',
+            'data': [
+                {
+                    'service_type': 'osd',
+                    'service_id': service_id,
+                    'data_devices': {
+                        'rotational': True
+                    },
+                    host_pattern_k: host_pattern_v
+                }
+            ],
+            'tracking_id': 'all_hdd, b_ssd'
+        }
 
     def test_osd_list_aggregation(self):
         """
@@ -252,19 +279,43 @@ class OsdTest(ControllerTestCase):
             self.assertStatus(200)
 
     @mock.patch('dashboard.controllers.osd.CephService')
+    def test_osd_scrub(self, ceph_service):
+        self._task_post('/api/osd/1/scrub', {'deep': True})
+        ceph_service.send_command.assert_called_once_with('mon', 'osd deep-scrub', who='1')
+        self.assertStatus(200)
+        self.assertJsonBody(None)
+
+    @mock.patch('dashboard.controllers.osd.CephService')
     def test_osd_create_bare(self, ceph_service):
         ceph_service.send_command.return_value = '5'
+        sample_data = {
+            'uuid': 'f860ca2e-757d-48ce-b74a-87052cad563f',
+            'svc_id': 5
+        }
+
         data = {
             'method': 'bare',
-            'data': {
-                'uuid': 'f860ca2e-757d-48ce-b74a-87052cad563f',
-                'svc_id': 5
-            },
+            'data': sample_data,
             'tracking_id': 'bare-5'
         }
         self._task_post('/api/osd', data)
         self.assertStatus(201)
         ceph_service.send_command.assert_called()
+
+        # unknown method
+        data['method'] = 'other'
+        self._task_post('/api/osd', data)
+        self.assertStatus(400)
+        res = self.json_body()
+        self.assertIn('Unknown method', res['detail'])
+
+        # svc_id is not int
+        data['data']['svc_id'] = "five"
+        data['method'] = 'bare'
+        self._task_post('/api/osd', data)
+        self.assertStatus(400)
+        res = self.json_body()
+        self.assertIn(data['data']['svc_id'], res['detail'])
 
     @mock.patch('dashboard.controllers.orchestrator.OrchClient.instance')
     def test_osd_create_with_drive_groups(self, instance):
@@ -273,20 +324,7 @@ class OsdTest(ControllerTestCase):
         instance.return_value = fake_client
 
         # Valid DriveGroup
-        data = {
-            'method': 'drive_groups',
-            'data': [
-                {
-                    'service_type': 'osd',
-                    'service_id': 'all_hdd',
-                    'data_devices': {
-                        'rotational': True
-                    },
-                    'host_pattern': '*',
-                }
-            ],
-            'tracking_id': 'all_hdd, b_ssd'
-        }
+        data = self._get_drive_group_data()
 
         # Without orchestrator service
         fake_client.available.return_value = False
@@ -295,6 +333,7 @@ class OsdTest(ControllerTestCase):
 
         # With orchestrator service
         fake_client.available.return_value = True
+        fake_client.get_missing_features.return_value = []
         self._task_post('/api/osd', data)
         self.assertStatus(201)
         dg_specs = [DriveGroupSpec(placement=PlacementSpec(host_pattern='*'),
@@ -308,21 +347,146 @@ class OsdTest(ControllerTestCase):
         # without orchestrator service
         fake_client = mock.Mock()
         instance.return_value = fake_client
+        fake_client.get_missing_features.return_value = []
 
         # Invalid DriveGroup
-        data = {
-            'method': 'drive_groups',
-            'data': [
-                {
-                    'service_type': 'osd',
-                    'service_id': 'invalid_dg',
-                    'data_devices': {
-                        'rotational': True
-                    },
-                    'host_pattern_wrong': 'unknown',
-                }
-            ],
-            'tracking_id': 'all_hdd, b_ssd'
-        }
+        data = self._get_drive_group_data('invalid_dg', 'host_pattern_wrong', 'unknown')
         self._task_post('/api/osd', data)
         self.assertStatus(400)
+
+    @mock.patch('dashboard.controllers.osd.CephService')
+    def test_osd_mark_all_actions(self, instance):
+        fake_client = mock.Mock()
+        instance.return_value = fake_client
+        action_list = ['OUT', 'IN', 'DOWN']
+
+        for action in action_list:
+            data = {'action': action}
+            self._task_put('/api/osd/1/mark', data)
+            self.assertStatus(200)
+
+        # invalid mark
+        instance.reset_mock()
+        with self.assertLogs(level='ERROR') as cm:
+            self._task_put('/api/osd/1/mark', {'action': 'OTHER'})
+            instance.send_command.assert_not_called()
+            self.assertIn('Invalid OSD mark action', cm.output[0])
+            self.assertStatus(200)
+            self.assertJsonBody(None)
+
+        self._task_post('/api/osd/1/purge', {'svc_id': 1})
+        instance.send_command.assert_called_once_with('mon', 'osd purge-actual', id=1,
+                                                      yes_i_really_mean_it=True)
+        self.assertStatus(200)
+        self.assertJsonBody(None)
+
+    @mock.patch('dashboard.controllers.osd.CephService')
+    def test_reweight_osd(self, instance):
+        instance.send_command.return_value = '5'
+        uuid1 = str(uuid.uuid1())
+        sample_data = {
+            'uuid': uuid1,
+            'svc_id': 1
+        }
+        data = {
+            'method': 'bare',
+            'data': sample_data,
+            'tracking_id': 'bare-1'
+        }
+        self._task_post('/api/osd', data)
+        self._task_put('/api/osd/1/mark', {'action': 'DOWN'})
+        self.assertStatus(200)
+        self._task_post('/api/osd/1/reweight', {'weight': '1'})
+        instance.send_command.assert_called_with('mon', 'osd reweight', id=1, weight=1.0)
+        self.assertStatus(200)
+
+    def _get_deployment_options(self, fake_client, devices_data: Dict[str, str]) -> Dict[str, Any]:
+        OsdHelper.mock_inventory_host(fake_client, devices_data)
+        self._get('/ui-api/osd/deployment_options')
+        self.assertStatus(200)
+        res = self.json_body()
+        return res
+
+    @mock.patch('dashboard.controllers.orchestrator.OrchClient.instance')
+    def test_deployment_options(self, instance):
+        fake_client = mock.Mock()
+        instance.return_value = fake_client
+        fake_client.get_missing_features.return_value = []
+
+        devices_data = [
+            {'type': 'hdd', 'path': '/dev/sda', 'host': 'host1'},
+            {'type': 'hdd', 'path': '/dev/sdc', 'host': 'host1'},
+            {'type': 'hdd', 'path': '/dev/sdb', 'host': 'host2'},
+            {'type': 'hdd', 'path': '/dev/sde', 'host': 'host1'},
+            {'type': 'hdd', 'path': '/dev/sdd', 'host': 'host2'},
+        ]
+
+        res = self._get_deployment_options(fake_client, devices_data)
+        self.assertTrue(res['options'][OsdDeploymentOptions.COST_CAPACITY]['available'])
+        assert res['recommended_option'] == OsdDeploymentOptions.COST_CAPACITY
+
+        # we don't want cost_capacity enabled without hdds
+        for data in devices_data:
+            data['type'] = 'ssd'
+
+        res = self._get_deployment_options(fake_client, devices_data)
+        self.assertFalse(res['options'][OsdDeploymentOptions.COST_CAPACITY]['available'])
+        self.assertFalse(res['options'][OsdDeploymentOptions.THROUGHPUT]['available'])
+        self.assertEqual(res['recommended_option'], None)
+
+    @mock.patch('dashboard.controllers.orchestrator.OrchClient.instance')
+    def test_deployment_options_throughput(self, instance):
+        fake_client = mock.Mock()
+        instance.return_value = fake_client
+        fake_client.get_missing_features.return_value = []
+
+        devices_data = [
+            {'type': 'ssd', 'path': '/dev/sda', 'host': 'host1'},
+            {'type': 'ssd', 'path': '/dev/sdc', 'host': 'host1'},
+            {'type': 'ssd', 'path': '/dev/sdb', 'host': 'host2'},
+            {'type': 'hdd', 'path': '/dev/sde', 'host': 'host1'},
+            {'type': 'hdd', 'path': '/dev/sdd', 'host': 'host2'},
+        ]
+
+        res = self._get_deployment_options(fake_client, devices_data)
+        self.assertTrue(res['options'][OsdDeploymentOptions.COST_CAPACITY]['available'])
+        self.assertTrue(res['options'][OsdDeploymentOptions.THROUGHPUT]['available'])
+        self.assertFalse(res['options'][OsdDeploymentOptions.IOPS]['available'])
+        assert res['recommended_option'] == OsdDeploymentOptions.THROUGHPUT
+
+    @mock.patch('dashboard.controllers.orchestrator.OrchClient.instance')
+    def test_deployment_options_with_hdds_and_nvmes(self, instance):
+        fake_client = mock.Mock()
+        instance.return_value = fake_client
+        fake_client.get_missing_features.return_value = []
+
+        devices_data = [
+            {'type': 'ssd', 'path': '/dev/nvme01', 'host': 'host1'},
+            {'type': 'ssd', 'path': '/dev/nvme02', 'host': 'host1'},
+            {'type': 'ssd', 'path': '/dev/nvme03', 'host': 'host2'},
+            {'type': 'hdd', 'path': '/dev/sde', 'host': 'host1'},
+            {'type': 'hdd', 'path': '/dev/sdd', 'host': 'host2'},
+        ]
+
+        res = self._get_deployment_options(fake_client, devices_data)
+        self.assertTrue(res['options'][OsdDeploymentOptions.COST_CAPACITY]['available'])
+        self.assertFalse(res['options'][OsdDeploymentOptions.THROUGHPUT]['available'])
+        self.assertTrue(res['options'][OsdDeploymentOptions.IOPS]['available'])
+        assert res['recommended_option'] == OsdDeploymentOptions.COST_CAPACITY
+
+    @mock.patch('dashboard.controllers.orchestrator.OrchClient.instance')
+    def test_deployment_options_iops(self, instance):
+        fake_client = mock.Mock()
+        instance.return_value = fake_client
+        fake_client.get_missing_features.return_value = []
+
+        devices_data = [
+            {'type': 'ssd', 'path': '/dev/nvme01', 'host': 'host1'},
+            {'type': 'ssd', 'path': '/dev/nvme02', 'host': 'host1'},
+            {'type': 'ssd', 'path': '/dev/nvme03', 'host': 'host2'}
+        ]
+
+        res = self._get_deployment_options(fake_client, devices_data)
+        self.assertFalse(res['options'][OsdDeploymentOptions.COST_CAPACITY]['available'])
+        self.assertFalse(res['options'][OsdDeploymentOptions.THROUGHPUT]['available'])
+        self.assertTrue(res['options'][OsdDeploymentOptions.IOPS]['available'])

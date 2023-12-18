@@ -1,15 +1,19 @@
 <cd-iscsi-tabs></cd-iscsi-tabs>
 
 <legend i18n>Gateways</legend>
-<cd-table [data]="gateways"
-          (fetchData)="refresh()"
-          [columns]="gatewaysColumns">
-</cd-table>
+<div>
+  <cd-table [data]="gateways"
+            (fetchData)="refresh()"
+            [columns]="gatewaysColumns">
+  </cd-table>
+</div>
 
 <legend i18n>Images</legend>
-<cd-table [data]="images"
-          [columns]="imagesColumns">
-</cd-table>
+<div>
+  <cd-table [data]="images"
+            [columns]="imagesColumns">
+  </cd-table>
+</div>
 
 <ng-template #iscsiSparklineTpl
              let-row="row"
@@ -40,7 +44,7 @@
              let-row="row"
              let-value="value">
   <span *ngIf="row.backstore === 'user:rbd'">
-    {{ value | relativeDate }}
+    {{ value | relativeDate | notAvailable }}
   </span>
   <span *ngIf="row.backstore !== 'user:rbd'"
         class="text-muted">

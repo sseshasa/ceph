@@ -7,9 +7,9 @@ import {
   OnInit,
   Output
 } from '@angular/core';
-import { NgControl } from '@angular/forms';
+import { NgControl, Validators } from '@angular/forms';
 
-import * as _ from 'lodash';
+import _ from 'lodash';
 
 import { DimlessBinaryPipe } from '../pipes/dimless-binary.pipe';
 import { FormatterService } from '../services/formatter.service';
@@ -86,6 +86,12 @@ export class DimlessBinaryDirective implements OnInit {
   setValue(value: string) {
     if (/^[\d.]+$/.test(value)) {
       value += this.defaultUnit || 'm';
+    } else {
+      if (value) {
+        this.control.control.setValue(value);
+        this.control.control.addValidators(Validators.pattern(/^[a-zA-Z\d. ]+$/));
+        this.control.control.updateValueAndValidity();
+      }
     }
     const size = this.formatter.toBytes(value);
     const roundedSize = this.round(size);

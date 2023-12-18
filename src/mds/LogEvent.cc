@@ -29,7 +29,7 @@
 #include "events/ESessions.h"
 
 #include "events/EUpdate.h"
-#include "events/ESlaveUpdate.h"
+#include "events/EPeerUpdate.h"
 #include "events/EOpen.h"
 #include "events/ECommitted.h"
 #include "events/EPurged.h"
@@ -38,6 +38,9 @@
 #include "events/ETableServer.h"
 
 #include "events/ENoOp.h"
+
+#include "events/ESegment.h"
+#include "events/ELid.h"
 
 #define dout_context g_ceph_context
 
@@ -82,13 +85,15 @@ std::string_view LogEvent::get_type_str() const
   case EVENT_SESSIONS_OLD: return "SESSIONS_OLD";
   case EVENT_SESSIONS: return "SESSIONS";
   case EVENT_UPDATE: return "UPDATE";
-  case EVENT_SLAVEUPDATE: return "SLAVEUPDATE";
+  case EVENT_PEERUPDATE: return "PEERUPDATE";
   case EVENT_OPEN: return "OPEN";
   case EVENT_COMMITTED: return "COMMITTED";
   case EVENT_PURGED: return "PURGED";
   case EVENT_TABLECLIENT: return "TABLECLIENT";
   case EVENT_TABLESERVER: return "TABLESERVER";
   case EVENT_NOOP: return "NOOP";
+  case EVENT_SEGMENT: return "SEGMENT";
+  case EVENT_LID: return "LID";
 
   default:
     generic_dout(0) << "get_type_str: unknown type " << _type << dendl;
@@ -108,13 +113,15 @@ const std::map<std::string, LogEvent::EventType> LogEvent::types = {
   {"SESSIONS_OLD", EVENT_SESSIONS_OLD},
   {"SESSIONS", EVENT_SESSIONS},
   {"UPDATE", EVENT_UPDATE},
-  {"SLAVEUPDATE", EVENT_SLAVEUPDATE},
+  {"PEERUPDATE", EVENT_PEERUPDATE},
   {"OPEN", EVENT_OPEN},
   {"COMMITTED", EVENT_COMMITTED},
   {"PURGED", EVENT_PURGED},
   {"TABLECLIENT", EVENT_TABLECLIENT},
   {"TABLESERVER", EVENT_TABLESERVER},
-  {"NOOP", EVENT_NOOP}
+  {"NOOP", EVENT_NOOP},
+  {"SEGMENT", EVENT_SEGMENT},
+  {"LID", EVENT_LID}
 };
 
 /*
@@ -174,8 +181,8 @@ std::unique_ptr<LogEvent> LogEvent::decode_event(bufferlist::const_iterator& p, 
   case EVENT_UPDATE:
     le = std::make_unique<EUpdate>();
     break;
-  case EVENT_SLAVEUPDATE:
-    le = std::make_unique<ESlaveUpdate>();
+  case EVENT_PEERUPDATE:
+    le = std::make_unique<EPeerUpdate>();
     break;
   case EVENT_OPEN:
     le = std::make_unique<EOpen>();
@@ -194,6 +201,12 @@ std::unique_ptr<LogEvent> LogEvent::decode_event(bufferlist::const_iterator& p, 
     break;
   case EVENT_NOOP:
     le = std::make_unique<ENoOp>();
+    break;
+  case EVENT_SEGMENT:
+    le = std::make_unique<ESegment>();
+    break;
+  case EVENT_LID:
+    le = std::make_unique<ELid>();
     break;
   default:
     generic_dout(0) << "uh oh, unknown log event type " << type << " length " << length << dendl;

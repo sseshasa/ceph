@@ -61,6 +61,12 @@ TEST(formatable, str2) {
 
 }
 
+TEST(formatable, str3) {
+  JSONFormattable f;
+  get_jf("{ \"foo\": \"1234bar56\" }", &f);
+  ASSERT_EQ((string)f["foo"], "1234bar56");
+}
+
 TEST(formatable, int) {
   JSONFormattable f;
   get_jf("{ \"foo\": 1 }", &f);
@@ -191,6 +197,12 @@ TEST(formatable, set) {
   f.set("obj.c", "30");
 
   ASSERT_EQ((int)f["obj"]["c"], 30);
+}
+
+TEST(formatable, set2) {
+  JSONFormattable f;
+  f.set("foo", "1234bar56");
+  ASSERT_EQ((string)f["foo"], "1234bar56");
 }
 
 TEST(formatable, erase) {
@@ -324,13 +336,13 @@ TEST(formatable, encode_simple) {
 
 
 struct struct1 {
-  long i;
+  long long i;
   string s;
   bool b;
 
   struct1() {
     void *p = (void *)this;
-    i = (long)p;
+    i = (long long)p;
     char buf[32];
     snprintf(buf, sizeof(buf), "%p", p);
     s = buf;
@@ -351,12 +363,12 @@ struct struct1 {
 
   bool compare(const JSONFormattable& jf) const {
     bool ret = (s == (string)jf["s"] &&
-            i == (long)jf["i"] &&
+            i == (long long)jf["i"] &&
             b == (bool)jf["b"]);
 
     if (!ret) {
       cout << "failed comparison: s=" << s << " jf[s]=" << (string)jf["s"] << 
-        " i=" << i << " jf[i]=" << (long)jf["i"] << " b=" << b << " jf[b]=" << (bool)jf["b"] << std::endl;
+        " i=" << i << " jf[i]=" << (long long)jf["i"] << " b=" << b << " jf[b]=" << (bool)jf["b"] << std::endl;
       dumpf(jf);
     }
 
@@ -371,7 +383,7 @@ struct struct2 {
 
   struct2() {
     void *p = (void *)this;
-    long i = (long)p;
+    long long i = (long long)p;
     v.resize((i >> 16) % 16 + 1);
   }
 

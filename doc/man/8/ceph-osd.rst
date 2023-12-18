@@ -1,5 +1,7 @@
 :orphan:
 
+.. _ceph_osd-daemon:
+
 ========================================
  ceph-osd -- ceph object storage daemon
 ========================================
@@ -10,20 +12,22 @@ Synopsis
 ========
 
 | **ceph-osd** -i *osdnum* [ --osd-data *datapath* ] [ --osd-journal
-  *journal* ] [ --mkfs ] [ --mkjournal ] [--flush-journal] [--check-allows-journal] [--check-wants-journal] [--check-needs-journal] [ --mkkey ]
+  *journal* ] [ --mkfs ] [ --mkjournal ] [--flush-journal] [--check-allows-journal] [--check-wants-journal] [--check-needs-journal] [ --mkkey ] [ --osdspec-affinity ]
 
 
 Description
 ===========
 
-**ceph-osd** is the object storage daemon for the Ceph distributed file
-system. It is responsible for storing objects on a local file system
-and providing access to them over the network.
+**ceph-osd** is the **o**\bject **s**\torage **d**\aemon for the Ceph
+distributed file system. It manages data on local storage with redundancy and
+provides access to that data over the network. 
 
-The datapath argument should be a directory on a xfs file system
-where the object data resides. The journal is optional, and is only
-useful performance-wise when it resides on a different disk than
-datapath with low latency (ideally, an NVRAM device).
+For Filestore-backed clusters, the argument of the ``--osd-data datapath``
+option (which is ``datapath`` in this example) should be a directory on an XFS
+file system where the object data resides. The journal is optional. The journal
+improves performance only when it resides on a different disk than the disk
+specified by ``datapath`` . The storage medium on which the journal is stored
+should be a low-latency medium (ideally, an SSD device).
 
 
 Options
@@ -118,12 +122,16 @@ Options
    Connect to specified monitor (instead of looking through
    ``ceph.conf``).
 
+.. option:: --osdspec-affinity
+
+   Set an affinity to a certain OSDSpec.
+   This option can only be used in conjunction with --mkfs.
 
 Availability
 ============
 
 **ceph-osd** is part of Ceph, a massively scalable, open-source, distributed storage system. Please refer to
-the Ceph documentation at http://ceph.com/docs for more information.
+the Ceph documentation at https://docs.ceph.com for more information.
 
 See also
 ========

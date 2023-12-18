@@ -51,7 +51,7 @@ class health_check_map_t;
  * bound on the actual osd death.  down_at (if it is > up_from) is an
  * upper bound on the actual osd death.
  *
- * the second is the last_clean interval [first,last].  in that case,
+ * the second is the last_clean interval [begin,end).  in that case,
  * the last interval is the last epoch known to have been either
  * _finished_, or during which the osd cleanly shut down.  when
  * possible, we push this forward to the epoch the osd was eventually
@@ -364,6 +364,19 @@ public:
     int64_t new_pool_max; //incremented by the OSDMonitor on each pool create
     int32_t new_flags;
     ceph_release_t new_require_osd_release{0xff};
+    uint32_t new_stretch_bucket_count{0};
+    uint32_t new_degraded_stretch_mode{0};
+    uint32_t new_recovering_stretch_mode{0};
+    int32_t new_stretch_mode_bucket{0};
+    bool stretch_mode_enabled{false};
+    bool change_stretch_mode{false};
+
+    enum class mutate_allow_crimson_t : uint8_t {
+      NONE = 0,
+      SET = 1,
+      // Monitor won't allow CLEAR to be set currently, but we may allow it later
+      CLEAR = 2
+    } mutate_allow_crimson = mutate_allow_crimson_t::NONE;
 
     // full (rare)
     ceph::buffer::list fullmap;  // in lieu of below.
@@ -389,14 +402,17 @@ public:
     mempool::osdmap::map<int32_t,uuid_d> new_uuid;
     mempool::osdmap::map<int32_t,osd_xinfo_t> new_xinfo;
 
-    mempool::osdmap::map<entity_addr_t,utime_t> new_blacklist;
-    mempool::osdmap::vector<entity_addr_t> old_blacklist;
+    mempool::osdmap::map<entity_addr_t,utime_t> new_blocklist;
+    mempool::osdmap::vector<entity_addr_t> old_blocklist;
+    mempool::osdmap::map<entity_addr_t,utime_t> new_range_blocklist;
+    mempool::osdmap::vector<entity_addr_t> old_range_blocklist;
     mempool::osdmap::map<int32_t, entity_addrvec_t> new_hb_back_up;
     mempool::osdmap::map<int32_t, entity_addrvec_t> new_hb_front_up;
 
     mempool::osdmap::map<pg_t,mempool::osdmap::vector<int32_t>> new_pg_upmap;
     mempool::osdmap::map<pg_t,mempool::osdmap::vector<std::pair<int32_t,int32_t>>> new_pg_upmap_items;
-    mempool::osdmap::set<pg_t> old_pg_upmap, old_pg_upmap_items;
+    mempool::osdmap::map<pg_t, int32_t> new_pg_upmap_primary;
+    mempool::osdmap::set<pg_t> old_pg_upmap, old_pg_upmap_items, old_pg_upmap_primary;
     mempool::osdmap::map<int64_t, snap_interval_set_t> new_removed_snaps;
     mempool::osdmap::map<int64_t, snap_interval_set_t> new_purged_snaps;
 
@@ -459,8 +475,8 @@ public:
       return new_erasure_code_profiles;
     }
 
-    /// propagate update pools' snap metadata to any of their tiers
-    int propagate_snaps_to_tiers(CephContext *cct, const OSDMap &base);
+    /// propagate update pools' (snap and other) metadata to any of their tiers
+    int propagate_base_properties_to_tiers(CephContext *cct, const OSDMap &base);
 
     /// filter out osds with any pending state changing
     size_t get_pending_state_osds(std::vector<int> *osds) {
@@ -508,6 +524,8 @@ public:
       }
       return p->second.contains(snap);
     }
+
+    void set_allow_crimson() { mutate_allow_crimson = mutate_allow_crimson_t::SET; }
   };
   
 private:
@@ -567,16 +585,41 @@ private:
   // remap (post-CRUSH, pre-up)
   mempool::osdmap::map<pg_t,mempool::osdmap::vector<int32_t>> pg_upmap; ///< remap pg
   mempool::osdmap::map<pg_t,mempool::osdmap::vector<std::pair<int32_t,int32_t>>> pg_upmap_items; ///< remap osds in up set
+  mempool::osdmap::map<pg_t, int32_t> pg_upmap_primaries; ///< remap primary of a pg
 
   mempool::osdmap::map<int64_t,pg_pool_t> pools;
   mempool::osdmap::map<int64_t,std::string> pool_name;
   mempool::osdmap::map<std::string, std::map<std::string,std::string>> erasure_code_profiles;
-  mempool::osdmap::map<std::string,int64_t> name_pool;
+  mempool::osdmap::map<std::string,int64_t, std::less<>> name_pool;
 
   std::shared_ptr< mempool::osdmap::vector<uuid_d> > osd_uuid;
   mempool::osdmap::vector<osd_xinfo_t> osd_xinfo;
 
-  mempool::osdmap::unordered_map<entity_addr_t,utime_t> blacklist;
+  class range_bits {
+    struct ip6 {
+      uint64_t upper_64_bits, lower_64_bits;
+      uint64_t upper_mask, lower_mask;
+    };
+    struct ip4 {
+      uint32_t ip_32_bits;
+      uint32_t mask;
+    };
+    union {
+      ip6 ipv6;
+      ip4 ipv4;
+    } bits;
+    bool ipv6;
+    static void get_ipv6_bytes(unsigned const char *addr,
+			uint64_t *upper, uint64_t *lower);
+  public:
+    range_bits();
+    range_bits(const entity_addr_t& addr);
+    void parse(const entity_addr_t& addr);
+    bool matches(const entity_addr_t& addr) const;
+  };
+  mempool::osdmap::unordered_map<entity_addr_t,utime_t> blocklist;
+  mempool::osdmap::map<entity_addr_t,utime_t> range_blocklist;
+  mempool::osdmap::map<entity_addr_t,range_bits> calculated_ranges;
 
   /// queue of snaps to remove
   mempool::osdmap::map<int64_t, snap_interval_set_t> removed_snaps_queue;
@@ -589,7 +632,7 @@ private:
 
   epoch_t cluster_snapshot_epoch;
   std::string cluster_snapshot;
-  bool new_blacklist_entries;
+  bool new_blocklist_entries;
 
   float full_ratio = 0, backfillfull_ratio = 0, nearfull_ratio = 0;
 
@@ -611,8 +654,15 @@ private:
  public:
   bool have_crc() const { return crc_defined; }
   uint32_t get_crc() const { return crc; }
+  bool any_osd_laggy() const;
 
   std::shared_ptr<CrushWrapper> crush;       // hierarchical map
+  bool stretch_mode_enabled; // we are in stretch mode, requiring multiple sites
+  uint32_t stretch_bucket_count; // number of sites we expect to be in
+  uint32_t degraded_stretch_mode; // 0 if not degraded; else count of up sites
+  uint32_t recovering_stretch_mode; // 0 if not recovering; else 1
+  int32_t stretch_mode_bucket; // the bucket type we're stretched across
+  bool allow_crimson{false};
 private:
   uint32_t crush_version = 1;
 
@@ -629,10 +679,12 @@ private:
 	     primary_temp(std::make_shared<mempool::osdmap::map<pg_t,int32_t>>()),
 	     osd_uuid(std::make_shared<mempool::osdmap::vector<uuid_d>>()),
 	     cluster_snapshot_epoch(0),
-	     new_blacklist_entries(false),
+	     new_blocklist_entries(false),
 	     cached_up_osd_features(0),
 	     crc_defined(false), crc(0),
-	     crush(std::make_shared<CrushWrapper>()) {
+	     crush(std::make_shared<CrushWrapper>()),
+	     stretch_mode_enabled(false), stretch_bucket_count(0),
+	     degraded_stretch_mode(0), recovering_stretch_mode(0), stretch_mode_bucket(0) {
   }
 
 private:
@@ -680,10 +732,12 @@ public:
   const utime_t& get_created() const { return created; }
   const utime_t& get_modified() const { return modified; }
 
-  bool is_blacklisted(const entity_addr_t& a) const;
-  bool is_blacklisted(const entity_addrvec_t& a) const;
-  void get_blacklist(std::list<std::pair<entity_addr_t,utime_t > > *bl) const;
-  void get_blacklist(std::set<entity_addr_t> *bl) const;
+  bool is_blocklisted(const entity_addr_t& a, CephContext *cct=nullptr) const;
+  bool is_blocklisted(const entity_addrvec_t& a, CephContext *cct=nullptr) const;
+  void get_blocklist(std::list<std::pair<entity_addr_t,utime_t > > *bl,
+		     std::list<std::pair<entity_addr_t,utime_t> > *rl) const;
+  void get_blocklist(std::set<entity_addr_t> *bl,
+		     std::set<entity_addr_t> *rl) const;
 
   std::string get_cluster_snapshot() const {
     if (cluster_snapshot_epoch == epoch)
@@ -707,6 +761,9 @@ public:
   void get_full_osd_counts(std::set<int> *full, std::set<int> *backfill,
 			   std::set<int> *nearfull) const;
 
+  void get_out_of_subnet_osd_counts(CephContext *cct,
+                                    std::string const &public_network,
+                                    std::set<int> *unreachable) const;
 
   /***** cluster state *****/
   /* osds */
@@ -810,6 +867,10 @@ public:
   }
   const mempool::osdmap::map<std::string,std::map<std::string,std::string>> &get_erasure_code_profiles() const {
     return erasure_code_profiles;
+  }
+
+  bool get_allow_crimson() const {
+    return allow_crimson;
   }
 
   bool exists(int osd) const {
@@ -1299,7 +1360,7 @@ public:
     return new_purged_snaps;
   }
 
-  int64_t lookup_pg_pool_name(const std::string& name) const {
+  int64_t lookup_pg_pool_name(std::string_view name) const {
     auto p = name_pool.find(name);
     if (p == name_pool.end())
       return -ENOENT;
@@ -1412,14 +1473,191 @@ public:
     std::vector<int> *orig,
     std::vector<int> *out);             ///< resulting alternative mapping
 
+  int balance_primaries(
+    CephContext *cct,
+    int64_t pid,
+    Incremental *pending_inc,
+    OSDMap& tmp_osd_map) const;
+
+  int calc_desired_primary_distribution(
+    CephContext *cct,
+    int64_t pid, // pool id
+    const std::vector<uint64_t> &osds,
+    std::map<uint64_t, float>& desired_primary_distribution) const; // vector of osd ids
+
   int calc_pg_upmaps(
     CephContext *cct,
     uint32_t max_deviation, ///< max deviation from target (value >= 1)
     int max_iterations,  ///< max iterations to run
     const std::set<int64_t>& pools,        ///< [optional] restrict to pool
-    Incremental *pending_inc
+    Incremental *pending_inc,
+    std::random_device::result_type *p_seed = nullptr  ///< [optional] for regression tests
     );
 
+  std::map<uint64_t,std::set<pg_t>> get_pgs_by_osd(
+    CephContext *cct,
+    int64_t pid,
+    std::map<uint64_t, std::set<pg_t>> *p_primaries_by_osd = nullptr,
+    std::map<uint64_t, std::set<pg_t>> *p_acting_primaries_by_osd = nullptr
+  ) const; // used in calc_desired_primary_distribution()
+
+private: // Bunch of internal functions used only by calc_pg_upmaps (result of code refactoring)
+
+  float get_osds_weight(
+    CephContext *cct,
+    const OSDMap& tmp_osd_map,
+    int64_t pid,
+    std::map<int,float>& osds_weight
+  ) const;
+
+  float build_pool_pgs_info (
+    CephContext *cct,
+    const std::set<int64_t>& pools,        ///< [optional] restrict to pool
+    const OSDMap& tmp_osd_map,
+    int& total_pgs,
+    std::map<int, std::set<pg_t>>& pgs_by_osd,
+    std::map<int,float>& osds_weight
+  );  // return total weight of all OSDs
+
+  float calc_deviations (
+    CephContext *cct,
+    const std::map<int,std::set<pg_t>>& pgs_by_osd,
+    const std::map<int,float>& osd_weight,
+    float pgs_per_weight,
+    std::map<int,float>& osd_deviation,
+    std::multimap<float,int>& deviation_osd,
+    float& stddev
+  );  // return current max deviation
+
+  void fill_overfull_underfull (
+    CephContext *cct,
+    const std::multimap<float,int>& deviation_osd,
+    int max_deviation,
+    std::set<int>& overfull,
+    std::set<int>& more_overfull,
+    std::vector<int>& underfull,
+    std::vector<int>& more_underfull
+  );
+
+  int pack_upmap_results(
+    CephContext *cct,
+    const std::set<pg_t>& to_unmap,
+    const std::map<pg_t, mempool::osdmap::vector<std::pair<int, int>>>& to_upmap,
+    OSDMap& tmp_osd_map,
+    OSDMap::Incremental *pending_inc
+  );
+  
+  std::default_random_engine get_random_engine(
+    CephContext *cct,
+    std::random_device::result_type *p_seed
+  );
+
+  bool try_drop_remap_overfull(
+    CephContext *cct,
+    const std::vector<pg_t>& pgs,
+    const OSDMap& tmp_osd_map,
+    int osd,
+    std::map<int,std::set<pg_t>>& temp_pgs_by_osd,
+    std::set<pg_t>& to_unmap,
+    std::map<pg_t, mempool::osdmap::vector<std::pair<int32_t,int32_t>>>& to_upmap
+  );
+
+typedef std::vector<std::pair<pg_t, mempool::osdmap::vector<std::pair<int, int>>>>
+  candidates_t;
+
+bool try_drop_remap_underfull(
+    CephContext *cct,
+    const candidates_t& candidates,
+    int osd,
+    std::map<int,std::set<pg_t>>& temp_pgs_by_osd,
+    std::set<pg_t>& to_unmap,
+    std::map<pg_t, mempool::osdmap::vector<std::pair<int32_t,int32_t>>>& to_upmap
+  );
+
+  void add_remap_pair(
+    CephContext *cct,
+    int orig,
+    int out, 
+    pg_t pg,
+    size_t pg_pool_size,
+    int osd,
+    std::set<int>& existing,
+    std::map<int,std::set<pg_t>>& temp_pgs_by_osd,
+    mempool::osdmap::vector<std::pair<int32_t,int32_t>> new_upmap_items,
+    std::map<pg_t, mempool::osdmap::vector<std::pair<int32_t,int32_t>>>& to_upmap
+  );
+
+  int find_best_remap (
+    CephContext *cct,
+    const std::vector<int>& orig,
+    const std::vector<int>& out,
+    const std::set<int>& existing,
+    const std::map<int,float> osd_deviation
+  );
+
+  candidates_t build_candidates(
+    CephContext *cct,
+    const OSDMap& tmp_osd_map,
+    const std::set<pg_t> to_skip,
+    const std::set<int64_t>& only_pools,
+    bool aggressive,
+    std::random_device::result_type *p_seed
+  );
+
+public:
+    typedef struct {
+      float pa_avg;
+      float pa_weighted;
+      float pa_weighted_avg;
+      float raw_score;
+      float optimal_score;  	// based on primary_affinity values
+      float adjusted_score; 	// based on raw_score and pa_avg 1 is optimal
+      float acting_raw_score;   // based on active_primaries (temporary)
+      float acting_adj_score;   // based on raw_active_score and pa_avg 1 is optimal
+      std::string  err_msg;
+    } read_balance_info_t;
+  //
+  // This function calculates scores about the cluster read balance state
+  // p_rb_info->acting_adj_score is the current read balance score (acting)
+  // p_rb_info->adjusted_score is the stable read balance score 
+  // Return value of 0 is OK, negative means an error (may happen with
+  // some arifically generated osamap files)
+  //
+  int calc_read_balance_score(
+    CephContext *cct,
+    int64_t pool_id,
+    read_balance_info_t *p_rb_info) const;
+
+private:
+  float rbi_round(float f) const {
+    return (f > 0.0) ? floor(f * 100 + 0.5) / 100 : ceil(f * 100 - 0.5) / 100;
+  }
+
+  int64_t has_zero_pa_pgs(
+    CephContext *cct,
+    int64_t pool_id) const;
+
+  void zero_rbi(
+    read_balance_info_t &rbi
+  ) const;
+
+  int set_rbi(
+    CephContext *cct,
+    read_balance_info_t &rbi,
+    int64_t pool_id,
+    float total_w_pa,
+    float pa_sum,
+    int num_osds,
+    int osd_pa_count,
+    float total_osd_weight,
+    uint max_prims_per_osd,
+    uint max_acting_prims_per_osd,
+    float avg_prims_per_osd,
+    bool prim_on_zero_pa,
+    bool acting_on_zero_pa,
+    float max_osd_score) const;
+
+public:
   int get_osds_by_bucket_name(const std::string &name, std::set<int> *osds) const;
 
   bool have_pg_upmaps(pg_t pg) const {
@@ -1487,10 +1725,10 @@ public:
 private:
   void print_osd_line(int cur, std::ostream *out, ceph::Formatter *f) const;
 public:
-  void print(std::ostream& out) const;
+  void print(CephContext *cct, std::ostream& out) const;
   void print_osd(int id, std::ostream& out) const;
   void print_osds(std::ostream& out) const;
-  void print_pools(std::ostream& out) const;
+  void print_pools(CephContext *cct, std::ostream& out) const;
   void print_summary(ceph::Formatter *f, std::ostream& out,
 		     const std::string& prefix, bool extra=false) const;
   void print_oneline_summary(std::ostream& out) const;
@@ -1516,11 +1754,13 @@ public:
   static void dump_erasure_code_profiles(
     const mempool::osdmap::map<std::string,std::map<std::string,std::string> > &profiles,
     ceph::Formatter *f);
-  void dump(ceph::Formatter *f) const;
+  void dump(ceph::Formatter *f, CephContext *cct = nullptr) const;
   void dump_osd(int id, ceph::Formatter *f) const;
   void dump_osds(ceph::Formatter *f) const;
+  void dump_pool(CephContext *cct, int64_t pid, const pg_pool_t &pdata, ceph::Formatter *f) const;
+  void dump_read_balance_score(CephContext *cct, int64_t pid, const pg_pool_t &pdata, ceph::Formatter *f) const;
   static void generate_test_instances(std::list<OSDMap*>& o);
-  bool check_new_blacklist_entries() const { return new_blacklist_entries; }
+  bool check_new_blocklist_entries() const { return new_blocklist_entries; }
 
   void check_health(CephContext *cct, health_check_map_t *checks) const;
 
@@ -1529,13 +1769,16 @@ public:
 			std::ostream *ss) const;
 
   float pool_raw_used_rate(int64_t poolid) const;
+  std::optional<std::string> pending_require_osd_release() const;
 
 };
 WRITE_CLASS_ENCODER_FEATURES(OSDMap)
 WRITE_CLASS_ENCODER_FEATURES(OSDMap::Incremental)
 
 #ifdef WITH_SEASTAR
-using OSDMapRef = boost::local_shared_ptr<const OSDMap>;
+#include "crimson/common/local_shared_foreign_ptr.h"
+using LocalOSDMapRef = boost::local_shared_ptr<const OSDMap>;
+using OSDMapRef = crimson::local_shared_foreign_ptr<LocalOSDMapRef>;
 #else
 using OSDMapRef = std::shared_ptr<const OSDMap>;
 #endif

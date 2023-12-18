@@ -1,7 +1,6 @@
-<cd-modal [modalRef]="bsModalRef">
-  <ng-container i18n="form title|Example: Create Pool@@formTitle"
-                class="modal-title">{{ action | titlecase }} {{ resource | upperFirst }}
-  </ng-container>
+<cd-modal [modalRef]="activeModal">
+  <ng-container i18n="form title"
+                class="modal-title">{{ action | titlecase }} {{ resource | upperFirst }}</ng-container>
 
   <ng-container class="modal-content">
     <div class="modal-body">
@@ -11,7 +10,7 @@
           <label class="cd-col-form-label"
                  for="user"
                  i18n>Username</label>
-          <div class="cd-col-form-inpu">
+          <div class="cd-col-form-input">
             <input id="user"
                    name="user"
                    class="form-control"
@@ -26,7 +25,7 @@
           <label class="cd-col-form-label"
                  for="secret_key"
                  i18n>Secret key</label>
-          <div class="cd-col-form-inpu">
+          <div class="cd-col-form-input">
             <div class="input-group">
               <input id="secret_key"
                      name="secret_key"
@@ -34,16 +33,12 @@
                      type="password"
                      [(ngModel)]="secret_key"
                      [readonly]="true">
-              <span class="input-group-append">
-                <button type="button"
-                        class="btn btn-light"
-                        cdPasswordButton="secret_key">
-                </button>
-                <button type="button"
-                        class="btn btn-light"
-                        cdCopy2ClipboardButton="secret_key">
-                </button>
-              </span>
+              <button type="button"
+                      class="btn btn-light"
+                      cdPasswordButton="secret_key">
+              </button>
+              <cd-copy-2-clipboard-button source="secret_key">
+              </cd-copy-2-clipboard-button>
             </div>
           </div>
         </div>
@@ -51,7 +46,7 @@
     </div>
 
     <div class="modal-footer">
-      <cd-back-button [back]="bsModalRef.hide"></cd-back-button>
+      <cd-back-button (backAction)="activeModal.close()"></cd-back-button>
     </div>
   </ng-container>
 </cd-modal>

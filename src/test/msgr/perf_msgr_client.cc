@@ -57,7 +57,7 @@ class MessengerClient {
     bool ms_handle_reset(Connection *con) override { return true; }
     void ms_handle_remote_reset(Connection *con) override {}
     bool ms_handle_refused(Connection *con) override { return false; }
-    int ms_handle_authentication(Connection *con) override {
+    int ms_handle_fast_authentication(Connection *con) override {
       return 1;
     }
   };
@@ -136,7 +136,7 @@ class MessengerClient {
     addr.set_nonce(0);
     dummy_auth.auth_registry.refresh_config();
     for (int i = 0; i < jobs; ++i) {
-      Messenger *msgr = Messenger::create(g_ceph_context, type, entity_name_t::CLIENT(0), "client", getpid()+i, 0);
+      Messenger *msgr = Messenger::create(g_ceph_context, type, entity_name_t::CLIENT(0), "client", getpid()+i);
       msgr->set_default_policy(Messenger::Policy::lossless_client(0));
       msgr->set_auth_client(&dummy_auth);
       msgr->start();
@@ -177,8 +177,7 @@ void usage(const string &name) {
 
 int main(int argc, char **argv)
 {
-  vector<const char*> args;
-  argv_to_vec(argc, (const char **)argv, args);
+  auto args = argv_to_vec(argc, argv);
 
   auto cct = global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT,
 			 CODE_ENVIRONMENT_UTILITY,

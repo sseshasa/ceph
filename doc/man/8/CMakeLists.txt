@@ -9,10 +9,10 @@ set(client_srcs
   ceph-dencoder.rst)
 
 set(server_srcs
-  ceph-deploy.rst
   crushtool.rst
   ceph-run.rst
   mount.ceph.rst
+  mount.fuse.ceph.rst
   ceph-create-keys.rst)
 if(WITH_TESTS)
 list(APPEND server_srcs
@@ -24,6 +24,7 @@ set(osd_srcs
   ceph-volume.rst
   ceph-volume-systemd.rst
   ceph-osd.rst
+  crushdiff.rst
   osdmaptool.rst
   ceph-bluestore-tool.rst)
 
@@ -37,8 +38,15 @@ list(APPEND man_srcs
   ${osd_srcs}
   ${mon_srcs}
   ceph-mds.rst
+  cephfs-top.rst
   librados-config.rst
-  cephadm.rst)
+  cephadm.rst
+  cephfs-mirror.rst)
+
+if(WITH_CEPHFS_SHELL)
+  list(APPEND man_srcs
+    cephfs-shell.rst)
+endif()
 
 if(HAVE_LIBFUSE)
   list(APPEND man_srcs
@@ -51,7 +59,9 @@ if(WITH_RADOSGW)
 	radosgw.rst
 	radosgw-admin.rst
 	rgw-orphan-list.rst
-	ceph-diff-sorted.rst)
+	rgw-policy-check.rst
+	ceph-diff-sorted.rst
+	rgw-restore-bucket-index.rst)
 endif()
 
 if(WITH_RBD)

@@ -1,15 +1,14 @@
 import { Component, OnInit } from '@angular/core';
-import { FormControl, ValidatorFn, Validators } from '@angular/forms';
+import { UntypedFormControl, ValidatorFn, Validators } from '@angular/forms';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
-import { BsModalRef } from 'ngx-bootstrap/modal';
+import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
+import _ from 'lodash';
 
-import { CdFormBuilder } from '../../forms/cd-form-builder';
-import { CdFormGroup } from '../../forms/cd-form-group';
-import { CdFormModalFieldConfig } from '../../models/cd-form-modal-field-config';
-import { DimlessBinaryPipe } from '../../pipes/dimless-binary.pipe';
-import { FormatterService } from '../../services/formatter.service';
+import { CdFormBuilder } from '~/app/shared/forms/cd-form-builder';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { CdFormModalFieldConfig } from '~/app/shared/models/cd-form-modal-field-config';
+import { DimlessBinaryPipe } from '~/app/shared/pipes/dimless-binary.pipe';
+import { FormatterService } from '~/app/shared/services/formatter.service';
 
 @Component({
   selector: 'cd-form-modal',
@@ -28,11 +27,10 @@ export class FormModalComponent implements OnInit {
   formGroup: CdFormGroup;
 
   constructor(
-    public bsModalRef: BsModalRef,
+    public activeModal: NgbActiveModal,
     private formBuilder: CdFormBuilder,
     private formatter: FormatterService,
-    private dimlessBinaryPipe: DimlessBinaryPipe,
-    private i18n: I18n
+    private dimlessBinaryPipe: DimlessBinaryPipe
   ) {}
 
   ngOnInit() {
@@ -40,14 +38,14 @@ export class FormModalComponent implements OnInit {
   }
 
   createForm() {
-    const controlsConfig: Record<string, FormControl> = {};
+    const controlsConfig: Record<string, UntypedFormControl> = {};
     this.fields.forEach((field) => {
       controlsConfig[field.name] = this.createFormControl(field);
     });
     this.formGroup = this.formBuilder.group(controlsConfig);
   }
 
-  private createFormControl(field: CdFormModalFieldConfig): FormControl {
+  private createFormControl(field: CdFormModalFieldConfig): UntypedFormControl {
     let validators: ValidatorFn[] = [];
     if (_.isBoolean(field.required) && field.required) {
       validators.push(Validators.required);
@@ -55,7 +53,7 @@ export class FormModalComponent implements OnInit {
     if (field.validators) {
       validators = validators.concat(field.validators);
     }
-    return new FormControl(
+    return new UntypedFormControl(
       _.defaultTo(
         field.type === 'binary' ? this.dimlessBinaryPipe.transform(field.value) : field.value,
         null
@@ -86,12 +84,15 @@ export class FormModalComponent implements OnInit {
     if (['binaryMin', 'binaryMax'].includes(error)) {
       // binaryMin and binaryMax return a function that take I18n to
       // provide a translated error message.
-      return errorContext(this.i18n);
+      return errorContext();
     }
     if (error === 'required') {
-      return this.i18n('This field is required.');
+      return $localize`This field is required.`;
     }
-    return this.i18n('An error occurred.');
+    if (error === 'pattern') {
+      return $localize`Size must be a number or in a valid format. eg: 5 GiB`;
+    }
+    return $localize`An error occurred.`;
   }
 
   onSubmitForm(values: any) {
@@ -104,7 +105,7 @@ export class FormModalComponent implements OnInit {
         values[key] = this.formatter.toBytes(value);
       }
     });
-    this.bsModalRef.hide();
+    this.activeModal.close();
     if (_.isFunction(this.onSubmit)) {
       this.onSubmit(values);
     }

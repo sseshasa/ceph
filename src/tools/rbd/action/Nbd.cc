@@ -21,6 +21,10 @@ namespace po = boost::program_options;
 static int call_nbd_cmd(const po::variables_map &vm,
                         const std::vector<std::string> &args,
                         const std::vector<std::string> &ceph_global_init_args) {
+  #if defined(__FreeBSD__) || defined(_WIN32)
+  std::cerr << "rbd: nbd device is not supported" << std::endl;
+  return -EOPNOTSUPP;
+  #else
   char exe_path[PATH_MAX];
   ssize_t exe_path_bytes = readlink("/proc/self/exe", exe_path,
 				    sizeof(exe_path) - 1);
@@ -53,56 +57,15 @@ static int call_nbd_cmd(const po::variables_map &vm,
   }
 
   return 0;
-}
-
-int get_image_or_snap_spec(const po::variables_map &vm, std::string *spec) {
-  size_t arg_index = 0;
-  std::string pool_name;
-  std::string nspace_name;
-  std::string image_name;
-  std::string snap_name;
-  int r = utils::get_pool_image_snapshot_names(
-    vm, at::ARGUMENT_MODIFIER_NONE, &arg_index, &pool_name, &nspace_name,
-    &image_name, &snap_name, true, utils::SNAPSHOT_PRESENCE_PERMITTED,
-    utils::SPEC_VALIDATION_NONE);
-  if (r < 0) {
-    return r;
-  }
-
-  spec->append(pool_name);
-  spec->append("/");
-  if (!nspace_name.empty()) {
-    spec->append(nspace_name);
-    spec->append("/");
-  }
-  spec->append(image_name);
-  if (!snap_name.empty()) {
-    spec->append("@");
-    spec->append(snap_name);
-  }
-
-  return 0;
-}
-
-int parse_options(const std::vector<std::string> &options,
-                  std::vector<std::string> *args) {
-  for (auto &opts : options) {
-    std::vector<std::string> args_;
-    boost::split(args_, opts, boost::is_any_of(","));
-    for (auto &o : args_) {
-      args->push_back("--" + o);
-    }
-  }
-
-  return 0;
+  #endif
 }
 
 int execute_list(const po::variables_map &vm,
                  const std::vector<std::string> &ceph_global_init_args) {
-#if defined(__FreeBSD__)
+#if defined(__FreeBSD__) || defined(_WIN32)
   std::cerr << "rbd: nbd device is not supported" << std::endl;
   return -EOPNOTSUPP;
-#endif
+#else
   std::vector<std::string> args;
 
   args.push_back("list-mapped");
@@ -116,23 +79,57 @@ int execute_list(const po::variables_map &vm,
   }
 
   return call_nbd_cmd(vm, args, ceph_global_init_args);
+#endif
 }
 
-int execute_map(const po::variables_map &vm,
-                const std::vector<std::string> &ceph_global_init_args) {
-#if defined(__FreeBSD__)
+int execute_attach(const po::variables_map &vm,
+                   const std::vector<std::string> &ceph_global_init_args) {
+#if defined(__FreeBSD__) || defined(_WIN32)
   std::cerr << "rbd: nbd device is not supported" << std::endl;
   return -EOPNOTSUPP;
-#endif
+#else
   std::vector<std::string> args;
+  std::string device_path;
 
-  args.push_back("map");
+  args.push_back("attach");
   std::string img;
-  int r = get_image_or_snap_spec(vm, &img);
+  int r = utils::get_image_or_snap_spec(vm, &img);
   if (r < 0) {
     return r;
   }
   args.push_back(img);
+
+  if (vm.count("device")) {
+    device_path = vm["device"].as<std::string>();
+    args.push_back("--device");
+    args.push_back(device_path);
+  } else {
+    std::cerr << "rbd: device was not specified" << std::endl;
+    return -EINVAL;
+  }
+
+  if (vm["show-cookie"].as<bool>()) {
+    args.push_back("--show-cookie");
+  }
+
+  if (vm.count("cookie")) {
+    args.push_back("--cookie");
+    args.push_back(vm["cookie"].as<std::string>());
+  } else if (!vm["force"].as<bool>()) {
+    std::cerr << "rbd: could not validate attach request\n";
+    std::cerr << "rbd: mismatching the image and the device may lead to data corruption\n";
+    std::cerr << "rbd: must specify --cookie <arg> or --force to proceed" << std::endl;
+    return -EINVAL;
+  }
+
+  if (vm.count(at::SNAPSHOT_ID)) {
+    args.push_back("--snap-id");
+    args.push_back(std::to_string(vm[at::SNAPSHOT_ID].as<uint64_t>()));
+  }
+
+  if (vm["quiesce"].as<bool>()) {
+    args.push_back("--quiesce");
+  }
 
   if (vm["read-only"].as<bool>()) {
     args.push_back("--read-only");
@@ -142,54 +139,162 @@ int execute_map(const po::variables_map &vm,
     args.push_back("--exclusive");
   }
 
+  if (vm.count("quiesce-hook")) {
+    args.push_back("--quiesce-hook");
+    args.push_back(vm["quiesce-hook"].as<std::string>());
+  }
+
   if (vm.count("options")) {
-    r = parse_options(vm["options"].as<std::vector<std::string>>(), &args);
-    if (r < 0) {
-      return r;
-    }
+    utils::append_options_as_args(vm["options"].as<std::vector<std::string>>(),
+                                  &args);
   }
 
   return call_nbd_cmd(vm, args, ceph_global_init_args);
+#endif
 }
 
-int execute_unmap(const po::variables_map &vm,
-                  const std::vector<std::string> &ceph_global_init_args) {
-#if defined(__FreeBSD__)
+int execute_detach(const po::variables_map &vm,
+                   const std::vector<std::string> &ceph_global_init_args) {
+#if defined(__FreeBSD__) || defined(_WIN32)
   std::cerr << "rbd: nbd device is not supported" << std::endl;
   return -EOPNOTSUPP;
-#endif
+#else
   std::string device_name = utils::get_positional_argument(vm, 0);
   if (!boost::starts_with(device_name, "/dev/")) {
     device_name.clear();
   }
 
+  std::vector<std::string> args;
+
+  args.push_back("detach");
   std::string image_name;
   if (device_name.empty()) {
-    int r = get_image_or_snap_spec(vm, &image_name);
+    int r = utils::get_image_or_snap_spec(vm, &image_name);
     if (r < 0) {
       return r;
     }
+
+    if (image_name.empty()) {
+      std::cerr << "rbd: detach requires either image name or device path"
+                << std::endl;
+      return -EINVAL;
+    }
+
+    if (vm.count(at::SNAPSHOT_ID)) {
+      args.push_back("--snap-id");
+      args.push_back(std::to_string(vm[at::SNAPSHOT_ID].as<uint64_t>()));
+    }
   }
 
-  if (device_name.empty() && image_name.empty()) {
-    std::cerr << "rbd: unmap requires either image name or device path"
-              << std::endl;
-    return -EINVAL;
+  args.push_back(device_name.empty() ? image_name : device_name);
+
+  if (vm.count("options")) {
+    utils::append_options_as_args(vm["options"].as<std::vector<std::string>>(),
+                                  &args);
+  }
+
+  return call_nbd_cmd(vm, args, ceph_global_init_args);
+#endif
+}
+
+int execute_map(const po::variables_map &vm,
+                const std::vector<std::string> &ceph_global_init_args) {
+#if defined(__FreeBSD__) || defined(_WIN32)
+  std::cerr << "rbd: nbd device is not supported" << std::endl;
+  return -EOPNOTSUPP;
+#else
+  std::vector<std::string> args;
+
+  args.push_back("map");
+  std::string img;
+  int r = utils::get_image_or_snap_spec(vm, &img);
+  if (r < 0) {
+    return r;
+  }
+  args.push_back(img);
+
+  if (vm["quiesce"].as<bool>()) {
+    args.push_back("--quiesce");
+  }
+
+  if (vm["show-cookie"].as<bool>()) {
+    args.push_back("--show-cookie");
+  }
+
+  if (vm.count("cookie")) {
+    args.push_back("--cookie");
+    args.push_back(vm["cookie"].as<std::string>());
+  }
+
+  if (vm.count(at::SNAPSHOT_ID)) {
+    args.push_back("--snap-id");
+    args.push_back(std::to_string(vm[at::SNAPSHOT_ID].as<uint64_t>()));
+  }
+
+  if (vm["read-only"].as<bool>()) {
+    args.push_back("--read-only");
+  }
+
+  if (vm["exclusive"].as<bool>()) {
+    args.push_back("--exclusive");
+  }
+
+  if (vm.count("quiesce-hook")) {
+    args.push_back("--quiesce-hook");
+    args.push_back(vm["quiesce-hook"].as<std::string>());
+  }
+
+  if (vm.count("options")) {
+    utils::append_options_as_args(vm["options"].as<std::vector<std::string>>(),
+                                  &args);
+  }
+
+  return call_nbd_cmd(vm, args, ceph_global_init_args);
+#endif
+}
+
+int execute_unmap(const po::variables_map &vm,
+                  const std::vector<std::string> &ceph_global_init_args) {
+#if defined(__FreeBSD__) || defined(_WIN32)
+  std::cerr << "rbd: nbd device is not supported" << std::endl;
+  return -EOPNOTSUPP;
+#else
+  std::string device_name = utils::get_positional_argument(vm, 0);
+  if (!boost::starts_with(device_name, "/dev/")) {
+    device_name.clear();
   }
 
   std::vector<std::string> args;
 
   args.push_back("unmap");
-  args.push_back(device_name.empty() ? image_name : device_name);
-
-  if (vm.count("options")) {
-    int r = parse_options(vm["options"].as<std::vector<std::string>>(), &args);
+  std::string image_name;
+  if (device_name.empty()) {
+    int r = utils::get_image_or_snap_spec(vm, &image_name);
     if (r < 0) {
       return r;
     }
+
+    if (image_name.empty()) {
+      std::cerr << "rbd: unmap requires either image name or device path"
+                << std::endl;
+      return -EINVAL;
+    }
+
+    if (vm.count(at::SNAPSHOT_ID)) {
+      args.push_back("--snap-id");
+      args.push_back(std::to_string(vm[at::SNAPSHOT_ID].as<uint64_t>()));
+    }
+  }
+
+  args.push_back(device_name.empty() ? image_name : device_name);
+
+  if (vm.count("options")) {
+    utils::append_options_as_args(vm["options"].as<std::vector<std::string>>(),
+                                  &args);
   }
 
   return call_nbd_cmd(vm, args, ceph_global_init_args);
+#endif
 }
 
 void get_list_arguments_deprecated(po::options_description *positional,
@@ -254,7 +359,7 @@ void get_unmap_arguments_deprecated(po::options_description *positional,
   positional->add_options()
     ("image-or-snap-or-device-spec",
      "image, snapshot, or device specification\n"
-     "[<pool-name>/]<image-name>[@<snapshot-name>] or <device-path>");
+     "[<pool-name>/]<image-name>[@<snap-name>] or <device-path>");
   at::add_pool_option(options, at::ARGUMENT_MODIFIER_NONE);
   at::add_image_option(options, at::ARGUMENT_MODIFIER_NONE);
   at::add_snap_option(options, at::ARGUMENT_MODIFIER_NONE);
@@ -266,8 +371,6 @@ int execute_unmap_deprecated(const po::variables_map &vm,
             << "use 'device unmap -t nbd' instead" << std::endl;
   return execute_unmap(vm, ceph_global_args);
 }
-
-Shell::SwitchArguments switched_arguments({"read-only", "exclusive"});
 
 Shell::Action action_show_deprecated(
   {"nbd", "list"}, {"nbd", "ls"}, "List the nbd devices already used.", "",

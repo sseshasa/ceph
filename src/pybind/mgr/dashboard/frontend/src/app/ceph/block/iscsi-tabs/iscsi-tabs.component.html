@@ -1,12 +1,16 @@
-<tabset>
-  <tab heading="Overview"
-       i18n-heading
-       [active]="url === '/block/iscsi/overview'"
-       (selectTab)="navigateTo('/block/iscsi/overview')">
-  </tab>
-  <tab heading="Targets"
-       i18n-heading
-       [active]="url === '/block/iscsi/targets'"
-       (selectTab)="navigateTo('/block/iscsi/targets')">
-  </tab>
-</tabset>
+<ul class="nav nav-tabs">
+  <li class="nav-item">
+    <a class="nav-link"
+       routerLink="/block/iscsi/overview"
+       routerLinkActive="active"
+       ariaCurrentWhenActive="page"
+       i18n>Overview</a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link"
+       routerLink="/block/iscsi/targets"
+       routerLinkActive="active"
+       ariaCurrentWhenActive="page"
+       i18n>Targets</a>
+  </li>
+</ul>

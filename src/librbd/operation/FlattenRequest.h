@@ -4,7 +4,6 @@
 #define CEPH_LIBRBD_OPERATION_FLATTEN_REQUEST_H
 
 #include "librbd/operation/Request.h"
-#include "common/snap_types.h"
 
 namespace librbd {
 
@@ -18,12 +17,12 @@ class FlattenRequest : public Request<ImageCtxT>
 {
 public:
   FlattenRequest(ImageCtxT &image_ctx, Context *on_finish,
-                 uint64_t overlap_objects, const ::SnapContext &snapc,
-                 ProgressContext &prog_ctx)
-    : Request<ImageCtxT>(image_ctx, on_finish),
-      m_overlap_objects(overlap_objects),
-      m_snapc(snapc), m_prog_ctx(prog_ctx) {
-  }
+                 uint64_t start_object_no, uint64_t overlap_objects,
+                 ProgressContext& prog_ctx)
+      : Request<ImageCtxT>(image_ctx, on_finish),
+        m_start_object_no(start_object_no),
+        m_overlap_objects(overlap_objects),
+        m_prog_ctx(prog_ctx) {}
 
 protected:
   void send_op() override;
@@ -43,6 +42,9 @@ private:
    * FLATTEN_OBJECTS
    *    |
    *    v
+   * CRYPTO_FLATTEN
+   *    |
+   *    v
    * DETACH_CHILD
    *    |
    *    v
@@ -54,12 +56,16 @@ private:
    * @endverbatim
    */
 
+  uint64_t m_start_object_no;
   uint64_t m_overlap_objects;
-  ::SnapContext m_snapc;
   ProgressContext &m_prog_ctx;
 
   void flatten_objects();
   void handle_flatten_objects(int r);
+
+
+  void crypto_flatten();
+  void handle_crypto_flatten(int r);
 
   void detach_child();
   void handle_detach_child(int r);

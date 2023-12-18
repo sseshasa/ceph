@@ -42,8 +42,10 @@ public:
   {}
   ~SharedLRU() {
     cache.clear();
-    // use plain assert() in utiliy classes to avoid dependencies on logging
-    assert(weak_refs.empty());
+    // initially, we were assuming that no pointer obtained from SharedLRU
+    // can outlive the lru itself. However, since going with the interruption
+    // concept for handling shutdowns, this is no longer valid.
+    weak_refs.clear();
   }
   /**
    * Returns a reference to the given key, and perform an insertion if such
@@ -81,6 +83,7 @@ public:
     cache.clear();
   }
   shared_ptr_t find(const K& key);
+  K cached_key_lower_bound();
   // return the last element that is not greater than key
   shared_ptr_t lower_bound(const K& key);
   // return the first element that is greater than key
@@ -142,6 +145,15 @@ SharedLRU<K,V>::find(const K& key)
     cache.insert(key, val);
   }
   return val;
+}
+
+template<class K, class V>
+K SharedLRU<K,V>::cached_key_lower_bound()
+{
+  if (weak_refs.empty()) {
+    return {};
+  }
+  return weak_refs.begin()->first;
 }
 
 template<class K, class V>

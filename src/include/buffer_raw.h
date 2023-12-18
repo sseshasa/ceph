@@ -32,8 +32,10 @@ inline namespace v15_2_0 {
     // embedded slots. This would allow to avoid the "if" in dtor of ptr_node.
     std::aligned_storage<sizeof(ptr_node),
 			 alignof(ptr_node)>::type bptr_storage;
+  protected:
     char *data;
     unsigned len;
+  public:
     ceph::atomic<unsigned> nref { 0 };
     int mempool;
 
@@ -84,14 +86,11 @@ private:
     raw(const raw &other) = delete;
     const raw& operator=(const raw &other) = delete;
 public:
-    char *get_data() {
+    char *get_data() const {
       return data;
     }
-    virtual raw* clone_empty() = 0;
-    ceph::unique_leakable_ptr<raw> clone() {
-      raw* const c = clone_empty();
-      memcpy(c->data, data, len);
-      return ceph::unique_leakable_ptr<raw>(c);
+    unsigned get_len() const {
+      return len;
     }
     bool get_crc(const std::pair<size_t, size_t> &fromto,
 		 std::pair<uint32_t, uint32_t> *crc) const {

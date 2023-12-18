@@ -22,7 +22,7 @@ class MgrStatMonitor : public PaxosService {
   ceph::buffer::list pending_service_map_bl;
 
 public:
-  MgrStatMonitor(Monitor *mn, Paxos *p, const std::string& service_name);
+  MgrStatMonitor(Monitor &mn, Paxos &p, const std::string& service_name);
   ~MgrStatMonitor() override;
 
   void init() override {}
@@ -84,7 +84,7 @@ public:
   }
 
   ceph_statfs get_statfs(OSDMap& osdmap,
-			 boost::optional<int64_t> data_pool) const {
+			 std::optional<int64_t> data_pool) const {
     return digest.get_statfs(osdmap, data_pool);
   }
 
@@ -94,6 +94,8 @@ public:
   void dump_info(ceph::Formatter *f) const {
     digest.dump(f);
     f->dump_object("servicemap", get_service_map());
+    f->dump_unsigned("mgrstat_first_committed", get_first_committed());
+    f->dump_unsigned("mgrstat_last_committed", get_last_committed());
   }
   void dump_cluster_stats(std::stringstream *ss,
 			  ceph::Formatter *f,

@@ -54,13 +54,18 @@ class ConfigProxy : public seastar::peering_sharded_service<ConfigProxy>
       // avoid racings with other do_change() calls in parallel.
       ObserverMgr<ConfigObserver>::rev_obs_map rev_obs;
       owner.values.reset(new_values);
-      owner.obs_mgr.for_each_change(owner.values->changed, owner,
-                                    [&rev_obs](ConfigObserver *obs,
+      std::map<std::string, bool> changes_present;
+      for (const auto& change : owner.values->changed) {
+        std::string dummy;
+        changes_present[change] = owner.get_val(change, &dummy);
+      }
+      owner.obs_mgr.for_each_change(changes_present,
+                                    [&rev_obs](auto obs,
                                                const std::string &key) {
                                       rev_obs[obs].insert(key);
                                     }, nullptr);
       for (auto& [obs, keys] : rev_obs) {
-        obs->handle_conf_change(owner, keys);
+        (*obs)->handle_conf_change(owner, keys);
       }
 
       return seastar::parallel_for_each(boost::irange(1u, seastar::smp::count),
@@ -70,13 +75,19 @@ class ConfigProxy : public seastar::peering_sharded_service<ConfigProxy>
             proxy.values.reset();
             proxy.values = std::move(foreign_values);
 
+            std::map<std::string, bool> changes_present;
+            for (const auto& change : proxy.values->changed) {
+              std::string dummy;
+              changes_present[change] = proxy.get_val(change, &dummy);
+            }
+
             ObserverMgr<ConfigObserver>::rev_obs_map rev_obs;
-            proxy.obs_mgr.for_each_change(proxy.values->changed, proxy,
-              [&rev_obs](ConfigObserver *obs, const std::string& key) {
+            proxy.obs_mgr.for_each_change(changes_present,
+              [&rev_obs](auto obs, const std::string& key) {
                 rev_obs[obs].insert(key);
               }, nullptr);
-            for (auto& obs_keys : rev_obs) {
-              obs_keys.first->handle_conf_change(proxy, obs_keys.second);
+            for (auto& [obs, keys] : rev_obs) {
+              (*obs)->handle_conf_change(proxy, keys);
             }
           });
         }).finally([new_values] {
@@ -96,8 +107,17 @@ public:
     return values.get();
   }
 
-  // required by sharded<>
+  void get_config_bl(uint64_t have_version,
+		     ceph::buffer::list *bl,
+		     uint64_t *got_version) {
+    get_config().get_config_bl(get_config_values(), have_version,
+                               bl, got_version);
+  }
+  void get_defaults_bl(ceph::buffer::list *bl) {
+    get_config().get_defaults_bl(get_config_values(), bl);
+  }
   seastar::future<> start();
+  // required by sharded<>
   seastar::future<> stop() {
     return seastar::make_ready_future<>();
   }
@@ -125,11 +145,11 @@ public:
       }
     });
   }
-  int get_val(const std::string &key, std::string *val) const {
+  int get_val(std::string_view key, std::string *val) const {
     return get_config().get_val(*values, key, val);
   }
   template<typename T>
-  const T get_val(const std::string& key) const {
+  const T get_val(std::string_view key) const {
     return get_config().template get_val<T>(*values, key);
   }
 
@@ -155,6 +175,14 @@ public:
     });
   }
 
+  seastar::future<> inject_args(const std::string& s) {
+    return do_change([s, this](ConfigValues& values) {
+      std::stringstream err;
+      if (get_config().injectargs(values, obs_mgr, s, &err)) {
+        throw std::invalid_argument(err.str());
+      }
+    });
+  }
   void show_config(ceph::Formatter* f) const;
 
   seastar::future<> parse_argv(std::vector<const char*>& argv) {
@@ -171,17 +199,15 @@ public:
     });
   }
 
-  seastar::future<> parse_config_files(const std::string& conf_files) {
-    return do_change([this, conf_files](ConfigValues& values) {
-      const char* conf_file_paths =
-	conf_files.empty() ? nullptr : conf_files.c_str();
-      get_config().parse_config_files(values,
-				      obs_mgr,
-				      conf_file_paths,
-				      &std::cerr,
-				      CODE_ENVIRONMENT_DAEMON);
-      });
+  seastar::future<> parse_env() {
+    return do_change([this](ConfigValues& values) {
+      get_config().parse_env(CEPH_ENTITY_TYPE_OSD,
+			     values,
+			     obs_mgr);
+    });
   }
+
+  seastar::future<> parse_config_files(const std::string& conf_files);
 
   using ShardedConfig = seastar::sharded<ConfigProxy>;
 
@@ -197,6 +223,11 @@ inline ConfigProxy& local_conf() {
 
 inline ConfigProxy::ShardedConfig& sharded_conf() {
   return ConfigProxy::sharded_conf;
+}
+
+template<typename T>
+const T get_conf(const std::string& key) {
+  return local_conf().template get_val<T>(key);
 }
 
 }

@@ -1,4 +1,3 @@
-
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 /*
@@ -21,10 +20,12 @@
 #include "common/cmdparse.h"
 #include "common/LogEntry.h"
 #include "common/Thread.h"
+#include "common/Finisher.h"
 #include "mon/health_check.h"
 #include "mgr/Gil.h"
 
 #include "PyModuleRunner.h"
+#include "PyModule.h"
 
 #include <vector>
 #include <string>
@@ -45,12 +46,19 @@ private:
 
   std::string m_command_perms;
   const MgrSession* m_session = nullptr;
+  std::string fin_thread_name;
+public:
+  Finisher finisher; // per active module finisher to execute commands
 
 public:
   ActivePyModule(const PyModuleRef &py_module_,
       LogChannelRef clog_)
-    : PyModuleRunner(py_module_, clog_)
-  {}
+    : PyModuleRunner(py_module_, clog_),
+      fin_thread_name(std::string("m-fin-" + py_module->get_name()).substr(0,15)),
+      finisher(g_ceph_context, thread_name, fin_thread_name)
+
+  {
+  }
 
   int load(ActivePyModules *py_modules);
   void notify(const std::string &notify_type, const std::string &notify_id);
@@ -94,9 +102,13 @@ public:
     return uri;
   }
 
+  std::string get_fin_thread_name() const
+  {
+    return fin_thread_name;
+  }
+
   bool is_authorized(const std::map<std::string, std::string>& arguments) const;
 
 };
 
-std::string handle_pyerror();
 

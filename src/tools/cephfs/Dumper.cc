@@ -34,6 +34,8 @@
 
 #define HEADER_LEN 4096
 
+using namespace std;
+
 int Dumper::init(mds_role_t role_, const std::string &type)
 {
   role = role_;
@@ -43,11 +45,10 @@ int Dumper::init(mds_role_t role_, const std::string &type)
     return r;
   }
 
-  auto fs =  fsmap->get_filesystem(role.fscid);
-  ceph_assert(fs != nullptr);
+  auto& fs =  fsmap->get_filesystem(role.fscid);
 
   if (type == "mdlog") {
-    JournalPointer jp(role.rank, fs->mds_map.get_metadata_pool());
+    JournalPointer jp(role.rank, fs.get_mds_map().get_metadata_pool());
     int jp_load_result = jp.load(objecter);
     if (jp_load_result != 0) {
       std::cerr << "Error loading journal: " << cpp_strerror(jp_load_result) << std::endl;
@@ -86,10 +87,9 @@ int Dumper::dump(const char *dump_file)
 {
   int r = 0;
 
-  auto fs =  fsmap->get_filesystem(role.fscid);
-  ceph_assert(fs != nullptr);
+  auto& fs = fsmap->get_filesystem(role.fscid);
 
-  Journaler journaler("dumper", ino, fs->mds_map.get_metadata_pool(),
+  Journaler journaler("dumper", ino, fs.get_mds_map().get_metadata_pool(),
                       CEPH_FS_ONDISK_MAGIC, objecter, 0, 0,
                       &finisher);
   r = recover_journal(&journaler);
@@ -104,7 +104,7 @@ int Dumper::dump(const char *dump_file)
 
   cout << "journal is " << start << "~" << len << std::endl;
 
-  int fd = ::open(dump_file, O_WRONLY|O_CREAT|O_TRUNC, 0644);
+  int fd = ::open(dump_file, O_WRONLY|O_CREAT|O_TRUNC|O_BINARY, 0644);
   if (fd >= 0) {
     // include an informative header
     uuid_d fsid = monc->get_fsid();
@@ -200,12 +200,11 @@ int Dumper::undump(const char *dump_file, bool force)
 {
   cout << "undump " << dump_file << std::endl;
   
-  auto fs =  fsmap->get_filesystem(role.fscid);
-  ceph_assert(fs != nullptr);
+  auto& fs = fsmap->get_filesystem(role.fscid);
 
   int r = 0;
   // try get layout info from cluster
-  Journaler journaler("umdumper", ino, fs->mds_map.get_metadata_pool(),
+  Journaler journaler("umdumper", ino, fs.get_mds_map().get_metadata_pool(),
                       CEPH_FS_ONDISK_MAGIC, objecter, 0, 0,
                       &finisher);
   int recovered = recover_journal(&journaler);
@@ -213,7 +212,7 @@ int Dumper::undump(const char *dump_file, bool force)
     derr << "recover_journal failed, try to get header from dump file " << dendl;
   }
 
-  int fd = ::open(dump_file, O_RDONLY);
+  int fd = ::open(dump_file, O_RDONLY|O_BINARY);
   if (fd < 0) {
     r = errno;
     derr << "couldn't open " << dump_file << ": " << cpp_strerror(r) << dendl;
@@ -328,13 +327,13 @@ int Dumper::undump(const char *dump_file, bool force)
   h.layout.stripe_unit = stripe_unit;
   h.layout.stripe_count = stripe_count;
   h.layout.object_size = object_size;
-  h.layout.pool_id = fs->mds_map.get_metadata_pool();
+  h.layout.pool_id = fs.get_mds_map().get_metadata_pool();
   
   bufferlist hbl;
   encode(h, hbl);
 
   object_t oid = file_object_t(ino, 0);
-  object_locator_t oloc(fs->mds_map.get_metadata_pool());
+  object_locator_t oloc(fs.get_mds_map().get_metadata_pool());
   SnapContext snapc;
 
   cout << "writing header " << oid << std::endl;

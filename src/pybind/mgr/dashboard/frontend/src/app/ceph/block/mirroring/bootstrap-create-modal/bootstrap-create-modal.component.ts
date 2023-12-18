@@ -1,16 +1,16 @@
 import { Component, OnDestroy, OnInit } from '@angular/core';
-import { FormControl, FormGroup, ValidatorFn, Validators } from '@angular/forms';
+import { UntypedFormControl, UntypedFormGroup, ValidatorFn, Validators } from '@angular/forms';
 
-import * as _ from 'lodash';
-import { BsModalRef } from 'ngx-bootstrap/modal';
+import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
+import _ from 'lodash';
 import { concat, forkJoin, Subscription } from 'rxjs';
 import { last, tap } from 'rxjs/operators';
 
-import { RbdMirroringService } from '../../../../shared/api/rbd-mirroring.service';
-import { CdFormGroup } from '../../../../shared/forms/cd-form-group';
-import { FinishedTask } from '../../../../shared/models/finished-task';
-import { TaskWrapperService } from '../../../../shared/services/task-wrapper.service';
-import { Pool } from '../../../pool/pool';
+import { Pool } from '~/app/ceph/pool/pool';
+import { RbdMirroringService } from '~/app/shared/api/rbd-mirroring.service';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { FinishedTask } from '~/app/shared/models/finished-task';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
 
 @Component({
   selector: 'cd-bootstrap-create-modal',
@@ -27,7 +27,7 @@ export class BootstrapCreateModalComponent implements OnDestroy, OnInit {
   createBootstrapForm: CdFormGroup;
 
   constructor(
-    public modalRef: BsModalRef,
+    public activeModal: NgbActiveModal,
     private rbdMirroringService: RbdMirroringService,
     private taskWrapper: TaskWrapperService
   ) {
@@ -36,16 +36,16 @@ export class BootstrapCreateModalComponent implements OnDestroy, OnInit {
 
   createForm() {
     this.createBootstrapForm = new CdFormGroup({
-      siteName: new FormControl('', {
+      siteName: new UntypedFormControl('', {
         validators: [Validators.required]
       }),
-      pools: new FormGroup(
+      pools: new UntypedFormGroup(
         {},
         {
           validators: [this.validatePools()]
         }
       ),
-      token: new FormControl('', {})
+      token: new UntypedFormControl('', {})
     });
   }
 
@@ -55,11 +55,7 @@ export class BootstrapCreateModalComponent implements OnDestroy, OnInit {
       this.createBootstrapForm.get('siteName').setValue(response.site_name);
     });
 
-    this.subs = this.rbdMirroringService.subscribeSummary((data: any) => {
-      if (!data) {
-        return;
-      }
-
+    this.subs = this.rbdMirroringService.subscribeSummary((data) => {
       const pools = data.content_data.pools;
       this.pools = pools.reduce((acc: any[], pool: Pool) => {
         acc.push({
@@ -69,7 +65,7 @@ export class BootstrapCreateModalComponent implements OnDestroy, OnInit {
         return acc;
       }, []);
 
-      const poolsControl = this.createBootstrapForm.get('pools') as FormGroup;
+      const poolsControl = this.createBootstrapForm.get('pools') as UntypedFormGroup;
       _.each(this.pools, (pool) => {
         const poolName = pool['name'];
         const mirroring_disabled = pool['mirror_mode'] === 'disabled';
@@ -84,7 +80,7 @@ export class BootstrapCreateModalComponent implements OnDestroy, OnInit {
         } else {
           poolsControl.addControl(
             poolName,
-            new FormControl({ value: !mirroring_disabled, disabled: !mirroring_disabled })
+            new UntypedFormControl({ value: !mirroring_disabled, disabled: !mirroring_disabled })
           );
         }
       });
@@ -98,7 +94,7 @@ export class BootstrapCreateModalComponent implements OnDestroy, OnInit {
   }
 
   validatePools(): ValidatorFn {
-    return (poolsControl: FormGroup): { [key: string]: any } => {
+    return (poolsControl: UntypedFormGroup): { [key: string]: any } => {
       let checkedCount = 0;
       _.each(poolsControl.controls, (control) => {
         if (control.value === true) {
@@ -119,7 +115,7 @@ export class BootstrapCreateModalComponent implements OnDestroy, OnInit {
 
     let bootstrapPoolName = '';
     const poolNames: string[] = [];
-    const poolsControl = this.createBootstrapForm.get('pools') as FormGroup;
+    const poolsControl = this.createBootstrapForm.get('pools') as UntypedFormGroup;
     _.each(poolsControl.controls, (control, poolName) => {
       if (control.value === true) {
         bootstrapPoolName = poolName;
@@ -152,6 +148,6 @@ export class BootstrapCreateModalComponent implements OnDestroy, OnInit {
       task: new FinishedTask('rbd/mirroring/bootstrap/create', {}),
       call: apiActionsObs
     });
-    taskObs.subscribe(undefined, finishHandler, finishHandler);
+    taskObs.subscribe({ error: finishHandler, complete: finishHandler });
   }
 }

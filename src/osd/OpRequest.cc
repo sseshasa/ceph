@@ -31,7 +31,7 @@ using std::stringstream;
 using ceph::Formatter;
 
 OpRequest::OpRequest(Message* req, OpTracker* tracker)
-    : TrackedOp(tracker, req->get_throttle_stamp()),
+    : TrackedOp(tracker, req->get_recv_stamp()),
       request(req),
       hit_flag_points(0),
       latest_flag_point(0),
@@ -74,21 +74,21 @@ void OpRequest::_dump(Formatter *f) const
       f->dump_string("event", i->str);
       f->dump_stream("time") << i->stamp;
 
-      auto i_next = i + 1;
+      double duration = 0;
 
-      if (i_next < events.end()) {
-	f->dump_float("duration", i_next->stamp - i->stamp);
-      } else {
-	f->dump_float("duration", events.rbegin()->stamp - get_initiated());
+      if (i != events.begin()) {
+        auto i_prev = i - 1;
+        duration = i->stamp - i_prev->stamp;
       }
 
+      f->dump_float("duration", duration);
       f->close_section();
     }
     f->close_section();
   }
 }
 
-void OpRequest::_dump_op_descriptor_unlocked(ostream& stream) const
+void OpRequest::_dump_op_descriptor(ostream& stream) const
 {
   get_req()->print(stream);
 }
@@ -121,6 +121,7 @@ void OpRequest::mark_flag_point(uint8_t flag, const char *s) {
   uint8_t old_flags = hit_flag_points;
 #endif
   mark_event(s);
+  last_event_detail = s;
   hit_flag_points |= flag;
   latest_flag_point = flag;
   tracepoint(oprequest, mark_flag_point, reqid.name._type,

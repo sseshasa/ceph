@@ -1,27 +1,29 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
 
-from base64 import b64encode
 import json
 import logging
 import os
 import threading
 import time
 import uuid
+from base64 import b64encode
 
 import cherrypy
 import jwt
 
-from .access_control import LocalAuthenticator, UserDoesNotExist
 from .. import mgr
+from .access_control import LocalAuthenticator, UserDoesNotExist
 
 cherrypy.config.update({
-    'response.headers.server': 'Ceph-Dashboard'
-    })
+    'response.headers.server': 'Ceph-Dashboard',
+    'response.headers.content-security-policy': "frame-ancestors 'self';",
+    'response.headers.x-content-type-options': 'nosniff',
+    'response.headers.strict-transport-security': 'max-age=63072000; includeSubDomains; preload'
+})
 
 
 class JwtManager(object):
-    JWT_TOKEN_BLACKLIST_KEY = "jwt_token_black_list"
+    JWT_TOKEN_BLOCKLIST_KEY = "jwt_token_block_list"
     JWT_TOKEN_TTL = 28800  # default 8 hours
     JWT_ALGORITHM = 'HS256'
     _secret = None
@@ -67,12 +69,20 @@ class JwtManager(object):
 
     @classmethod
     def get_token_from_header(cls):
-        auth_header = cherrypy.request.headers.get('authorization')
-        if auth_header is not None:
-            scheme, params = auth_header.split(' ', 1)
-            if scheme.lower() == 'bearer':
-                return params
-        return None
+        auth_cookie_name = 'token'
+        try:
+            # use cookie
+            return cherrypy.request.cookie[auth_cookie_name].value
+        except KeyError:
+            try:
+                # fall-back: use Authorization header
+                auth_header = cherrypy.request.headers.get('authorization')
+                if auth_header is not None:
+                    scheme, params = auth_header.split(' ', 1)
+                    if scheme.lower() == 'bearer':
+                        return params
+            except IndexError:
+                return None
 
     @classmethod
     def set_user(cls, username):
@@ -90,7 +100,7 @@ class JwtManager(object):
     def get_user(cls, token):
         try:
             dtoken = JwtManager.decode_token(token)
-            if not JwtManager.is_blacklisted(dtoken['jti']):
+            if not JwtManager.is_blocklisted(dtoken['jti']):
                 user = AuthManager.get_user(dtoken['username'])
                 if user.last_update <= dtoken['iat']:
                     return user
@@ -99,7 +109,7 @@ class JwtManager(object):
                     dtoken['iat'], user.last_update
                 )
             else:
-                cls.logger.debug('Token is black-listed')  # type: ignore
+                cls.logger.debug('Token is block-listed')  # type: ignore
         except jwt.ExpiredSignatureError:
             cls.logger.debug("Token has expired")  # type: ignore
         except jwt.InvalidTokenError:
@@ -111,12 +121,12 @@ class JwtManager(object):
         return None
 
     @classmethod
-    def blacklist_token(cls, token):
-        token = jwt.decode(token, verify=False)
-        blacklist_json = mgr.get_store(cls.JWT_TOKEN_BLACKLIST_KEY)
-        if not blacklist_json:
-            blacklist_json = "{}"
-        bl_dict = json.loads(blacklist_json)
+    def blocklist_token(cls, token):
+        token = cls.decode_token(token)
+        blocklist_json = mgr.get_store(cls.JWT_TOKEN_BLOCKLIST_KEY)
+        if not blocklist_json:
+            blocklist_json = "{}"
+        bl_dict = json.loads(blocklist_json)
         now = time.time()
 
         # remove expired tokens
@@ -128,14 +138,14 @@ class JwtManager(object):
             del bl_dict[jti]
 
         bl_dict[token['jti']] = token['exp']
-        mgr.set_store(cls.JWT_TOKEN_BLACKLIST_KEY, json.dumps(bl_dict))
+        mgr.set_store(cls.JWT_TOKEN_BLOCKLIST_KEY, json.dumps(bl_dict))
 
     @classmethod
-    def is_blacklisted(cls, jti):
-        blacklist_json = mgr.get_store(cls.JWT_TOKEN_BLACKLIST_KEY)
-        if not blacklist_json:
-            blacklist_json = "{}"
-        bl_dict = json.loads(blacklist_json)
+    def is_blocklisted(cls, jti):
+        blocklist_json = mgr.get_store(cls.JWT_TOKEN_BLOCKLIST_KEY)
+        if not blocklist_json:
+            blocklist_json = "{}"
+        bl_dict = json.loads(blocklist_json)
         return jti in bl_dict
 
 
@@ -168,12 +178,21 @@ class AuthManagerTool(cherrypy.Tool):
     def _check_authentication(self):
         JwtManager.reset_user()
         token = JwtManager.get_token_from_header()
-        self.logger.debug("token: %s", token)
         if token:
             user = JwtManager.get_user(token)
             if user:
                 self._check_authorization(user.username)
                 return
+
+        resp_head = cherrypy.response.headers
+        req_head = cherrypy.request.headers
+        req_header_cross_origin_url = req_head.get('Access-Control-Allow-Origin')
+        cross_origin_urls = mgr.get_module_option('cross_origin_url', '')
+        cross_origin_url_list = [url.strip() for url in cross_origin_urls.split(',')]
+
+        if req_header_cross_origin_url in cross_origin_url_list:
+            resp_head['Access-Control-Allow-Origin'] = req_header_cross_origin_url
+
         self.logger.debug('Unauthorized access to %s',
                           cherrypy.url(relative='server'))
         raise cherrypy.HTTPError(401, 'You are not authorized to access '
@@ -181,7 +200,6 @@ class AuthManagerTool(cherrypy.Tool):
 
     def _check_authorization(self, username):
         self.logger.debug("checking authorization...")
-        username = username
         handler = cherrypy.request.handler.callable
         controller = handler.__self__
         sec_scope = getattr(controller, '_security_scope', None)

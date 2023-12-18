@@ -15,8 +15,6 @@
 
 #pragma once
 
-#include "rgw_common.h"
-
 struct compression_block {
   uint64_t old_ofs;
   uint64_t new_ofs;
@@ -42,31 +40,38 @@ struct compression_block {
 WRITE_CLASS_ENCODER(compression_block)
 
 struct RGWCompressionInfo {
-  string compression_type;
+  std::string compression_type;
   uint64_t orig_size;
-  vector<compression_block> blocks;
+  std::optional<int32_t> compressor_message;
+  std::vector<compression_block> blocks;
 
   RGWCompressionInfo() : compression_type("none"), orig_size(0) {}
   RGWCompressionInfo(const RGWCompressionInfo& cs_info) : compression_type(cs_info.compression_type),
                                                           orig_size(cs_info.orig_size),
+							  compressor_message(cs_info.compressor_message),
                                                           blocks(cs_info.blocks) {}
 
   void encode(bufferlist& bl) const {
-    ENCODE_START(1, 1, bl);
+    ENCODE_START(2, 1, bl);
     encode(compression_type, bl);
     encode(orig_size, bl);
+    encode(compressor_message, bl);
     encode(blocks, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::const_iterator& bl) {
-     DECODE_START(1, bl);
+     DECODE_START(2, bl);
      decode(compression_type, bl);
      decode(orig_size, bl);
+     if (struct_v >= 2) {
+       decode(compressor_message, bl);
+     }
      decode(blocks, bl);
      DECODE_FINISH(bl);
   } 
   void dump(Formatter *f) const;
+  static void generate_test_instances(std::list<RGWCompressionInfo*>& o);
 };
 WRITE_CLASS_ENCODER(RGWCompressionInfo)
 

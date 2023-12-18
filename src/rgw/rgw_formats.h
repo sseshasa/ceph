@@ -1,8 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef CEPH_RGW_FORMATS_H
-#define CEPH_RGW_FORMATS_H
+#pragma once
 
 #include "common/Formatter.h"
 
@@ -30,7 +29,7 @@ public:
   void output_header() override {};
   void output_footer() override {};
   void enable_line_break() override {};
-  void flush(ostream& os) override;
+  void flush(std::ostream& os) override;
   void reset() override;
 
   void open_array_section(std::string_view name) override;
@@ -38,6 +37,7 @@ public:
   void open_object_section(std::string_view name) override;
   void open_object_section_in_ns(std::string_view name, const char *ns) override;
   void close_section() override;
+  void dump_null(std::string_view name) override;
   void dump_unsigned(std::string_view name, uint64_t u) override;
   void dump_int(std::string_view name, int64_t u) override;
   void dump_float(std::string_view name, double d) override;
@@ -116,13 +116,13 @@ public:
 };
 
 class RGWStreamFlusher : public RGWFormatterFlusher {
-  ostream& os;
+  std::ostream& os;
 protected:
   void do_flush() override {
     formatter->flush(os);
   }
 public:
-  RGWStreamFlusher(Formatter *f, ostream& _os) : RGWFormatterFlusher(f), os(_os) {}
+  RGWStreamFlusher(Formatter *f, std::ostream& _os) : RGWFormatterFlusher(f), os(_os) {}
 };
 
 class RGWNullFlusher : public RGWFormatterFlusher {
@@ -132,5 +132,3 @@ protected:
 public:
   RGWNullFlusher() : RGWFormatterFlusher(nullptr) {}
 };
-
-#endif

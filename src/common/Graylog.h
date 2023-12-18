@@ -4,7 +4,8 @@
 #ifndef __CEPH_LOG_GRAYLOG_H
 #define __CEPH_LOG_GRAYLOG_H
 
-#include <boost/asio.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/udp.hpp>
 #include <boost/iostreams/filtering_stream.hpp>
 #include <boost/iostreams/filter/zlib.hpp>
 
@@ -59,14 +60,14 @@ class Graylog
  private:
   SubsystemMap const * const m_subs;
 
-  bool m_log_dst_valid;
+  bool m_log_dst_valid = false;
 
   std::string m_hostname;
   std::string m_fsid;
   std::string m_logger;
 
   boost::asio::ip::udp::endpoint m_endpoint;
-  boost::asio::io_service m_io_service;
+  boost::asio::io_context m_io_service;
 
   std::unique_ptr<Formatter> m_formatter;
   std::unique_ptr<Formatter> m_formatter_section;

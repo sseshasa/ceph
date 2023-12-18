@@ -1,6 +1,6 @@
-<cd-modal [modalRef]="bsModalRef">
-  <ng-container class="modal-title"
-                i18n>Matcher</ng-container>
+<cd-modal [modalRef]="activeModal">
+  <span class="modal-title"
+        i18n>{editMode, select, true {Edit} other {Add}} Matcher</span>
 
   <ng-container class="modal-content">
     <form class="form"
@@ -14,7 +14,7 @@
                  for="name"
                  i18n>Name</label>
           <div class="cd-col-form-input">
-            <select class="form-control"
+            <select class="form-select"
                     id="name"
                     formControlName="name"
                     name="name">
@@ -38,11 +38,13 @@
                  i18n>Value</label>
           <div class="cd-col-form-input">
             <input id="value"
+                   (focus)="valueFocus.next($any($event).target.value)"
+                   (click)="valueClick.next($any($event).target.value)"
                    class="form-control"
                    type="text"
-                   [typeahead]="possibleValues"
-                   [typeaheadMinLength]="0"
-                   formControlName="value">
+                   [ngbTypeahead]="search"
+                   formControlName="value"
+                   #instance="ngbTypeahead">
             <span *ngIf="form.showError('value', formDir, 'required')"
                   class="help-block"
                   i18n>This field is required!</span>
@@ -74,14 +76,9 @@
       </div>
 
       <div class="modal-footer">
-        <cd-submit-button (submitAction)="onSubmit()"
-                          [form]="form">
-          <ng-container i18n>{editMode, select, 1 {Update} other {Add}}</ng-container>
-        </cd-submit-button>
-        <cd-back-button [back]="bsModalRef.hide"
-                        name="Close"
-                        i18n-name>
-        </cd-back-button>
+        <cd-form-button-panel (submitActionEvent)="onSubmit()"
+                              [form]="form"
+                              [submitText]="getMode()"></cd-form-button-panel>
       </div>
     </form>
   </ng-container>

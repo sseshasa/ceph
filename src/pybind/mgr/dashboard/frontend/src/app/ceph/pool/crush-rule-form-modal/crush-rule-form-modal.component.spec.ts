@@ -2,21 +2,15 @@ import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { NgBootstrapFormValidationModule } from 'ng-bootstrap-form-validation';
-import { BsModalRef } from 'ngx-bootstrap/modal';
+import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
 import { ToastrModule } from 'ngx-toastr';
 import { of } from 'rxjs';
 
-import {
-  configureTestBed,
-  FixtureHelper,
-  FormHelper,
-  i18nProviders
-} from '../../../../testing/unit-test-helper';
-import { CrushRuleService } from '../../../shared/api/crush-rule.service';
-import { CrushNode } from '../../../shared/models/crush-node';
-import { CrushRuleConfig } from '../../../shared/models/crush-rule';
-import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
+import { CrushRuleService } from '~/app/shared/api/crush-rule.service';
+import { CrushNode } from '~/app/shared/models/crush-node';
+import { CrushRuleConfig } from '~/app/shared/models/crush-rule';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
+import { configureTestBed, FixtureHelper, FormHelper, Mocks } from '~/testing/unit-test-helper';
 import { PoolModule } from '../pool.module';
 import { CrushRuleFormModalComponent } from './crush-rule-form-modal.component';
 
@@ -27,31 +21,6 @@ describe('CrushRuleFormComponent', () => {
   let formHelper: FormHelper;
   let fixtureHelper: FixtureHelper;
   let data: { names: string[]; nodes: CrushNode[] };
-
-  // Object contains mock functions
-  const mock = {
-    node: (
-      name: string,
-      id: number,
-      type: string,
-      type_id: number,
-      children?: number[],
-      device_class?: string
-    ): CrushNode => {
-      return { name, type, type_id, id, children, device_class };
-    },
-    rule: (
-      name: string,
-      root: string,
-      failure_domain: string,
-      device_class?: string
-    ): CrushRuleConfig => ({
-      name,
-      root,
-      failure_domain,
-      device_class
-    })
-  };
 
   // Object contains functions to get something
   const get = {
@@ -96,14 +65,8 @@ describe('CrushRuleFormComponent', () => {
   };
 
   configureTestBed({
-    imports: [
-      HttpClientTestingModule,
-      RouterTestingModule,
-      ToastrModule.forRoot(),
-      PoolModule,
-      NgBootstrapFormValidationModule.forRoot()
-    ],
-    providers: [CrushRuleService, BsModalRef, i18nProviders]
+    imports: [HttpClientTestingModule, RouterTestingModule, ToastrModule.forRoot(), PoolModule],
+    providers: [CrushRuleService, NgbActiveModal]
   });
 
   beforeEach(() => {
@@ -111,7 +74,7 @@ describe('CrushRuleFormComponent', () => {
     fixtureHelper = new FixtureHelper(fixture);
     component = fixture.componentInstance;
     formHelper = new FormHelper(component.form);
-    crushRuleService = TestBed.get(CrushRuleService);
+    crushRuleService = TestBed.inject(CrushRuleService);
     data = {
       names: ['rule1', 'rule2'],
       /**
@@ -125,25 +88,7 @@ describe('CrushRuleFormComponent', () => {
        * ----> ssd-rack
        * ------> 2x osd-rack with ssd
        */
-      nodes: [
-        // Root node
-        mock.node('default', -1, 'root', 11, [-2, -3]),
-        // SSD host
-        mock.node('ssd-host', -2, 'host', 1, [1, 0, 2]),
-        mock.node('osd.0', 0, 'osd', 0, undefined, 'ssd'),
-        mock.node('osd.1', 1, 'osd', 0, undefined, 'ssd'),
-        mock.node('osd.2', 2, 'osd', 0, undefined, 'ssd'),
-        // SSD and HDD mixed devices host
-        mock.node('mix-host', -3, 'host', 1, [-4, -5]),
-        // HDD rack
-        mock.node('hdd-rack', -4, 'rack', 3, [3, 4]),
-        mock.node('osd2.0', 3, 'osd-rack', 0, undefined, 'hdd'),
-        mock.node('osd2.1', 4, 'osd-rack', 0, undefined, 'hdd'),
-        // SSD rack
-        mock.node('ssd-rack', -5, 'rack', 3, [5, 6]),
-        mock.node('osd2.0', 5, 'osd-rack', 0, undefined, 'ssd'),
-        mock.node('osd2.1', 6, 'osd-rack', 0, undefined, 'ssd')
-      ]
+      nodes: Mocks.getCrushMap()
     };
     spyOn(crushRuleService, 'getInfo').and.callFake(() => of(data));
     fixture.detectChanges();
@@ -248,18 +193,18 @@ describe('CrushRuleFormComponent', () => {
 
   describe('submission', () => {
     beforeEach(() => {
-      const taskWrapper = TestBed.get(TaskWrapperService);
+      const taskWrapper = TestBed.inject(TaskWrapperService);
       spyOn(taskWrapper, 'wrapTaskAroundCall').and.callThrough();
       spyOn(crushRuleService, 'create').and.stub();
     });
 
     it('creates a rule with only required fields', () => {
-      assert.creation(mock.rule('default-rule', 'default', 'osd-rack'));
+      assert.creation(Mocks.getCrushRuleConfig('default-rule', 'default', 'osd-rack'));
     });
 
     it('creates a rule with all fields', () => {
       assert.valuesOnRootChange('ssd-host', 'osd', 'ssd');
-      assert.creation(mock.rule('ssd-host-rule', 'ssd-host', 'osd', 'ssd'));
+      assert.creation(Mocks.getCrushRuleConfig('ssd-host-rule', 'ssd-host', 'osd', 'ssd'));
     });
   });
 });

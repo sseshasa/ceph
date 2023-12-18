@@ -80,7 +80,7 @@ class Scan(object):
             device = os.readlink(path)
         else:
             device = path
-        lvm_device = lvm.get_lv_from_argument(device)
+        lvm_device = lvm.get_single_lv(filters={'lv_path': device})
         if lvm_device:
             device_uuid = lvm_device.lv_uuid
         else:
@@ -137,8 +137,8 @@ class Scan(object):
                     osd_metadata[file_json_key] = content
 
         # we must scan the paths again because this might be a temporary mount
-        path_mounts = system.get_mounts(paths=True)
-        device = path_mounts.get(path)
+        path_mounts = system.Mounts(paths=True)
+        device = path_mounts.get_mounts().get(path)
 
         # it is possible to have more than one device, pick the first one, and
         # warn that it is possible that more than one device is 'data'
@@ -360,8 +360,8 @@ class Scan(object):
                 ))
 
         # Capture some environment status, so that it can be reused all over
-        self.device_mounts = system.get_mounts(devices=True)
-        self.path_mounts = system.get_mounts(paths=True)
+        self.device_mounts = system.Mounts(devices=True).get_mounts()
+        self.path_mounts = system.Mounts(paths=True).get_mounts()
 
         for path in paths:
             args.osd_path = path
@@ -375,8 +375,11 @@ class Scan(object):
             self.encryption_metadata = encryption.legacy_encrypted(args.osd_path)
             self.is_encrypted = self.encryption_metadata['encrypted']
 
-            device = Device(self.encryption_metadata['device'])
-            if not device.is_ceph_disk_member:
-                terminal.warning("Ignoring %s because it's not a ceph-disk created osd." % path)
+            if self.encryption_metadata['device'] != "tmpfs":
+                device = Device(self.encryption_metadata['device'])
+                if not device.is_ceph_disk_member:
+                    terminal.warning("Ignoring %s because it's not a ceph-disk created osd." % path)
+                else:
+                    self.scan(args)
             else:
-                self.scan(args)
+                terminal.warning("Ignoring %s because it's not a ceph-disk created osd." % path)

@@ -16,14 +16,18 @@
 #define CEPH_MESSAGEREF_H
  
 #include <boost/intrusive_ptr.hpp>
+#include "common/RefCountedObj.h"
 
 template<typename T>
 using MRef = boost::intrusive_ptr<T>;
 template<typename T>
 using MConstRef = boost::intrusive_ptr<T const>;
+template<typename T>
+using MURef = std::unique_ptr<T, TOPNSPC::common::UniquePtrDeleter>;
 
 using MessageRef = MRef<class Message>;
 using MessageConstRef = MConstRef<class Message>;
+using MessageURef = MURef<class Message>;
 
 /* cd src/messages/ && for f in *; do printf 'class '; basename "$f" .h | tr -d '\n'; printf ';\n'; done >> ../msg/MessageRef.h */
 
@@ -88,7 +92,7 @@ class MMDSOpenIno;
 class MMDSOpenInoReply;
 class MMDSResolveAck;
 class MMDSResolve;
-class MMDSSlaveRequest;
+class MMDSPeerRequest;
 class MMDSSnapUpdate;
 class MMDSTableRequest;
 class MMgrBeacon;
@@ -97,6 +101,7 @@ class MMgrConfigure;
 class MMgrDigest;
 class MMgrMap;
 class MMgrOpen;
+class MMgrUpdate;
 class MMgrReport;
 class MMonCommandAck;
 class MMonCommand;
@@ -133,14 +138,11 @@ class MOSDForceRecovery;
 class MOSDFull;
 class MOSDMap;
 class MOSDMarkMeDown;
-class MOSDOp;
-class MOSDOpReply;
 class MOSDPeeringOp;
 class MOSDPGBackfill;
 class MOSDPGBackfillRemove;
 class MOSDPGCreate2;
 class MOSDPGCreated;
-class MOSDPGCreate;
 class MOSDPGInfo;
 class MOSDPGLog;
 class MOSDPGNotify;
@@ -163,7 +165,6 @@ class MOSDRepOpReply;
 class MOSDRepScrub;
 class MOSDRepScrubMap;
 class MOSDScrub2;
-class MOSDScrub;
 class MOSDScrubReserve;
 class MPGStatsAck;
 class MPGStats;

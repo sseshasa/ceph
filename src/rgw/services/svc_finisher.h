@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "rgw/rgw_service.h"
+#include "rgw_service.h"
 
 class Context;
 class Finisher;
@@ -25,7 +25,7 @@ private:
 
 protected:
   void init() {}
-  int do_start() override;
+  int do_start(optional_yield y, const DoutPrefixProvider *dpp) override;
 
 public:
   RGWSI_Finisher(CephContext *cct): RGWServiceInstance(cct) {}

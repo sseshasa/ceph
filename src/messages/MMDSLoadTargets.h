@@ -23,7 +23,7 @@
 #include <map>
 using std::map;
 
-class MMDSLoadTargets : public PaxosServiceMessage {
+class MMDSLoadTargets final : public PaxosServiceMessage {
 public:
   mds_gid_t global_id;
   std::set<mds_rank_t> targets;
@@ -33,7 +33,7 @@ protected:
   MMDSLoadTargets(mds_gid_t g, std::set<mds_rank_t>& mds_targets) :
     PaxosServiceMessage(MSG_MDS_OFFLOAD_TARGETS, 0),
     global_id(g), targets(mds_targets) {}
-  ~MMDSLoadTargets() override {}
+  ~MMDSLoadTargets() final {}
 
 public:
   std::string_view get_type_name() const override { return "mds_load_targets"; }
@@ -58,6 +58,8 @@ public:
 private:
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 };
 
 #endif

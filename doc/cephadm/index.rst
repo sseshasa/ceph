@@ -4,36 +4,47 @@
 Cephadm
 =======
 
-Cephadm deploys and manages a Ceph cluster by connection to hosts from the
-manager daemon via SSH to add, remove, or update Ceph daemon containers.  It
-does not rely on external configuration or orchestration tools like Ansible,
-Rook, or Salt.
+``cephadm`` is a utility that is used to manage a Ceph cluster. 
 
-Cephadm manages the full lifecycle of a Ceph cluster.  It starts
-by bootstrapping a tiny Ceph cluster on a single node (one monitor and
-one manager) and then uses the orchestration interface ("day 2"
-commands) to expand the cluster to include all hosts and to provision
-all Ceph daemons and services.  This can be performed via the Ceph
-command-line interface (CLI) or dashboard (GUI).
+Here is a list of some of the things that ``cephadm`` can do:
 
-Cephadm is new in the Octopus v15.2.0 release and does not support older
-versions of Ceph.
+- ``cephadm`` can add a Ceph container to the cluster.
+- ``cephadm`` can remove a Ceph container from the cluster.
+- ``cephadm`` can update Ceph containers.
 
-.. note::
+``cephadm`` does not rely on external configuration tools like Ansible, Rook,
+or Salt. However, those external configuration tools can be used to automate
+operations not performed by cephadm itself. To learn more about these external
+configuration tools, visit their pages:
 
-   Cephadm is new.  Please read about :ref:`cephadm-stability` before
-   using cephadm to deploy a production system.
+ * https://github.com/ceph/cephadm-ansible
+ * https://rook.io/docs/rook/v1.10/Getting-Started/intro/
+ * https://github.com/ceph/ceph-salt
+
+``cephadm`` manages the full lifecycle of a Ceph cluster. This lifecycle starts
+with the bootstrapping process, when ``cephadm`` creates a tiny Ceph cluster on
+a single node. This cluster consists of one monitor and one manager.
+``cephadm`` then uses the orchestration interface to expand the cluster, adding
+hosts and provisioning Ceph daemons and services. Management of this lifecycle
+can be performed either via the Ceph command-line interface (CLI) or via the
+dashboard (GUI).
+
+To use ``cephadm`` to get started with Ceph, follow the instructions in
+:ref:`cephadm_deploying_new_cluster`.
+
+``cephadm`` was introduced in Ceph release v15.2.0 (Octopus) and does not
+support older versions of Ceph.
 
 .. toctree::
-    :maxdepth: 1
+    :maxdepth: 2
 
-    stability
+    compatibility
     install
     adoption
+    host-management
+    Service Management <services/index>
     upgrade
     Cephadm operations <operations>
-    Cephadm monitoring <monitoring>
-    Cephadm CLI <../mgr/orchestrator>
     Client Setup <client-setup>
-    DriveGroups <drivegroups>
     troubleshooting
+    Cephadm Feature Planning <../dev/cephadm/index>

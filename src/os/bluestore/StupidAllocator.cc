@@ -11,12 +11,15 @@
 #define dout_prefix *_dout << "stupidalloc 0x" << this << " "
 
 StupidAllocator::StupidAllocator(CephContext* cct,
-                                 const std::string& name,
-                                 int64_t _block_size)
-  : Allocator(name), cct(cct), num_free(0),
-    block_size(_block_size),
+                                 int64_t capacity,
+                                 int64_t _block_size,
+                                 std::string_view name)
+  : Allocator(name, capacity, _block_size),
+    cct(cct), num_free(0),
     free(10)
 {
+  ceph_assert(cct != nullptr);
+  ceph_assert(block_size > 0);
 }
 
 StupidAllocator::~StupidAllocator()
@@ -25,7 +28,7 @@ StupidAllocator::~StupidAllocator()
 
 unsigned StupidAllocator::_choose_bin(uint64_t orig_len)
 {
-  uint64_t len = orig_len / cct->_conf->bdev_block_size;
+  uint64_t len = orig_len / block_size;
   int bin = std::min((int)cbits(len), (int)free.size() - 1);
   ldout(cct, 30) << __func__ << " len 0x" << std::hex << orig_len
 		 << std::dec << " -> " << bin << dendl;
@@ -47,20 +50,6 @@ void StupidAllocator::_insert_free(uint64_t off, uint64_t len)
     free[bin].erase(off, len);
     bin = newbin;
   }
-}
-
-/// return the effective length of the extent if we align to alloc_unit
-uint64_t StupidAllocator::_aligned_len(
-  StupidAllocator::interval_set_t::iterator p,
-  uint64_t alloc_unit)
-{
-  uint64_t skew = p.get_start() % alloc_unit;
-  if (skew)
-    skew = alloc_unit - skew;
-  if (skew > p.get_len())
-    return 0;
-  else
-    return p.get_len() - skew;
 }
 
 int64_t StupidAllocator::allocate_int(
@@ -86,7 +75,7 @@ int64_t StupidAllocator::allocate_int(
     for (bin = orig_bin; bin < (int)free.size(); ++bin) {
       p = free[bin].lower_bound(hint);
       while (p != free[bin].end()) {
-	if (_aligned_len(p, alloc_unit) >= want_size) {
+	if (p.get_len() >= want_size) {
 	  goto found;
 	}
 	++p;
@@ -99,7 +88,7 @@ int64_t StupidAllocator::allocate_int(
     p = free[bin].begin();
     auto end = hint ? free[bin].lower_bound(hint) : free[bin].end();
     while (p != end) {
-      if (_aligned_len(p, alloc_unit) >= want_size) {
+      if (p.get_len() >= want_size) {
 	goto found;
       }
       ++p;
@@ -111,7 +100,7 @@ int64_t StupidAllocator::allocate_int(
     for (bin = orig_bin; bin >= 0; --bin) {
       p = free[bin].lower_bound(hint);
       while (p != free[bin].end()) {
-	if (_aligned_len(p, alloc_unit) >= alloc_unit) {
+	if (p.get_len() >= alloc_unit) {
 	  goto found;
 	}
 	++p;
@@ -124,7 +113,7 @@ int64_t StupidAllocator::allocate_int(
     p = free[bin].begin();
     auto end = hint ? free[bin].lower_bound(hint) : free[bin].end();
     while (p != end) {
-      if (_aligned_len(p, alloc_unit) >= alloc_unit) {
+      if (p.get_len() >= alloc_unit) {
 	goto found;
       }
       ++p;
@@ -134,11 +123,9 @@ int64_t StupidAllocator::allocate_int(
   return -ENOSPC;
 
  found:
-  uint64_t skew = p.get_start() % alloc_unit;
-  if (skew)
-    skew = alloc_unit - skew;
-  *offset = p.get_start() + skew;
-  *length = std::min(std::max(alloc_unit, want_size), p2align((p.get_len() - skew), alloc_unit));
+  *offset = p.get_start();
+  *length = std::min(std::max(alloc_unit, want_size), p2align(p.get_len(), alloc_unit));
+
   if (cct->_conf->bluestore_debug_small_allocations) {
     uint64_t max =
       alloc_unit * (rand() % cct->_conf->bluestore_debug_small_allocations);
@@ -155,7 +142,7 @@ int64_t StupidAllocator::allocate_int(
 
   free[bin].erase(*offset, *length);
   uint64_t off, len;
-  if (*offset && free[bin].contains(*offset - skew - 1, &off, &len)) {
+  if (*offset && free[bin].contains(*offset - 1, &off, &len)) {
     int newbin = _choose_bin(len);
     if (newbin != bin) {
       ldout(cct, 30) << __func__ << " demoting 0x" << std::hex << off << "~" << len
@@ -257,13 +244,14 @@ uint64_t StupidAllocator::get_free()
 
 double StupidAllocator::get_fragmentation()
 {
-  ceph_assert(block_size);
+  ceph_assert(get_block_size());
   double res;
   uint64_t max_intervals = 0;
   uint64_t intervals = 0;
   {
     std::lock_guard l(lock);
-    max_intervals = p2roundup<uint64_t>(num_free, block_size) / block_size;
+    max_intervals = p2roundup<uint64_t>(num_free,
+                                        get_block_size()) / get_block_size();
     for (unsigned bin = 0; bin < free.size(); ++bin) {
       intervals += free[bin].num_intervals();
     }
@@ -295,7 +283,7 @@ void StupidAllocator::dump()
   }
 }
 
-void StupidAllocator::dump(std::function<void(uint64_t offset, uint64_t length)> notify)
+void StupidAllocator::foreach(std::function<void(uint64_t offset, uint64_t length)> notify)
 {
   std::lock_guard l(lock);
   for (unsigned bin = 0; bin < free.size(); ++bin) {
@@ -307,6 +295,8 @@ void StupidAllocator::dump(std::function<void(uint64_t offset, uint64_t length)>
 
 void StupidAllocator::init_add_free(uint64_t offset, uint64_t length)
 {
+  if (!length)
+    return;
   std::lock_guard l(lock);
   ldout(cct, 10) << __func__ << " 0x" << std::hex << offset << "~" << length
 		 << std::dec << dendl;
@@ -316,6 +306,8 @@ void StupidAllocator::init_add_free(uint64_t offset, uint64_t length)
 
 void StupidAllocator::init_rm_free(uint64_t offset, uint64_t length)
 {
+  if (!length)
+    return;
   std::lock_guard l(lock);
   ldout(cct, 10) << __func__ << " 0x" << std::hex << offset << "~" << length
 	   	 << std::dec << dendl;

@@ -12,17 +12,17 @@ openstack:
   - volumes: # attached to each instance
       count: 3
       size: 10 # GB
-override:
+overrides:
   ceph:
     conf:
       mon:
-        osd default pool size: 3
+        osd pool default size: 3
 tasks:
 - install:
 - ceph:
     pre-mgr-commands:
-      - sudo ceph config set mgr mgr/devicehealth/enable_monitoring false --force
-    log-whitelist:
+      - sudo ceph config set mgr mgr_pool false --force
+    log-ignorelist:
     - but it is still running
     - missing primary copy of
     - objects unfound and apparently lost
@@ -35,6 +35,7 @@ tasks:
     - \(OBJECT_
     - \(TOO_FEW_PGS\)
     - slow request
+    - \(POOL_APP_NOT_ENABLED\)
 - thrashosds:
     op_delay: 30
     clean_interval: 120

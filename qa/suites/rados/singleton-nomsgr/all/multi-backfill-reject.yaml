@@ -16,12 +16,13 @@ tasks:
 - install:
 - ceph:
     pre-mgr-commands:
-      - sudo ceph config set mgr mgr/devicehealth/enable_monitoring false --force
-    log-whitelist:
+      - sudo ceph config set mgr mgr_pool false --force
+    log-ignorelist:
       - overall HEALTH_
       - \(PG_
       - \(OSD_
       - \(OBJECT_
+      - \(POOL_APP_NOT_ENABLED\)
     conf:
       osd:
         osd debug reject backfill probability: .3

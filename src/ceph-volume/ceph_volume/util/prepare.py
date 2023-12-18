@@ -4,10 +4,12 @@ but also a compounded ("single call") helper to do them in order. Some plugins
 may want to change some part of the process, while others might want to consume
 the single-call helper
 """
+import errno
 import os
 import logging
 import json
-from ceph_volume import process, conf, __release__, terminal
+import time
+from ceph_volume import process, conf, terminal
 from ceph_volume.util import system, constants, str_to_int, disk
 
 logger = logging.getLogger(__name__)
@@ -17,7 +19,8 @@ mlogger = terminal.MultiLogger(__name__)
 def create_key():
     stdout, stderr, returncode = process.call(
         ['ceph-authtool', '--gen-print-key'],
-        show_command=True)
+        show_command=True,
+        logfile_verbose=False)
     if returncode != 0:
         raise RuntimeError('Unable to generate a new auth key')
     return ' '.join(stdout).strip()
@@ -38,36 +41,16 @@ def write_keyring(osd_id, secret, keyring_name='keyring', name=None):
     """
     osd_keyring = '/var/lib/ceph/osd/%s-%s/%s' % (conf.cluster, osd_id, keyring_name)
     name = name or 'osd.%s' % str(osd_id)
-    process.run(
+    mlogger.info(f'Creating keyring file for {name}')
+    process.call(
         [
             'ceph-authtool', osd_keyring,
             '--create-keyring',
             '--name', name,
             '--add-key', secret
-        ])
+        ],
+        logfile_verbose=False)
     system.chown(osd_keyring)
-
-
-def get_journal_size(lv_format=True):
-    """
-    Helper to retrieve the size (defined in megabytes in ceph.conf) to create
-    the journal logical volume, it "translates" the string into a float value,
-    then converts that into gigabytes, and finally (optionally) it formats it
-    back as a string so that it can be used for creating the LV.
-
-    :param lv_format: Return a string to be used for ``lv_create``. A 5 GB size
-    would result in '5G', otherwise it will return a ``Size`` object.
-    """
-    conf_journal_size = conf.ceph.get_safe('osd', 'osd_journal_size', '5120')
-    logger.debug('osd_journal_size set to %s' % conf_journal_size)
-    journal_size = disk.Size(mb=str_to_int(conf_journal_size))
-
-    if journal_size < disk.Size(gb=2):
-        mlogger.error('Refusing to continue with configured size for journal')
-        raise RuntimeError('journal sizes must be larger than 2GB, detected: %s' % journal_size)
-    if lv_format:
-        return '%sG' % journal_size.gb.as_int()
-    return journal_size
 
 
 def get_block_db_size(lv_format=True):
@@ -93,6 +76,7 @@ def get_block_db_size(lv_format=True):
         logger.debug(
             'block.db has no size configuration, will fallback to using as much as possible'
         )
+        # TODO better to return disk.Size(b=0) here
         return None
     logger.debug('bluestore_block_db_size set to %s' % conf_db_size)
     db_size = disk.Size(b=str_to_int(conf_db_size))
@@ -180,6 +164,7 @@ def osd_id_available(osd_id):
     """
     if osd_id is None:
         return False
+
     bootstrap_keyring = '/var/lib/ceph/bootstrap-osd/%s.keyring' % conf.cluster
     stdout, stderr, returncode = process.call(
         [
@@ -199,7 +184,7 @@ def osd_id_available(osd_id):
     output = json.loads(''.join(stdout).strip())
     osds = output['nodes']
     osd = [osd for osd in osds if str(osd['id']) == str(osd_id)]
-    if osd and osd[0].get('status') == "destroyed":
+    if not osd or (osd and osd[0].get('status') == "destroyed"):
         return True
     return False
 
@@ -359,9 +344,6 @@ def _validate_bluestore_device(device, excepted_device_type, osd_uuid):
         terminal.error('device %s is used by another osd %s as %s, should be %s'% (device, current_osd_uuid, current_device_type, osd_uuid))
         raise SystemExit(1)
 
-def link_journal(journal_device, osd_id):
-    _link_device(journal_device, 'journal', osd_id)
-
 
 def link_block(block_device, osd_id):
     _link_device(block_device, 'block', osd_id)
@@ -458,57 +440,21 @@ def osd_mkfs_bluestore(osd_id, fsid, keyring=None, wal=False, db=False):
 
     command = base_command + supplementary_command
 
-    _, _, returncode = process.call(command, stdin=keyring, show_command=True)
-    if returncode != 0:
-        raise RuntimeError('Command failed with exit code %s: %s' % (returncode, ' '.join(command)))
-
-
-def osd_mkfs_filestore(osd_id, fsid, keyring):
     """
-    Create the files for the OSD to function. A normal call will look like:
-
-          ceph-osd --cluster ceph --mkfs --mkkey -i 0 \
-                   --monmap /var/lib/ceph/osd/ceph-0/activate.monmap \
-                   --osd-data /var/lib/ceph/osd/ceph-0 \
-                   --osd-journal /var/lib/ceph/osd/ceph-0/journal \
-                   --osd-uuid 8d208665-89ae-4733-8888-5d3bfbeeec6c \
-                   --keyring /var/lib/ceph/osd/ceph-0/keyring \
-                   --setuser ceph --setgroup ceph
-
+    When running in containers the --mkfs on raw device sometimes fails
+    to acquire a lock through flock() on the device because systemd-udevd holds one temporarily.
+    See KernelDevice.cc and _lock() to understand how ceph-osd acquires the lock.
+    Because this is really transient, we retry up to 5 times and wait for 1 sec in-between
     """
-    path = '/var/lib/ceph/osd/%s-%s/' % (conf.cluster, osd_id)
-    monmap = os.path.join(path, 'activate.monmap')
-    journal = os.path.join(path, 'journal')
+    for retry in range(5):
+        _, _, returncode = process.call(command, stdin=keyring, terminal_verbose=True, show_command=True)
+        if returncode == 0:
+            break
+        else:
+            if returncode == errno.EWOULDBLOCK:
+                    time.sleep(1)
+                    logger.info('disk is held by another process, trying to mkfs again... (%s/5 attempt)' % retry)
+                    continue
+            else:
+                raise RuntimeError('Command failed with exit code %s: %s' % (returncode, ' '.join(command)))
 
-    system.chown(journal)
-    system.chown(path)
-
-    command = [
-        'ceph-osd',
-        '--cluster', conf.cluster,
-        '--osd-objectstore', 'filestore',
-        '--mkfs',
-        '-i', osd_id,
-        '--monmap', monmap,
-    ]
-
-    if get_osdspec_affinity():
-        command.extend(['--osdspec-affinity', get_osdspec_affinity()])
-
-    if __release__ != 'luminous':
-        # goes through stdin
-        command.extend(['--keyfile', '-'])
-
-    command.extend([
-        '--osd-data', path,
-        '--osd-journal', journal,
-        '--osd-uuid', fsid,
-        '--setuser', 'ceph',
-        '--setgroup', 'ceph'
-    ])
-
-    _, _, returncode = process.call(
-        command, stdin=keyring, terminal_verbose=True, show_command=True
-    )
-    if returncode != 0:
-        raise RuntimeError('Command failed with exit code %s: %s' % (returncode, ' '.join(command)))

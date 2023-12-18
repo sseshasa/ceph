@@ -25,6 +25,7 @@
 
 #include "common/LogClient.h"
 #include "common/ceph_mutex.h"
+#include "common/fair_mutex.h"
 #include "common/Timer.h"
 #include "include/Context.h"
 #include "include/types.h"
@@ -35,22 +36,24 @@
 #include "MDSMap.h"
 #include "MDSRank.h"
 
-#define CEPH_MDS_PROTOCOL    35 /* cluster internal */
+#define CEPH_MDS_PROTOCOL    36 /* cluster internal */
 
 class Messenger;
 class MonClient;
 
 class MDSDaemon : public Dispatcher {
  public:
-  MDSDaemon(std::string_view n, Messenger *m, MonClient *mc);
+  MDSDaemon(std::string_view n, Messenger *m, MonClient *mc,
+	    boost::asio::io_context& ioctx);
+
   ~MDSDaemon() override;
 
   mono_time get_starttime() const {
     return starttime;
   }
-  chrono::duration<double> get_uptime() const {
+  std::chrono::duration<double> get_uptime() const {
     mono_time now = mono_clock::now();
-    return chrono::duration<double>(now-starttime);
+    return std::chrono::duration<double>(now-starttime);
   }
 
   // handle a signal (e.g., SIGTERM)
@@ -70,10 +73,10 @@ class MDSDaemon : public Dispatcher {
    * also check the `stopping` flag.  If stopping is true, you
    * must either do nothing and immediately drop the lock, or
    * never drop the lock again (i.e. call respawn()) */
-  ceph::mutex mds_lock = ceph::make_mutex("MDSDaemon::mds_lock");
+  ceph::fair_mutex mds_lock{"MDSDaemon::mds_lock"};
   bool stopping = false;
 
-  SafeTimer    timer;
+  class CommonSafeTimer<ceph::fair_mutex> timer;
   std::string gss_ktfile_client{};
 
   int orig_argc;
@@ -129,6 +132,7 @@ class MDSDaemon : public Dispatcher {
 
   Messenger    *messenger;
   MonClient    *monc;
+  boost::asio::io_context& ioctx;
   MgrClient     mgrc;
   std::unique_ptr<MDSMap> mdsmap;
   LogClient    log_client;
@@ -142,7 +146,7 @@ class MDSDaemon : public Dispatcher {
 
  private:
   bool ms_dispatch2(const ref_t<Message> &m) override;
-  int ms_handle_authentication(Connection *con) override;
+  int ms_handle_fast_authentication(Connection *con) override;
   void ms_handle_accept(Connection *con) override;
   void ms_handle_connect(Connection *con) override;
   bool ms_handle_reset(Connection *con) override;

@@ -17,12 +17,16 @@
 #include "common/admin_socket.h"
 #include "common/admin_socket_client.h"
 #include "common/ceph_argparse.h"
+#include "json_spirit/json_spirit.h"
 #include "gtest/gtest.h"
 
 #include <stdint.h>
 #include <string.h>
 #include <string>
 #include <sys/un.h>
+#include <signal.h>
+
+using namespace std;
 
 class AdminSocketTest
 {
@@ -116,6 +120,7 @@ TEST(AdminSocket, SendTooLongRequest) {
 
 class MyTest : public AdminSocketHook {
   int call(std::string_view command, const cmdmap_t& cmdmap,
+	   const bufferlist&,
 	   Formatter *f,
 	   std::ostream& ss,
 	   bufferlist& result) override {
@@ -151,6 +156,7 @@ TEST(AdminSocket, RegisterCommand) {
 
 class MyTest2 : public AdminSocketHook {
   int call(std::string_view command, const cmdmap_t& cmdmap,
+	   const bufferlist&,
 	   Formatter *f,
 	   std::ostream& ss,
 	   bufferlist& result) override {
@@ -208,6 +214,7 @@ public:
   BlockingHook() = default;
 
   int call(std::string_view command, const cmdmap_t& cmdmap,
+	   const bufferlist&,
 	   Formatter *f,
 	   std::ostream& ss,
 	   bufferlist& result) override {
@@ -225,20 +232,33 @@ TEST(AdminSocketClient, Ping) {
   {
     bool ok;
     std::string result = client.ping(&ok);
+#ifndef _WIN32
+// TODO: convert WSA errors.
     EXPECT_NE(std::string::npos, result.find("No such file or directory"));
+#endif
     ASSERT_FALSE(ok);
   }
   // file exists but does not allow connections (no process, wrong type...)
-  ASSERT_TRUE(::creat(path.c_str(), 0777));
+  #ifdef _WIN32
+  int fd = ::creat(path.c_str(), _S_IREAD | _S_IWRITE);
+  #else
+  int fd = ::creat(path.c_str(), 0777);
+  #endif
+  ASSERT_TRUE(fd);
+  // On Windows, we won't be able to remove the file unless we close it
+  // first.
+  ASSERT_FALSE(::close(fd));
   {
     bool ok;
     std::string result = client.ping(&ok);
+#ifndef _WIN32
 #if defined(__APPLE__) || defined(__FreeBSD__)
     const char* errmsg = "Socket operation on non-socket";
 #else
     const char* errmsg = "Connection refused";
 #endif
     EXPECT_NE(std::string::npos, result.find(errmsg));
+#endif /* _WIN32 */
     ASSERT_FALSE(ok);
   }
   // a daemon is connected to the socket
@@ -259,7 +279,9 @@ TEST(AdminSocketClient, Ping) {
     ASSERT_TRUE(asoct.init(path));
     bool ok;
     std::string result = client.ping(&ok);
+    #ifndef _WIN32
     EXPECT_NE(std::string::npos, result.find("Resource temporarily unavailable"));
+    #endif
     ASSERT_FALSE(ok);
     {
       std::lock_guard l{blocking->_lock};
@@ -282,18 +304,26 @@ TEST(AdminSocket, bind_and_listen) {
     message = asoct.bind_and_listen(path, &fd);
     ASSERT_NE(0, fd);
     ASSERT_EQ("", message);
-    ASSERT_EQ(0, ::close(fd));
+    ASSERT_EQ(0, ::compat_closesocket(fd));
     ASSERT_EQ(0, ::unlink(path.c_str()));
   }
   // silently discard an existing file
   {
     int fd = 0;
     string message;
-    ASSERT_TRUE(::creat(path.c_str(), 0777));
+    #ifdef _WIN32
+    int fd2 = ::creat(path.c_str(), _S_IREAD | _S_IWRITE);
+    #else
+    int fd2 = ::creat(path.c_str(), 0777);
+    #endif
+    ASSERT_TRUE(fd2);
+    // On Windows, we won't be able to remove the file unless we close it
+    // first.
+    ASSERT_FALSE(::close(fd2));
     message = asoct.bind_and_listen(path, &fd);
     ASSERT_NE(0, fd);
     ASSERT_EQ("", message);
-    ASSERT_EQ(0, ::close(fd));
+    ASSERT_EQ(0, ::compat_closesocket(fd));
     ASSERT_EQ(0, ::unlink(path.c_str()));
   }
   // do not take over a live socket
@@ -306,6 +336,218 @@ TEST(AdminSocket, bind_and_listen) {
     EXPECT_NE(std::string::npos, message.find("File exists"));
     ASSERT_TRUE(asoct.shutdown());
   }
+}
+
+class AdminSocketRaise: public ::testing::Test 
+{
+public:
+  struct TestSignal {
+    int sig;
+    const char * name;
+    std::atomic<int> count;
+  };
+
+  static void SetUpTestSuite() {
+    signal(sig1.sig, sighandler);
+    signal(sig2.sig, sighandler);
+  }
+  static void TearDownTestSuite()
+  {
+    signal(sig1.sig, SIG_DFL);
+    signal(sig2.sig, SIG_DFL);
+  }
+  void SetUp() override
+  {
+    std::string path = get_rand_socket_path();
+    asock = std::make_unique<AdminSocket>(g_ceph_context);
+    asock_client = std::make_unique<AdminSocketClient>(path);
+    ASSERT_TRUE(asock->init(path));
+    sig1.count = 0;
+    sig2.count = 0;
+  }
+  void TearDown() override
+  {
+    AdminSocketTest(asock.get()).shutdown();
+  }
+protected:
+  static TestSignal sig1;
+  static TestSignal sig2;
+
+  std::unique_ptr<AdminSocket> asock;
+  std::unique_ptr<AdminSocketClient> asock_client;
+
+  static void sighandler(int signal)
+  {
+    if (signal == sig1.sig) {
+      sig1.count++;
+    } else if (signal == sig2.sig) {
+      sig2.count++;
+    }
+
+    // Windows resets the handler upon signal delivery
+    // as apparently some linuxes do as well.
+    // The below shouldn't hurt in any case.
+    ::signal(signal, sighandler);
+  }
+  std::string send_raise(std::optional<std::string> arg, std::optional<double> after, bool cancel)
+  {
+    JSONFormatter f;
+    f.open_object_section("");
+    f.dump_string("prefix", "raise");
+    if (arg) {
+      f.dump_string("signal", *arg);
+    }
+    if (after) {
+      f.dump_float("after", *after);
+    }
+    if (cancel) {
+      f.dump_bool("cancel", true);
+    }
+    f.close_section();
+
+    bufferlist command;
+    f.flush(command);
+
+    std::string response;
+
+    asock_client->do_request(command.to_str(), &response);
+    return response;
+  }
+
+  std::string send_raise_cancel(std::optional<std::string> arg = std::nullopt) {
+    return send_raise(arg, std::nullopt, true);
+  }
+
+  std::string send_raise(std::string arg, std::optional<double> after = std::nullopt) {
+    return send_raise(arg, after, false);
+  }
+};
+
+AdminSocketRaise::TestSignal AdminSocketRaise::sig1 = { SIGINT, "INT", 0 };
+AdminSocketRaise::TestSignal AdminSocketRaise::sig2 = { SIGTERM, "TERM", 0 };
+
+TEST_F(AdminSocketRaise, List) {
+  auto r = send_raise("-l");
+  json_spirit::mValue v;
+  ASSERT_TRUE(json_spirit::read(r, v));
+  ASSERT_EQ(json_spirit::Value_type::obj_type, v.type());
+  EXPECT_EQ(sig1.sig, v.get_obj()[sig1.name].get_int());
+  EXPECT_EQ(sig2.sig, v.get_obj()[sig2.name].get_int());
+}
+
+TEST_F(AdminSocketRaise, ImmediateFormats) {
+  std::string name1, name2;
+
+  name1 = sig1.name;
+  std::transform(name1.begin(), name1.end(), name1.begin(), [](int c) { return std::tolower(c); });
+  name2 = fmt::format("-{}", sig2.name);
+  std::transform(name2.begin(), name2.end(), name2.begin(), [](int c) { return std::tolower(c); });
+
+  send_raise(fmt::format("-{}", sig1.sig));
+  send_raise(name1);
+  send_raise(name2);
+  send_raise(fmt::format("{}", sig2.sig));
+  EXPECT_EQ(2, sig1.count.load());
+  EXPECT_EQ(2, sig2.count.load());
+}
+
+TEST_F(AdminSocketRaise, Async)
+{
+  using std::chrono::milliseconds;
+
+#ifdef WIN32
+  GTEST_SKIP() << "Windows doesn't support --after behavior";
+#endif
+
+  ASSERT_EQ("", send_raise(fmt::format("{}", sig1.sig)));
+  ASSERT_EQ("", send_raise(sig2.name, 0.1));
+
+  EXPECT_EQ(1, sig1.count.load());
+  EXPECT_EQ(0, sig2.count.load());
+
+  this_thread::sleep_for(milliseconds(150));
+
+  EXPECT_EQ(1, sig1.count.load());
+  EXPECT_EQ(1, sig2.count.load());
+}
+
+TEST_F(AdminSocketRaise, AsyncReschedule)
+{
+  using std::chrono::milliseconds;
+
+#ifdef WIN32
+  GTEST_SKIP() << "Windows doesn't support --after behavior";
+#endif
+
+  ASSERT_EQ("", send_raise(sig1.name, 0.1));
+  ASSERT_EQ("", send_raise(sig2.name, 0.2));
+
+  EXPECT_EQ(0, sig1.count.load());
+  EXPECT_EQ(0, sig2.count.load());
+
+  this_thread::sleep_for(milliseconds(150));
+
+  // USR1 got overridden by the second async schedule
+  EXPECT_EQ(0, sig1.count.load());
+  EXPECT_EQ(0, sig2.count.load());
+
+  this_thread::sleep_for(milliseconds(100));
+  EXPECT_EQ(0, sig1.count.load());
+  EXPECT_EQ(1, sig2.count.load());
+}
+
+TEST_F(AdminSocketRaise, AsyncCancel)
+{
+  using std::chrono::milliseconds;
+
+#ifdef WIN32
+  GTEST_SKIP() << "Windows doesn't support --after behavior";
+#endif
+
+  ASSERT_EQ("", send_raise(sig1.name, 0.1));
+
+  EXPECT_EQ(0, sig1.count.load());
+  EXPECT_EQ(0, sig2.count.load());
+
+  ASSERT_EQ("", send_raise_cancel(sig2.name));
+
+  this_thread::sleep_for(milliseconds(150));
+
+  // cancel shouldn't have worked because the signals
+  // didn't match
+  EXPECT_EQ(1, sig1.count.load());
+
+  ASSERT_EQ("", send_raise(sig2.name, 0.1));
+  ASSERT_EQ("", send_raise_cancel(sig2.name));
+
+  this_thread::sleep_for(milliseconds(150));
+
+  // cancel must have worked
+  EXPECT_EQ(0, sig2.count.load());
+
+  ASSERT_EQ("", send_raise(sig1.name, 0.1));
+  ASSERT_EQ("", send_raise_cancel());
+
+  // cancel must have worked, the counter stays 1
+  EXPECT_EQ(1, sig1.count.load());
+}
+
+TEST_F(AdminSocketRaise, StopCont)
+{
+  using std::chrono::duration_cast;
+  using std::chrono::milliseconds;
+  using std::chrono::system_clock;
+
+#ifdef WIN32
+  GTEST_SKIP() << "Windows doesn't support SIGSTOP/SIGCONT and --after";
+#endif
+
+  auto then = system_clock::now();
+  ASSERT_EQ("", send_raise("CONT", 0.2));
+  ASSERT_EQ("", send_raise("STOP"));
+  auto elapsed = system_clock::now() - then;
+  // give it a 1% slack
+  EXPECT_LE(milliseconds(198), duration_cast<milliseconds>(elapsed));
 }
 
 /*

@@ -5,7 +5,7 @@ tasks:
       # tests may leave mgrs broken, so don't try and call into them
       # to invoke e.g. pg dump during teardown.
       wait-for-scrub: false
-      log-whitelist:
+      log-ignorelist:
         - overall HEALTH_
         - \(MGR_DOWN\)
         - \(MGR_INSIGHTS_WARNING\)
@@ -14,6 +14,7 @@ tasks:
         - \(RECENT_CRASH\)
         - replacing it with standby
         - No standby daemons available
+        - \(POOL_APP_NOT_ENABLED\)
   - cephfs_test_runner:
       modules:
         - tasks.mgr.test_insights

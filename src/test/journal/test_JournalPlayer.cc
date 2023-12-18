@@ -12,6 +12,7 @@
 #include <list>
 #include <boost/scope_exit.hpp>
 
+using namespace std::chrono_literals;
 typedef std::list<journal::Entry> Entries;
 
 template <typename T>
@@ -954,7 +955,7 @@ TYPED_TEST(TestJournalPlayer, LiveReplayRefetchRemoveEmpty) {
   ASSERT_EQ(expected_entries, entries);
 }
 
-TYPED_TEST(TestJournalPlayer, PrefechShutDown) {
+TYPED_TEST(TestJournalPlayer, PrefetchShutDown) {
   std::string oid = this->get_temp_oid();
 
   ASSERT_EQ(0, this->create(oid));

@@ -255,6 +255,19 @@ struct PriCache : public PriorityCache::PriCache {
     m_cache_ratio = ratio;
   }
 
+  void shift_bins() override {
+  }
+
+  void import_bins(const std::vector<uint64_t> &intervals) override {
+  }
+
+  void set_bins(PriorityCache::Priority pri, uint64_t end_interval) override {
+  }
+
+  uint64_t get_bins(PriorityCache::Priority pri) const override {
+    return 0;
+  }
+
   std::string get_cache_name() const override {
     return m_name;
   }
@@ -325,6 +338,7 @@ public:
   }
 
   int call(std::string_view command, const cmdmap_t& cmdmap,
+	   const bufferlist&,
 	   Formatter *f,
 	   std::ostream& errss,
 	   bufferlist& out) override {
@@ -487,12 +501,8 @@ Mirror::Mirror(CephContext *cct, const std::vector<const char*> &args) :
   m_local(new librados::Rados()),
   m_cache_manager_handler(new CacheManagerHandler(cct)),
   m_pool_meta_cache(new PoolMetaCache(cct)),
-  m_asok_hook(new MirrorAdminSocketHook(cct, this))
-{
-  m_threads =
-    &(cct->lookup_or_create_singleton_object<Threads<librbd::ImageCtx>>(
-	"rbd_mirror::threads", false, cct));
-  m_service_daemon.reset(new ServiceDaemon<>(m_cct, m_local, m_threads));
+  m_asok_hook(new MirrorAdminSocketHook(cct, this)) {
+  dout(10) << "args=" << args << dendl;
 }
 
 Mirror::~Mirror()
@@ -539,6 +549,10 @@ int Mirror::init()
     return r;
   }
 
+  m_threads = &(m_cct->lookup_or_create_singleton_object<
+    Threads<librbd::ImageCtx>>("rbd_mirror::threads", false, m_local));
+  m_service_daemon.reset(new ServiceDaemon<>(m_cct, m_local, m_threads));
+
   r = m_service_daemon->init();
   if (r < 0) {
     derr << "error registering service daemon: " << cpp_strerror(r) << dendl;
@@ -554,6 +568,7 @@ void Mirror::run()
 {
   dout(20) << "enter" << dendl;
 
+  using namespace std::chrono_literals;
   utime_t next_refresh_pools = ceph_clock_now();
 
   while (!m_stopping) {
@@ -714,8 +729,8 @@ void Mirror::update_pool_replayers(const PoolPeers &pool_peers,
           // TODO: make async
           pool_replayer->shut_down();
           pool_replayer->init(site_name);
-        } else if (pool_replayer->is_blacklisted()) {
-          derr << "restarting blacklisted pool replayer for " << peer << dendl;
+        } else if (pool_replayer->is_blocklisted()) {
+          derr << "restarting blocklisted pool replayer for " << peer << dendl;
           // TODO: make async
           pool_replayer->shut_down();
           pool_replayer->init(site_name);

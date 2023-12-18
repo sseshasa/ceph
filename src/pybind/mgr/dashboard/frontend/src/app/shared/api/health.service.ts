@@ -1,10 +1,8 @@
 import { HttpClient } from '@angular/common/http';
 import { Injectable } from '@angular/core';
 
-import { ApiModule } from './api.module';
-
 @Injectable({
-  providedIn: ApiModule
+  providedIn: 'root'
 })
 export class HealthService {
   constructor(private http: HttpClient) {}
@@ -15,5 +13,17 @@ export class HealthService {
 
   getMinimalHealth() {
     return this.http.get('api/health/minimal');
+  }
+
+  getClusterCapacity() {
+    return this.http.get('api/health/get_cluster_capacity');
+  }
+
+  getClusterFsid() {
+    return this.http.get('api/health/get_cluster_fsid');
+  }
+
+  getOrchestratorName() {
+    return this.http.get('api/health/get_orchestrator_name');
   }
 }

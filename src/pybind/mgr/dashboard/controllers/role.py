@@ -1,18 +1,27 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
 
 import cherrypy
 
-from . import ApiController, RESTController, UiApiController,\
-    CreatePermission
 from .. import mgr
-from ..exceptions import RoleDoesNotExist, DashboardException,\
-    RoleIsAssociatedWithUser, RoleAlreadyExists
-from ..security import Scope as SecurityScope, Permission
+from ..exceptions import DashboardException, RoleAlreadyExists, \
+    RoleDoesNotExist, RoleIsAssociatedWithUser
+from ..security import Permission
+from ..security import Scope as SecurityScope
 from ..services.access_control import SYSTEM_ROLES
+from . import APIDoc, APIRouter, CreatePermission, EndpointDoc, RESTController, UIRouter
+
+ROLE_SCHEMA = [{
+    "name": (str, "Role Name"),
+    "description": (str, "Role Descriptions"),
+    "scopes_permissions": ({
+        "cephfs": ([str], "")
+    }, ""),
+    "system": (bool, "")
+}]
 
 
-@ApiController('/role', SecurityScope.USER)
+@APIRouter('/role', SecurityScope.USER)
+@APIDoc("Role Management API", "Role")
 class Role(RESTController):
     @staticmethod
     def _role_to_dict(role):
@@ -42,6 +51,8 @@ class Role(RESTController):
                 if permissions:
                     role.set_scope_permissions(scope, permissions)
 
+    @EndpointDoc("Display Role list",
+                 responses={200: ROLE_SCHEMA})
     def list(self):
         # type: () -> list
         roles = dict(mgr.ACCESS_CTRL_DB.roles)
@@ -126,7 +137,7 @@ class Role(RESTController):
                             role.get('scopes_permissions'))
 
 
-@UiApiController('/scope', SecurityScope.USER)
+@UIRouter('/scope', SecurityScope.USER)
 class Scope(RESTController):
     def list(self):
         return SecurityScope.all_scopes()

@@ -1,8 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef CEPH_RGW_OBJECT_LOCK_H
-#define CEPH_RGW_OBJECT_LOCK_H
+#pragma once
 
 #include <string>
 #include "common/ceph_time.h"
@@ -12,7 +11,7 @@
 class DefaultRetention
 {
 protected:
-  string mode;
+  std::string mode;
   int days;
   int years;
 
@@ -27,7 +26,7 @@ public:
     return years;
   }
 
-  string get_mode() const {
+  std::string get_mode() const {
     return mode;
   }
 
@@ -46,7 +45,7 @@ public:
     decode(years, bl);
     DECODE_FINISH(bl);
   }
-
+  void dump(Formatter *f) const;
   void decode_xml(XMLObj *obj);
   void dump_xml(Formatter *f) const;
 };
@@ -65,7 +64,7 @@ public:
     return defaultRetention.get_years();
   }
 
-  string get_mode() const {
+  std::string get_mode() const {
     return defaultRetention.get_mode();
   }
 
@@ -83,6 +82,8 @@ public:
 
   void decode_xml(XMLObj *obj);
   void dump_xml(Formatter *f) const;
+  void dump(Formatter *f) const;
+  static void generate_test_instances(std::list<ObjectLockRule*>& o);
 };
 WRITE_CLASS_ENCODER(ObjectLockRule)
 
@@ -104,7 +105,7 @@ public:
     return rule.get_years();
   }
 
-  string get_mode() const {
+  std::string get_mode() const {
     return rule.get_mode();
   }
 
@@ -142,23 +143,25 @@ public:
   void decode_xml(XMLObj *obj);
   void dump_xml(Formatter *f) const;
   ceph::real_time get_lock_until_date(const ceph::real_time& mtime) const;
+  void dump(Formatter *f) const;
+  static void generate_test_instances(std::list<RGWObjectLock*>& o);
 };
 WRITE_CLASS_ENCODER(RGWObjectLock)
 
 class RGWObjectRetention
 {
 protected:
-  string mode;
+  std::string mode;
   ceph::real_time retain_until_date;
 public:
   RGWObjectRetention() {}
-  RGWObjectRetention(string _mode, ceph::real_time _date): mode(_mode), retain_until_date(_date) {}
+  RGWObjectRetention(std::string _mode, ceph::real_time _date): mode(_mode), retain_until_date(_date) {}
 
-  void set_mode(string _mode) {
+  void set_mode(std::string _mode) {
     mode = _mode;
   }
 
-  string get_mode() const {
+  std::string get_mode() const {
     return mode;
   }
 
@@ -171,16 +174,20 @@ public:
   }
 
   void encode(bufferlist& bl) const {
-    ENCODE_START(1, 1, bl);
+    ENCODE_START(2, 1, bl);
     encode(mode, bl);
     encode(retain_until_date, bl);
+    ceph::round_trip_encode(retain_until_date, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::const_iterator& bl) {
-    DECODE_START(1, bl);
+    DECODE_START(2, bl);
     decode(mode, bl);
     decode(retain_until_date, bl);
+    if (struct_v >= 2) {
+      ceph::round_trip_decode(retain_until_date, bl);
+    }
     DECODE_FINISH(bl);
   }
 
@@ -192,15 +199,15 @@ WRITE_CLASS_ENCODER(RGWObjectRetention)
 class RGWObjectLegalHold
 {
 protected:
-  string status;
+  std::string status;
 public:
   RGWObjectLegalHold() {}
-  RGWObjectLegalHold(string _status): status(_status) {}
-  void set_status(string _status) {
+  RGWObjectLegalHold(std::string _status): status(_status) {}
+  void set_status(std::string _status) {
     status = _status;
   }
 
-  string get_status() const {
+  std::string get_status() const {
     return status;
   }
 
@@ -221,4 +228,3 @@ public:
   bool is_enabled() const;
 };
 WRITE_CLASS_ENCODER(RGWObjectLegalHold)
-#endif //CEPH_RGW_OBJECT_LOCK_H

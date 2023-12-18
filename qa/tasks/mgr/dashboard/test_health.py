@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
 
-from .helper import DashboardTestCase, JAny, JLeaf, JList, JObj
+from .helper import (DashboardTestCase, JAny, JLeaf, JList, JObj,
+                     addrvec_schema, module_options_schema)
 
 
 class HealthTest(DashboardTestCase):
@@ -22,11 +23,13 @@ class HealthTest(DashboardTestCase):
     __mdsmap_schema = JObj({
         'session_autoclose': int,
         'balancer': str,
+        'bal_rank_mask': str,
         'up': JObj({}, allow_unknown=True),
         'last_failure_osd_epoch': int,
         'in': JList(int),
         'last_failure': int,
         'max_file_size': int,
+        'max_xattr_size': int,
         'explicitly_allowed_features': int,
         'damaged': JList(int),
         'tableserver': int,
@@ -40,7 +43,7 @@ class HealthTest(DashboardTestCase):
             'ro_compat': JObj({}, allow_unknown=True),
             'incompat': JObj({}, allow_unknown=True)
         }),
-        'min_compat_client': str,
+        'required_client_features': JObj({}, allow_unknown=True),
         'data_pools': JList(int),
         'info': JObj({}, allow_unknown=True),
         'fs_name': str,
@@ -50,6 +53,15 @@ class HealthTest(DashboardTestCase):
         'modified': str,
         'session_timeout': int,
         'flags': int,
+        'flags_state': JObj({
+            'joinable': bool,
+            'allow_snaps': bool,
+            'allow_multimds_snaps': bool,
+            'allow_standby_replay': bool,
+            'refuse_client_session': bool,
+            'refuse_standby_for_another_fs': bool,
+            'balance_automate': bool,
+        }),
         'ever_allowed_features': int,
         'root': int
     })
@@ -105,6 +117,7 @@ class HealthTest(DashboardTestCase):
                     JObj({
                         'in': int,
                         'up': int,
+                        'state': JList(str)
                     })),
             }),
             'pg_info': self.__pg_info_schema,
@@ -121,23 +134,7 @@ class HealthTest(DashboardTestCase):
             'can_run': bool,
             'error_string': str,
             'name': str,
-            'module_options': JObj(
-                {},
-                allow_unknown=True,
-                unknown_schema=JObj({
-                    'name': str,
-                    'type': str,
-                    'level': str,
-                    'flags': int,
-                    'default_value': str,
-                    'min': str,
-                    'max': str,
-                    'enum_allowed': JList(str),
-                    'see_also': JList(str),
-                    'desc': str,
-                    'long_desc': str,
-                    'tags': JList(str),
-                })),
+            'module_options': module_options_schema
         })
         schema = JObj({
             'client_perf': JObj({
@@ -169,7 +166,8 @@ class HealthTest(DashboardTestCase):
                         'wr_bytes': int,
                         'compress_bytes_used': int,
                         'compress_under_bytes': int,
-                        'stored_raw': int
+                        'stored_raw': int,
+                        'avail_raw': int
                     }),
                     'name': str,
                     'id': int
@@ -218,11 +216,7 @@ class HealthTest(DashboardTestCase):
             'mgr_map': JObj({
                 'active_addr': str,
                 'active_addrs': JObj({
-                    'addrvec': JList(JObj({
-                        'addr': str,
-                        'nonce': int,
-                        'type': str
-                    }))
+                    'addrvec': addrvec_schema
                 }),
                 'active_change': str,  # timestamp
                 'active_mgr_features': int,
@@ -261,7 +255,7 @@ class HealthTest(DashboardTestCase):
                     'required_mon': JList(str)
                 }),
                 'monmap': JObj({
-                    # TODO: expand on monmap schema
+                    # @TODO: expand on monmap schema
                     'mons': JList(JLeaf(dict)),
                 }, allow_unknown=True),
                 'name': str,
@@ -270,11 +264,12 @@ class HealthTest(DashboardTestCase):
                 'quorum_age': int,
                 'rank': int,
                 'state': str,
-                # TODO: What type should be expected here?
-                'sync_provider': JList(JAny(none=True))
+                # @TODO: What type should be expected here?
+                'sync_provider': JList(JAny(none=True)),
+                'stretch_mode': bool
             }),
             'osd_map': JObj({
-                # TODO: define schema for crush map and osd_metadata, among
+                # @TODO: define schema for crush map and osd_metadata, among
                 # others
                 'osds': JList(
                     JObj({

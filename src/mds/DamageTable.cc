@@ -15,6 +15,7 @@
 #include "common/debug.h"
 
 #include "mds/CDir.h"
+#include "mds/CInode.h"
 
 #include "DamageTable.h"
 
@@ -147,12 +148,11 @@ bool DamageTable::notify_dentry(
     return true;
   }
 
-  auto key = DirFragIdent(ino, frag);
-  if (dentries.count(key) == 0) {
-    DamageEntryRef entry = std::make_shared<DentryDamage>(
-        ino, frag, dname, snap_id);
+  auto& df_dentries = dentries[DirFragIdent(ino, frag)];
+  if (auto [it, inserted] = df_dentries.try_emplace(DentryIdent(dname, snap_id)); inserted) {
+    auto entry = std::make_shared<DentryDamage>(ino, frag, dname, snap_id);
     entry->path = path;
-    dentries[key][DentryIdent(dname, snap_id)] = entry;
+    it->second = entry;
     by_id[entry->id] = std::move(entry);
   }
 
@@ -164,11 +164,8 @@ bool DamageTable::notify_dirfrag(inodeno_t ino, frag_t frag,
 {
   // Special cases: damage to these dirfrags is considered fatal to
   // the MDS rank that owns them.
-  if (
-      (MDS_INO_IS_STRAY(ino) && MDS_INO_STRAY_OWNER(ino) == rank)
-      ||
-      (ino == MDS_INO_ROOT)
-     ) {
+  if ((MDS_INO_IS_STRAY(ino) && MDS_INO_STRAY_OWNER(ino) == rank)
+      || (ino == CEPH_INO_ROOT)) {
     derr << "Damage to fragment " << frag << " of ino " << ino
          << " is fatal because it is a system directory for this rank" << dendl;
     return true;
@@ -178,11 +175,10 @@ bool DamageTable::notify_dirfrag(inodeno_t ino, frag_t frag,
     return true;
   }
 
-  auto key = DirFragIdent(ino, frag);
-  if (dirfrags.count(key) == 0) {
+  if (auto [it, inserted] = dirfrags.try_emplace(DirFragIdent(ino, frag)); inserted) {
     DamageEntryRef entry = std::make_shared<DirFragDamage>(ino, frag);
     entry->path = path;
-    dirfrags[key] = entry;
+    it->second = entry;
     by_id[entry->id] = std::move(entry);
   }
 
@@ -195,14 +191,41 @@ bool DamageTable::notify_remote_damaged(inodeno_t ino, std::string_view path)
     return true;
   }
 
-  if (remotes.count(ino) == 0) {
+  if (auto [it, inserted] = remotes.try_emplace(ino); inserted) {
     auto entry = std::make_shared<BacktraceDamage>(ino);
     entry->path = path;
-    remotes[ino] = entry;
+    it->second = entry;
     by_id[entry->id] = std::move(entry);
   }
 
   return false;
+}
+
+void DamageTable::remove_dentry_damage_entry(CDir *dir)
+{
+  if (dentries.count(
+        DirFragIdent(dir->inode->ino(), dir->frag)
+        ) > 0){
+          const auto frag_dentries =
+            dentries.at(DirFragIdent(dir->inode->ino(), dir->frag));
+          for(const auto &i : frag_dentries) {
+            erase(i.second->id);
+          }
+        }
+}
+
+void DamageTable::remove_dirfrag_damage_entry(CDir *dir)
+{
+  if (is_dirfrag_damaged(dir)){
+    erase(dirfrags.find(DirFragIdent(dir->inode->ino(), dir->frag))->second->id);
+  }
+}
+
+void DamageTable::remove_backtrace_damage_entry(inodeno_t ino)
+{  
+  if (is_remote_damaged(ino)){
+    erase(remotes.find(ino)->second->id);
+  }  
 }
 
 bool DamageTable::oversized() const

@@ -36,7 +36,7 @@ class CDentry;
 class Capability;
 class SimpleLock;
 class ScatterLock;
-class LocalLock;
+class LocalLockC;
 
 class Locker {
 public:
@@ -114,7 +114,6 @@ public:
 
   void xlock_export(const MutationImpl::lock_iterator& it, MutationImpl *mut);
   void xlock_import(SimpleLock *lock);
-  void xlock_downgrade(SimpleLock *lock, MutationImpl *mut);
 
   void try_simple_eval(SimpleLock *lock);
   bool simple_rdlock_try(SimpleLock *lock, MDSContext *con);
@@ -153,7 +152,7 @@ public:
   bool is_revoking_any_caps_from(client_t client);
 
   // local
-  void local_wrlock_grab(LocalLock *lock, MutationRef& mut);
+  void local_wrlock_grab(LocalLockC *lock, MutationRef& mut);
 
   // file
   void file_eval(ScatterLock *lock, bool *need_issue);
@@ -164,6 +163,8 @@ public:
   // -- file i/o --
   version_t issue_file_data_version(CInode *in);
   Capability* issue_new_caps(CInode *in, int mode, MDRequestRef& mdr, SnapRealm *conrealm);
+  int get_allowed_caps(CInode *in, Capability *cap, int &all_allowed,
+                       int &loner_allowed, int &xlocker_allowed);
   int issue_caps(CInode *in, Capability *only_cap=0);
   void issue_caps_set(std::set<CInode*>& inset);
   void issue_truncate(CInode *in);
@@ -174,9 +175,9 @@ public:
 
   void request_inode_file_caps(CInode *in);
 
-  void calc_new_client_ranges(CInode *in, uint64_t size, bool update,
-			      CInode::mempool_inode::client_range_map* new_ranges,
-			      bool *max_increased);
+  bool check_client_ranges(CInode *in, uint64_t size);
+  bool calc_new_client_ranges(CInode *in, uint64_t size,
+			      bool *max_increased=nullptr);
   bool check_inode_max_size(CInode *in, bool force_wrlock=false,
                             uint64_t newmax=0, uint64_t newsize=0,
 			    utime_t mtime=utime_t());
@@ -185,7 +186,7 @@ public:
   // -- client leases --
   void handle_client_lease(const cref_t<MClientLease> &m);
 
-  void issue_client_lease(CDentry *dn, MDRequestRef &mdr, int mask, utime_t now, bufferlist &bl);
+  void issue_client_lease(CDentry *dn, CInode *in, MDRequestRef &mdr, utime_t now, bufferlist &bl);
   void revoke_client_leases(SimpleLock *lock);
   static void encode_lease(bufferlist& bl, const session_info_t& info, const LeaseStat& ls);
 
@@ -212,7 +213,7 @@ protected:
 
   void scatter_writebehind_finish(ScatterLock *lock, MutationRef& mut);
 
-  bool _need_flush_mdlog(CInode *in, int wanted_caps);
+  bool _need_flush_mdlog(CInode *in, int wanted_caps, bool lock_state_any=false);
   void adjust_cap_wanted(Capability *cap, int wanted, int issue_seq);
   void handle_client_caps(const cref_t<MClientCaps> &m);
   void _update_cap_fields(CInode *in, int dirty, const cref_t<MClientCaps> &m, CInode::mempool_inode *pi);
@@ -224,9 +225,9 @@ protected:
   void _do_cap_release(client_t client, inodeno_t ino, uint64_t cap_id, ceph_seq_t mseq, ceph_seq_t seq);
   void caps_tick();
 
-  bool local_wrlock_start(LocalLock *lock, MDRequestRef& mut);
+  bool local_wrlock_start(LocalLockC *lock, MDRequestRef& mut);
   void local_wrlock_finish(const MutationImpl::lock_iterator& it, MutationImpl *mut);
-  bool local_xlock_start(LocalLock *lock, MDRequestRef& mut);
+  bool local_xlock_start(LocalLockC *lock, MDRequestRef& mut);
   void local_xlock_finish(const MutationImpl::lock_iterator& it, MutationImpl *mut);
 
   void handle_file_lock(ScatterLock *lock, const cref_t<MLock> &m);
@@ -259,7 +260,11 @@ private:
   friend class LockerLogContext;
 
   bool any_late_revoking_caps(xlist<Capability*> const &revoking, double timeout) const;
-  uint64_t calc_new_max_size(CInode::mempool_inode *pi, uint64_t size);
+  uint64_t calc_new_max_size(const CInode::inode_const_ptr& pi, uint64_t size);
+  __u32 get_xattr_total_length(CInode::mempool_xattr_map &xattr);
+  void decode_new_xattrs(CInode::mempool_inode *inode,
+			 CInode::mempool_xattr_map *px,
+			 const cref_t<MClientCaps> &m);
 
   MDSRank *mds;
   MDCache *mdcache;

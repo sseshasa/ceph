@@ -1,18 +1,20 @@
 <cd-rbd-tabs></cd-rbd-tabs>
 
-<cd-view-cache *ngFor="let viewCacheStatus of viewCacheStatusList"
-               [status]="viewCacheStatus.status"
-               [statusFor]="viewCacheStatus.statusFor"></cd-view-cache>
-
 <cd-table #table
           [data]="images"
           columnMode="flex"
           [columns]="columns"
-          identifier="id"
+          identifier="unique_id"
           [searchableObjects]="true"
+          [serverSide]="true"
+          [count]="count"
           forceIdentifier="true"
           selectionType="single"
           [hasDetails]="true"
+          [status]="tableStatus"
+          [maxLimit]="25"
+          [autoReload]="-1"
+          (fetchData)="taskListService.fetch($event)"
           (setExpandedRow)="setExpandedRow($event)"
           (updateSelection)="updateSelection($event)">
   <cd-table-actions class="table-actions"
@@ -25,16 +27,36 @@
   </cd-rbd-details>
 </cd-table>
 
-<ng-template #usageNotAvailableTooltipTpl>
-  <div i18n
-       [innerHtml]="'Only available for RBD images with <strong>fast-diff</strong> enabled'"></div>
-</ng-template>
-
 <ng-template #parentTpl
              let-value="value">
   <span *ngIf="value">{{ value.pool_name }}<span
           *ngIf="value.pool_namespace">/{{ value.pool_namespace }}</span>/{{ value.image_name }}@{{ value.snap_name }}</span>
   <span *ngIf="!value">-</span>
+</ng-template>
+
+<ng-template #mirroringTpl
+             let-value="value"
+             let-row="row">
+  <span *ngIf="value.length === 3; else probb"
+        class="badge badge-info">{{ value[0] }}</span>&nbsp;
+  <span *ngIf="value.length === 3"
+        class="badge badge-info">{{ value[1] }}</span>&nbsp;
+  <span *ngIf="row.primary === true"
+        class="badge badge-info"
+        i18n>primary</span>
+  <span *ngIf="row.primary === false"
+        class="badge badge-info"
+        i18n>secondary</span>
+  <ng-template #probb>
+    <span class="badge badge-info">{{ value }}</span>
+  </ng-template>
+</ng-template>
+
+<ng-template #ScheduleTpl
+             let-value="value"
+             let-row="row">
+  <span *ngIf="value.length === 3"
+        class="badge badge-info">{{ value[2] | cdDate  }}</span>
 </ng-template>
 
 <ng-template #flattenTpl
@@ -62,4 +84,58 @@
       </ul>
     </ng-container>
   </div>
+</ng-template>
+
+<ng-template #removingStatTpl
+             let-column="column"
+             let-value="value"
+             let-row="row">
+
+  <i [ngClass]="[icons.spinner, icons.spin]"
+     *ngIf="row.cdExecuting"></i>
+  <span [ngClass]="column?.customTemplateConfig?.valueClass">
+    {{ value }}
+  </span>
+  <span *ngIf="row.cdExecuting"
+        [ngClass]="column?.customTemplateConfig?.executingClass ?
+        column.customTemplateConfig.executingClass :
+        'text-muted italic'">
+    ({{ row.cdExecuting }})
+  </span>
+  <i *ngIf="row.source && row.source === 'REMOVING'"
+     i18n-title
+     title="RBD in status 'Removing'"
+     class="{{ icons.warning }} warn"></i>
+</ng-template>
+
+<ng-template #forcePromoteConfirmation>
+  <cd-alert-panel type="warning">{{ errorMessage }}</cd-alert-panel>
+  <div class="m-4"
+       i18n>
+    <strong>
+       Do you want to force the operation?
+    </strong>
+  </div>
+</ng-template>
+
+<ng-template #imageUsageTpl
+             let-row="row">
+  <span *ngIf="row.features_name && (!row.features_name.includes('fast-diff') || row.mirror_mode === 'snapshot') ; else usageBar"
+        [ngbTooltip]="usageTooltip">
+    <span>-</span>
+  </span>
+  <ng-template #usageBar>
+    <cd-usage-bar *ngIf="row"
+                  [total]="row.size"
+                  [used]="row.disk_usage"
+                  [title]="row.name"
+                  decimals="2">
+  </cd-usage-bar>
+  </ng-template>
+
+</ng-template>
+
+<ng-template #usageTooltip>
+  <div i18n
+       [innerHtml]="'Only available for RBD images with <strong>fast-diff</strong> enabled and without snapshot mirroring'"></div>
 </ng-template>

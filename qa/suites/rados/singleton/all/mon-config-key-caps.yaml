@@ -9,10 +9,11 @@ tasks:
 - install:
 - ceph:
     pre-mgr-commands:
-      - sudo ceph config set mgr mgr/devicehealth/enable_monitoring false --force
-    log-whitelist:
+      - sudo ceph config set mgr mgr_pool false --force
+    log-ignorelist:
     - overall HEALTH_
     - \(AUTH_BAD_CAPS\)
+    - \(POOL_APP_NOT_ENABLED\)
 - workunit:
     clients:
       all:

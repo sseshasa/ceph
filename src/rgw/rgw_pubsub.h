@@ -1,14 +1,11 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef CEPH_RGW_PUBSUB_H
-#define CEPH_RGW_PUBSUB_H
+#pragma once
 
 #include "rgw_sal.h"
-#include "services/svc_sys_obj.h"
 #include "rgw_tools.h"
 #include "rgw_zone.h"
-#include "rgw_rados.h"
 #include "rgw_notify_event_type.h"
 #include <boost/container/flat_map.hpp>
 
@@ -21,6 +18,7 @@ struct rgw_s3_key_filter {
 
   bool has_content() const;
 
+  void dump(Formatter *f) const;
   bool decode_xml(XMLObj *obj);
   void dump_xml(Formatter *f) const;
   
@@ -42,24 +40,26 @@ struct rgw_s3_key_filter {
 };
 WRITE_CLASS_ENCODER(rgw_s3_key_filter)
 
-using KeyValueList = boost::container::flat_map<std::string, std::string>;
+using KeyValueMap = boost::container::flat_map<std::string, std::string>;
+using KeyMultiValueMap = std::multimap<std::string, std::string>;
 
 struct rgw_s3_key_value_filter {
-  KeyValueList kvl;
+  KeyValueMap kv;
   
   bool has_content() const;
-  
+
+  void dump(Formatter *f) const;
   bool decode_xml(XMLObj *obj);
   void dump_xml(Formatter *f) const;
   
   void encode(bufferlist& bl) const {
     ENCODE_START(1, 1, bl);
-    encode(kvl, bl);
+    encode(kv, bl);
     ENCODE_FINISH(bl);
   }
   void decode(bufferlist::const_iterator& bl) {
     DECODE_START(1, bl);
-    decode(kvl, bl);
+    decode(kv, bl);
     DECODE_FINISH(bl);
   }
 };
@@ -71,7 +71,8 @@ struct rgw_s3_filter {
   rgw_s3_key_value_filter tag_filter;
 
   bool has_content() const;
-  
+
+  void dump(Formatter *f) const;
   bool decode_xml(XMLObj *obj);
   void dump_xml(Formatter *f) const;
   
@@ -149,8 +150,13 @@ struct rgw_pubsub_s3_notification {
 
 // return true if the key matches the prefix/suffix/regex rules of the key filter
 bool match(const rgw_s3_key_filter& filter, const std::string& key);
-// return true if the key matches the metadata/tags rules of the metadata/tags filter
-bool match(const rgw_s3_key_value_filter& filter, const KeyValueList& kvl);
+
+// return true if the key matches the metadata rules of the metadata filter
+bool match(const rgw_s3_key_value_filter& filter, const KeyValueMap& kv);
+
+// return true if the key matches the tag rules of the tag filter
+bool match(const rgw_s3_key_value_filter& filter, const KeyMultiValueMap& kv);
+
 // return true if the event type matches (equal or contained in) one of the events in the list
 bool match(const rgw::notify::EventTypeList& events, rgw::notify::EventType event);
 
@@ -206,7 +212,7 @@ struct rgw_pubsub_s3_notifications {
 ]
 }*/
 
-struct rgw_pubsub_s3_record {
+struct rgw_pubsub_s3_event {
   constexpr static const char* const json_type_plural = "Records";
   std::string eventVersion = "2.2";
   // aws:s3
@@ -251,9 +257,9 @@ struct rgw_pubsub_s3_record {
   // this is an rgw extension holding the internal bucket id
   std::string bucket_id;
   // meta data
-  KeyValueList x_meta_map;
+  KeyValueMap x_meta_map;
   // tags
-  KeyValueList tags;
+  KeyMultiValueMap tags;
   // opaque data received from the topic
   // could be used to identify the gateway
   std::string opaque_data;
@@ -324,66 +330,41 @@ struct rgw_pubsub_s3_record {
 
   void dump(Formatter *f) const;
 };
-WRITE_CLASS_ENCODER(rgw_pubsub_s3_record)
+WRITE_CLASS_ENCODER(rgw_pubsub_s3_event)
 
-struct rgw_pubsub_event {
-  constexpr static const char* const json_type_plural = "events";
-  std::string id;
-  std::string event_name;
-  std::string source;
-  ceph::real_time timestamp;
-  JSONFormattable info;
-
-  void encode(bufferlist& bl) const {
-    ENCODE_START(1, 1, bl);
-    encode(id, bl);
-    encode(event_name, bl);
-    encode(source, bl);
-    encode(timestamp, bl);
-    encode(info, bl);
-    ENCODE_FINISH(bl);
-  }
-
-  void decode(bufferlist::const_iterator& bl) {
-    DECODE_START(1, bl);
-    decode(id, bl);
-    decode(event_name, bl);
-    decode(source, bl);
-    decode(timestamp, bl);
-    decode(info, bl);
-    DECODE_FINISH(bl);
-  }
-
-  void dump(Formatter *f) const;
-};
-WRITE_CLASS_ENCODER(rgw_pubsub_event)
-
-// settign a unique ID for an event/record based on object hash and timestamp
+// setting a unique ID for an event based on object hash and timestamp
 void set_event_id(std::string& id, const std::string& hash, const utime_t& ts);
 
-struct rgw_pubsub_sub_dest {
-  std::string bucket_name;
-  std::string oid_prefix;
+struct rgw_pubsub_dest {
   std::string push_endpoint;
   std::string push_endpoint_args;
   std::string arn_topic;
   bool stored_secret = false;
+  bool persistent = false;
+  uint32_t time_to_live;
+  uint32_t max_retries;
+  uint32_t retry_sleep_duration;
 
   void encode(bufferlist& bl) const {
-    ENCODE_START(4, 1, bl);
-    encode(bucket_name, bl);
-    encode(oid_prefix, bl);
+    ENCODE_START(6, 1, bl);
+    encode("", bl);
+    encode("", bl);
     encode(push_endpoint, bl);
     encode(push_endpoint_args, bl);
     encode(arn_topic, bl);
     encode(stored_secret, bl);
+    encode(persistent, bl);
+    encode(time_to_live, bl);
+    encode(max_retries, bl);
+    encode(retry_sleep_duration, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::const_iterator& bl) {
-    DECODE_START(4, bl);
-    decode(bucket_name, bl);
-    decode(oid_prefix, bl);
+    DECODE_START(5, bl);
+    std::string dummy;
+    decode(dummy, bl);
+    decode(dummy, bl);
     decode(push_endpoint, bl);
     if (struct_v >= 2) {
         decode(push_endpoint_args, bl);
@@ -394,66 +375,44 @@ struct rgw_pubsub_sub_dest {
     if (struct_v >= 4) {
         decode(stored_secret, bl);
     }
-    DECODE_FINISH(bl);
-  }
-
-  void dump(Formatter *f) const;
-  void dump_xml(Formatter *f) const;
-};
-WRITE_CLASS_ENCODER(rgw_pubsub_sub_dest)
-
-struct rgw_pubsub_sub_config {
-  rgw_user user;
-  std::string name;
-  std::string topic;
-  rgw_pubsub_sub_dest dest;
-  std::string s3_id;
-
-  void encode(bufferlist& bl) const {
-    ENCODE_START(2, 1, bl);
-    encode(user, bl);
-    encode(name, bl);
-    encode(topic, bl);
-    encode(dest, bl);
-    encode(s3_id, bl);
-    ENCODE_FINISH(bl);
-  }
-
-  void decode(bufferlist::const_iterator& bl) {
-    DECODE_START(2, bl);
-    decode(user, bl);
-    decode(name, bl);
-    decode(topic, bl);
-    decode(dest, bl);
-    if (struct_v >= 2) {
-      decode(s3_id, bl);
+    if (struct_v >= 5) {
+        decode(persistent, bl);
+    }
+    if (struct_v >= 6) {
+      decode(time_to_live, bl);
+      decode(max_retries, bl);
+      decode(retry_sleep_duration, bl);
     }
     DECODE_FINISH(bl);
   }
 
   void dump(Formatter *f) const;
+  void dump_xml(Formatter *f) const;
+  std::string to_json_str() const;
 };
-WRITE_CLASS_ENCODER(rgw_pubsub_sub_config)
+WRITE_CLASS_ENCODER(rgw_pubsub_dest)
 
 struct rgw_pubsub_topic {
   rgw_user user;
   std::string name;
-  rgw_pubsub_sub_dest dest;
+  rgw_pubsub_dest dest;
   std::string arn;
   std::string opaque_data;
+  std::string policy_text;
 
   void encode(bufferlist& bl) const {
-    ENCODE_START(3, 1, bl);
+    ENCODE_START(4, 1, bl);
     encode(user, bl);
     encode(name, bl);
     encode(dest, bl);
     encode(arn, bl);
     encode(opaque_data, bl);
+    encode(policy_text, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::const_iterator& bl) {
-    DECODE_START(3, bl);
+    DECODE_START(4, bl);
     decode(user, bl);
     decode(name, bl);
     if (struct_v >= 2) {
@@ -463,15 +422,19 @@ struct rgw_pubsub_topic {
     if (struct_v >= 3) {
       decode(opaque_data, bl);
     }
+    if (struct_v >= 4) {
+      decode(policy_text, bl);
+    }
     DECODE_FINISH(bl);
   }
 
-  string to_str() const {
-    return user.to_str() + "/" + name;
+  std::string to_str() const {
+    return user.tenant + "/" + name;
   }
 
   void dump(Formatter *f) const;
   void dump_xml(Formatter *f) const;
+  void dump_xml_as_attributes(Formatter *f) const;
 
   bool operator<(const rgw_pubsub_topic& t) const {
     return to_str().compare(t.to_str());
@@ -479,6 +442,7 @@ struct rgw_pubsub_topic {
 };
 WRITE_CLASS_ENCODER(rgw_pubsub_topic)
 
+// this struct deprecated and remain only for backward compatibility
 struct rgw_pubsub_topic_subs {
   rgw_pubsub_topic topic;
   std::set<std::string> subs;
@@ -510,10 +474,9 @@ struct rgw_pubsub_topic_filter {
   void encode(bufferlist& bl) const {
     ENCODE_START(3, 1, bl);
     encode(topic, bl);
-    // events are stored as a vector of strings
+    // events are stored as a vector of std::strings
     std::vector<std::string> tmp_events;
-    const auto converter = s3_id.empty() ? rgw::notify::to_ceph_string : rgw::notify::to_string;
-    std::transform(events.begin(), events.end(), std::back_inserter(tmp_events), converter);
+    std::transform(events.begin(), events.end(), std::back_inserter(tmp_events), rgw::notify::to_string);
     encode(tmp_events, bl);
     encode(s3_id, bl);
     encode(s3_filter, bl);
@@ -523,7 +486,7 @@ struct rgw_pubsub_topic_filter {
   void decode(bufferlist::const_iterator& bl) {
     DECODE_START(3, bl);
     decode(topic, bl);
-    // events are stored as a vector of strings
+    // events are stored as a vector of std::strings
     events.clear();
     std::vector<std::string> tmp_events;
     decode(tmp_events, bl);
@@ -560,243 +523,129 @@ struct rgw_pubsub_bucket_topics {
 };
 WRITE_CLASS_ENCODER(rgw_pubsub_bucket_topics)
 
-struct rgw_pubsub_user_topics {
-  std::map<std::string, rgw_pubsub_topic_subs> topics;
+struct rgw_pubsub_topics {
+  std::map<std::string, rgw_pubsub_topic> topics;
 
   void encode(bufferlist& bl) const {
-    ENCODE_START(1, 1, bl);
+    ENCODE_START(2, 2, bl);
     encode(topics, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::const_iterator& bl) {
-    DECODE_START(1, bl);
-    decode(topics, bl);
+    DECODE_START(2, bl);
+    if (struct_v >= 2) {
+      decode(topics, bl);
+    } else {
+      std::map<std::string, rgw_pubsub_topic_subs> v1topics;
+      decode(v1topics, bl);
+      std::transform(v1topics.begin(), v1topics.end(), std::inserter(topics, topics.end()),
+          [](const auto& entry) {
+            return std::pair<std::string, rgw_pubsub_topic>(entry.first, entry.second.topic); 
+          });
+    }
     DECODE_FINISH(bl);
   }
 
   void dump(Formatter *f) const;
   void dump_xml(Formatter *f) const;
 };
-WRITE_CLASS_ENCODER(rgw_pubsub_user_topics)
+WRITE_CLASS_ENCODER(rgw_pubsub_topics)
 
-static std::string pubsub_user_oid_prefix = "pubsub.user.";
-
-class RGWUserPubSub
+class RGWPubSub
 {
   friend class Bucket;
 
-  rgw::sal::RGWRadosStore *store;
-  rgw_user user;
-  RGWSysObjectCtx obj_ctx;
+  rgw::sal::Driver* const driver;
+  const std::string tenant;
 
-  rgw_raw_obj user_meta_obj;
-
-  std::string user_meta_oid() const {
-    return pubsub_user_oid_prefix + user.to_str();
-  }
-
-  std::string bucket_meta_oid(const rgw_bucket& bucket) const {
-    return pubsub_user_oid_prefix + user.to_str() + ".bucket." + bucket.name + "/" + bucket.bucket_id;
-  }
-
-  std::string sub_meta_oid(const string& name) const {
-    return pubsub_user_oid_prefix + user.to_str() + ".sub." + name;
-  }
-
-  template <class T>
-  int read(const rgw_raw_obj& obj, T *data, RGWObjVersionTracker *objv_tracker);
-
-  template <class T>
-  int write(const rgw_raw_obj& obj, const T& info, RGWObjVersionTracker *obj_tracker);
-
-  int remove(const rgw_raw_obj& obj, RGWObjVersionTracker *objv_tracker);
-
-  int read_user_topics(rgw_pubsub_user_topics *result, RGWObjVersionTracker *objv_tracker);
-  int write_user_topics(const rgw_pubsub_user_topics& topics, RGWObjVersionTracker *objv_tracker);
+  int read_topics(const DoutPrefixProvider *dpp, rgw_pubsub_topics& result, 
+      RGWObjVersionTracker* objv_tracker, optional_yield y) const;
+  int write_topics(const DoutPrefixProvider *dpp, const rgw_pubsub_topics& topics,
+			RGWObjVersionTracker* objv_tracker, optional_yield y) const;
 
 public:
-  RGWUserPubSub(rgw::sal::RGWRadosStore *_store, const rgw_user& _user);
+  RGWPubSub(rgw::sal::Driver* _driver, const std::string& tenant);
 
   class Bucket {
-    friend class RGWUserPubSub;
-    RGWUserPubSub *ps;
-    rgw_bucket bucket;
-    rgw_raw_obj bucket_meta_obj;
+    friend class RGWPubSub;
+    const RGWPubSub& ps;
+    rgw::sal::Bucket* const bucket;
 
     // read the list of topics associated with a bucket and populate into result
     // use version tacker to enforce atomicity between read/write
     // return 0 on success or if no topic was associated with the bucket, error code otherwise
-    int read_topics(rgw_pubsub_bucket_topics *result, RGWObjVersionTracker *objv_tracker);
+    int read_topics(const DoutPrefixProvider *dpp, rgw_pubsub_bucket_topics& result, 
+        RGWObjVersionTracker* objv_tracker, optional_yield y) const;
     // set the list of topics associated with a bucket
     // use version tacker to enforce atomicity between read/write
     // return 0 on success, error code otherwise
-    int write_topics(const rgw_pubsub_bucket_topics& topics, RGWObjVersionTracker *objv_tracker);
+    int write_topics(const DoutPrefixProvider *dpp, const rgw_pubsub_bucket_topics& topics,
+		     RGWObjVersionTracker* objv_tracker, optional_yield y) const;
+    int remove_notification_inner(const DoutPrefixProvider *dpp, const std::string& notification_id,
+                                  bool notif_id_or_topic, optional_yield y) const;
   public:
-    Bucket(RGWUserPubSub *_ps, const rgw_bucket& _bucket) : ps(_ps), bucket(_bucket) {
-      ps->get_bucket_meta_obj(bucket, &bucket_meta_obj);
-    }
+    Bucket(const RGWPubSub& _ps, rgw::sal::Bucket* _bucket) : 
+      ps(_ps), bucket(_bucket)
+    {}
 
-    // read the list of topics associated with a bucket and populate into result
+    // get the list of topics associated with a bucket and populate into result
     // return 0 on success or if no topic was associated with the bucket, error code otherwise
-    int get_topics(rgw_pubsub_bucket_topics *result);
+    int get_topics(const DoutPrefixProvider *dpp, rgw_pubsub_bucket_topics& result, optional_yield y) const {
+      return read_topics(dpp, result, nullptr, y);
+    }
+    // get a bucket_topic with by its name and populate it into "result"
+    // return -ENOENT if the topic does not exists
+    // return 0 on success, error code otherwise
+    int get_notification_by_id(const DoutPrefixProvider *dpp, const std::string& notification_id, rgw_pubsub_topic_filter& result, optional_yield y) const;
     // adds a topic + filter (event list, and possibly name metadata or tags filters) to a bucket
     // assigning a notification name is optional (needed for S3 compatible notifications)
     // if the topic already exist on the bucket, the filter event list may be updated
     // for S3 compliant notifications the version with: s3_filter and notif_name should be used
     // return -ENOENT if the topic does not exists
     // return 0 on success, error code otherwise
-    int create_notification(const string& topic_name, const rgw::notify::EventTypeList& events);
-    int create_notification(const string& topic_name, const rgw::notify::EventTypeList& events, OptionalFilter s3_filter, const std::string& notif_name);
+    int create_notification(const DoutPrefixProvider *dpp, const std::string& topic_name, 
+        const rgw::notify::EventTypeList& events, optional_yield y) const;
+    int create_notification(const DoutPrefixProvider *dpp, const std::string& topic_name, 
+        const rgw::notify::EventTypeList& events, OptionalFilter s3_filter, const std::string& notif_name, optional_yield y) const;
     // remove a topic and filter from bucket
     // if the topic does not exists on the bucket it is a no-op (considered success)
-    // return -ENOENT if the topic does not exists
+    // return -ENOENT if the notification-id/topic does not exists
     // return 0 on success, error code otherwise
-    int remove_notification(const string& topic_name);
+    int remove_notification_by_id(const DoutPrefixProvider *dpp, const std::string& notif_id, optional_yield y) const;
+    int remove_notification(const DoutPrefixProvider *dpp, const std::string& topic_name, optional_yield y) const;
+    // remove all notifications (and autogenerated topics) associated with the bucket
+    // return 0 on success or if no topic was associated with the bucket, error code otherwise
+    int remove_notifications(const DoutPrefixProvider *dpp, optional_yield y) const;
   };
 
-  // base class for subscription
-  class Sub {
-    friend class RGWUserPubSub;
-  protected:
-    RGWUserPubSub* const ps;
-    const std::string sub;
-    rgw_raw_obj sub_meta_obj;
-
-    int read_sub(rgw_pubsub_sub_config *result, RGWObjVersionTracker *objv_tracker);
-    int write_sub(const rgw_pubsub_sub_config& sub_conf, RGWObjVersionTracker *objv_tracker);
-    int remove_sub(RGWObjVersionTracker *objv_tracker);
-  public:
-    Sub(RGWUserPubSub *_ps, const std::string& _sub) : ps(_ps), sub(_sub) {
-      ps->get_sub_meta_obj(sub, &sub_meta_obj);
-    }
-
-    virtual ~Sub() = default;
-
-    int subscribe(const string& topic_name, const rgw_pubsub_sub_dest& dest, const std::string& s3_id="");
-    int unsubscribe(const string& topic_name);
-    int get_conf(rgw_pubsub_sub_config* result);
-    
-    static const int DEFAULT_MAX_EVENTS = 100;
-    // followint virtual methods should only be called in derived
-    virtual int list_events(const string& marker, int max_events) {ceph_assert(false);}
-    virtual int remove_event(const string& event_id) {ceph_assert(false);}
-    virtual void dump(Formatter* f) const {ceph_assert(false);}
-  };
-
-  // subscription with templated list of events to support both S3 compliant and Ceph specific events
-  template<typename EventType>
-  class SubWithEvents : public Sub {
-  private:
-    struct list_events_result {
-      std::string next_marker;
-      bool is_truncated{false};
-      void dump(Formatter *f) const;
-      std::vector<EventType> events;
-    } list;
-
-  public:
-    SubWithEvents(RGWUserPubSub *_ps, const string& _sub) : Sub(_ps, _sub) {}
-
-    virtual ~SubWithEvents() = default;
-    
-    int list_events(const string& marker, int max_events) override;
-    int remove_event(const string& event_id) override;
-    void dump(Formatter* f) const override;
-  };
-
-  using BucketRef = std::shared_ptr<Bucket>;
-  using SubRef = std::shared_ptr<Sub>;
-
-  BucketRef get_bucket(const rgw_bucket& bucket) {
-    return std::make_shared<Bucket>(this, bucket);
+  // get the list of topics
+  // return 0 on success or if no topic was associated with the bucket, error code otherwise
+  int get_topics(const DoutPrefixProvider *dpp, rgw_pubsub_topics& result, optional_yield y) const {
+    return read_topics(dpp, result, nullptr, y);
   }
-
-  SubRef get_sub(const string& sub) {
-    return std::make_shared<Sub>(this, sub);
-  }
-  
-  SubRef get_sub_with_events(const string& sub) {
-    auto tmpsub = Sub(this, sub);
-    rgw_pubsub_sub_config conf;
-    if (tmpsub.get_conf(&conf) < 0) {
-      return nullptr;
-    }
-    if (conf.s3_id.empty()) {
-      return std::make_shared<SubWithEvents<rgw_pubsub_event>>(this, sub);
-    }
-    return std::make_shared<SubWithEvents<rgw_pubsub_s3_record>>(this, sub);
-  }
-
-  void get_user_meta_obj(rgw_raw_obj *obj) const;
-  void get_bucket_meta_obj(const rgw_bucket& bucket, rgw_raw_obj *obj) const;
-
-  void get_sub_meta_obj(const string& name, rgw_raw_obj *obj) const;
-
-  // get all topics defined for the user and populate them into "result"
-  // return 0 on success or if no topics exist, error code otherwise
-  int get_user_topics(rgw_pubsub_user_topics *result);
-  // get a topic with its subscriptions by its name and populate it into "result"
-  // return -ENOENT if the topic does not exists 
-  // return 0 on success, error code otherwise
-  int get_topic(const string& name, rgw_pubsub_topic_subs *result);
   // get a topic with by its name and populate it into "result"
   // return -ENOENT if the topic does not exists 
   // return 0 on success, error code otherwise
-  int get_topic(const string& name, rgw_pubsub_topic *result);
+  int get_topic(const DoutPrefixProvider *dpp, const std::string& name, rgw_pubsub_topic& result, optional_yield y) const;
   // create a topic with a name only
   // if the topic already exists it is a no-op (considered success)
   // return 0 on success, error code otherwise
-  int create_topic(const string& name);
-  // create a topic with push destination information and ARN
-  // if the topic already exists the destination and ARN values may be updated (considered succsess)
-  // return 0 on success, error code otherwise
-  int create_topic(const string& name, const rgw_pubsub_sub_dest& dest, const std::string& arn, const std::string& opaque_data);
+  int create_topic(const DoutPrefixProvider* dpp, const std::string& name,
+                   const rgw_pubsub_dest& dest, const std::string& arn,
+                   const std::string& opaque_data, const rgw_user& user,
+                   const std::string& policy_text, optional_yield y) const;
   // remove a topic according to its name
   // if the topic does not exists it is a no-op (considered success)
   // return 0 on success, error code otherwise
-  int remove_topic(const string& name);
+  int remove_topic(const DoutPrefixProvider *dpp, const std::string& name, optional_yield y) const;
 };
 
+namespace rgw::notify {
 
-template <class T>
-int RGWUserPubSub::read(const rgw_raw_obj& obj, T *result, RGWObjVersionTracker *objv_tracker)
-{
-  bufferlist bl;
-  int ret = rgw_get_system_obj(obj_ctx,
-                               obj.pool, obj.oid,
-                               bl,
-                               objv_tracker,
-                               nullptr, null_yield, nullptr, nullptr);
-  if (ret < 0) {
-    return ret;
-  }
-
-  auto iter = bl.cbegin();
-  try {
-    decode(*result, iter);
-  } catch (buffer::error& err) {
-    return -EIO;
-  }
-
-  return 0;
+  // Denotes that the topic has not overridden the global configurations for (time_to_live / max_retries / retry_sleep_duration)
+  // defaults: (rgw_topic_persistency_time_to_live / rgw_topic_persistency_max_retries / rgw_topic_persistency_sleep_duration)
+  constexpr uint32_t DEFAULT_GLOBAL_VALUE = UINT32_MAX;
+  // Used in case the topic is using the default global value for dumping in a formatter
+  constexpr static const std::string_view DEFAULT_CONFIG{"None"};
 }
-
-template <class T>
-int RGWUserPubSub::write(const rgw_raw_obj& obj, const T& info, RGWObjVersionTracker *objv_tracker)
-{
-  bufferlist bl;
-  encode(info, bl);
-
-  int ret = rgw_put_system_obj(obj_ctx, obj.pool, obj.oid,
-                           bl, false, objv_tracker,
-                           real_time());
-  if (ret < 0) {
-    return ret;
-  }
-
-  obj_ctx.invalidate(obj);
-  return 0;
-}
-
-#endif

@@ -34,7 +34,7 @@ public:
 
   void remove_all_queries();
 
-  int get_counters(MetricQueryID query_id, std::map<Key, PerformanceCounters> *counters);
+  void reregister_queries();
 
   std::map<Query, Limits> get_queries() const {
     std::lock_guard locker(lock);
@@ -44,7 +44,9 @@ public:
       auto result_it = result.insert({query, {}}).first;
       if (is_limited(limits)) {
         for (auto& limit : limits) {
-          result_it->second.insert(*limit.second);
+          if (limit.second) {
+            result_it->second.insert(*limit.second);
+          }
         }
       }
     }
@@ -53,6 +55,7 @@ public:
   }
 
   virtual void process_reports(const MetricPayload &payload) = 0;
+  virtual int get_counters(PerfCollector *collector) = 0;
 
 protected:
   typedef std::optional<Limit> OptionalLimit;
@@ -67,6 +70,7 @@ protected:
   Counters counters;
 
   void process_reports_generic(const std::map<Query, Report> &reports, UpdateCallback callback);
+  int get_counters_generic(MetricQueryID query_id, std::map<Key, PerformanceCounters> *counters);
 
 private:
   MetricListener &listener;

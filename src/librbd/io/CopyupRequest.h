@@ -5,8 +5,8 @@
 #define CEPH_LIBRBD_IO_COPYUP_REQUEST_H
 
 #include "include/int_types.h"
-#include "include/rados/librados.hpp"
 #include "include/buffer.h"
+#include "include/interval_set.h"
 #include "common/ceph_mutex.h"
 #include "common/zipkin_trace.h"
 #include "librbd/io/AsyncOperation.h"
@@ -30,17 +30,19 @@ template <typename ImageCtxT = librbd::ImageCtx>
 class CopyupRequest {
 public:
   static CopyupRequest* create(ImageCtxT *ictx, uint64_t objectno,
-                               Extents &&image_extents,
+                               Extents &&image_extents, ImageArea area,
                                const ZTracer::Trace &parent_trace) {
-    return new CopyupRequest(ictx, objectno, std::move(image_extents),
+    return new CopyupRequest(ictx, objectno, std::move(image_extents), area,
                              parent_trace);
   }
 
-  CopyupRequest(ImageCtxT *ictx, uint64_t objectno, Extents &&image_extents,
+  CopyupRequest(ImageCtxT *ictx, uint64_t objectno,
+                Extents &&image_extents, ImageArea area,
                 const ZTracer::Trace &parent_trace);
   ~CopyupRequest();
 
-  void append_request(AbstractObjectWriteRequest<ImageCtxT> *req);
+  void append_request(AbstractObjectWriteRequest<ImageCtxT> *req,
+                      const Extents& object_extents);
 
   void send();
 
@@ -82,13 +84,15 @@ private:
   ImageCtxT *m_image_ctx;
   uint64_t m_object_no;
   Extents m_image_extents;
+  ImageArea m_image_area;
   ZTracer::Trace m_trace;
 
   bool m_flatten = false;
   bool m_copyup_required = true;
   bool m_copyup_is_zero = true;
+  bool m_deep_copied = false;
 
-  std::map<uint64_t, uint64_t> m_copyup_extent_map;
+  Extents m_copyup_extent_map;
   ceph::bufferlist m_copyup_data;
 
   AsyncOperation m_async_op;
@@ -99,9 +103,12 @@ private:
   ceph::mutex m_lock = ceph::make_mutex("CopyupRequest", false);
   WriteRequests m_pending_requests;
   unsigned m_pending_copyups = 0;
+  int m_copyup_ret_val = 0;
 
   WriteRequests m_restart_requests;
   bool m_append_request_permitted = true;
+
+  interval_set<uint64_t> m_write_object_extents;
 
   void read_from_parent();
   void handle_read_from_parent(int r);
@@ -126,6 +133,8 @@ private:
   bool is_deep_copy() const;
 
   void compute_deep_copy_snap_ids();
+  void convert_copyup_extent_map();
+  int prepare_copyup_data();
 };
 
 } // namespace io

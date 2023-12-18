@@ -13,73 +13,41 @@ from progress import module
 class TestPgRecoveryEvent(object):
     # Testing PgRecoveryEvent class
 
-    def setup(self):
+    def setup_method(self):
         # Creating the class and Mocking 
         # a bunch of attributes for testing
         module._module = mock.Mock() # just so Event._refresh() works
-        self.test_event = module.PgRecoveryEvent(None, None, [module.PgId(1,i) for i in range(3)], [0], 30)
+        self.test_event = module.PgRecoveryEvent(None, None, [module.PgId(1,i) for i in range(3)], [0], 30, False)
 
     def test_pg_update(self):
-        # Test for a completed event when the pg states show active+clear
-        pg_stats = {
-                "pg_stats":[
-        {
-          "state": "active+clean",
-          "stat_sum": {
-            "num_bytes": 10,
-            "num_bytes_recovered": 10
-          },
-          "up": [
-            3,
-            1
-          ],
-          "acting": [
-            3,
-            1
-          ],
-          "pgid": "1.0",
-          "reported_epoch": "30"
-        },
-       {
-          "state": "active+clean",
-          "stat_sum": {
-            "num_bytes": 10,
-            "num_bytes_recovered": 10
-          },
-          "up": [
-            3,
-            1
-          ],
-          "acting": [
-            3,
-            1
-          ],
-          "pgid": "1.1",
-          "reported_epoch": "30"
-        },
-       {
-          "state": "active+clean",
-          "stat_sum": {
-            "num_bytes": 10,
-            "num_bytes_recovered": 10
-          },
-          "up": [
-            3,
-            1
-          ],
-          "acting": [
-            3,
-            1
-          ],
-          "pgid": "1.2",
-          "reported_epoch": "30"
+        # Test for a completed event when the pg states show active+clean
+        pg_progress = {
+            "pgs": {
+                "1.0": {
+                    "state": "active+clean",
+                    "num_bytes": 10,
+                    "num_bytes_recovered": 10,
+                    "reported_epoch": 30,
+                },
+                "1.1": {
+                    "state": "active+clean",
+                    "num_bytes": 10,
+                    "num_bytes_recovered": 10,
+                    "reported_epoch": 30,
+                },
+                "1.2": {
+                    "state": "active+clean",
+                    "num_bytes": 10,
+                    "num_bytes_recovered": 10,
+                    "reported_epoch": 30,
+                },
+            },
+            "pg_ready": True,
         }
-        ]
-        }
-
-        self.test_event.pg_update(pg_stats, True, mock.Mock())
+        self.test_event.pg_update(pg_progress, mock.Mock())
         assert self.test_event._progress == 1.0
-       
+
+
 class OSDMap: 
     
     # This is an artificial class to help
@@ -118,16 +86,18 @@ class OSDMap:
     def pg_to_up_acting_osds(self, pool_id, ps):
         return self._pg_to_up_acting_osds(pool_id, ps)
 
+
 class TestModule(object):
     # Testing Module Class
     
-    def setup(self):
+    def setup_method(self):
         # Creating the class and Mocking a
         # bunch of attributes for testing
 
         module.PgRecoveryEvent.pg_update = mock.Mock()
-        self.test_module = module.Module() # so we can see if an event gets created
-        self.test_module.log = mock.Mock() # we don't need to log anything
+        module.Module._ceph_get_option = mock.Mock()  # .__init__
+        module.Module._configure_logging = lambda *args: ...  # .__init__
+        self.test_module = module.Module('module_name', 0, 0)  # so we can see if an event gets created
         self.test_module.get = mock.Mock() # so we can call pg_update
         self.test_module._complete = mock.Mock() # we want just to see if this event gets called
         self.test_module.get_osdmap = mock.Mock() # so that self.get_osdmap().get_epoch() works

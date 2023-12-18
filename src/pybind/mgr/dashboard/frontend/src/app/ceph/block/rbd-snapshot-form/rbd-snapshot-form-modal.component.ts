@@ -1,17 +1,17 @@
 import { Component, OnInit } from '@angular/core';
-import { FormControl, Validators } from '@angular/forms';
+import { UntypedFormControl, Validators } from '@angular/forms';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import { BsModalRef } from 'ngx-bootstrap/modal';
-import { Subject } from 'rxjs';
+import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
+import { Observable, Subject } from 'rxjs';
+import { RbdMirroringService } from '~/app/shared/api/rbd-mirroring.service';
 
-import { RbdService } from '../../../shared/api/rbd.service';
-import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { FinishedTask } from '../../../shared/models/finished-task';
-import { ImageSpec } from '../../../shared/models/image-spec';
-import { NotificationService } from '../../../shared/services/notification.service';
-import { TaskManagerService } from '../../../shared/services/task-manager.service';
+import { RbdService } from '~/app/shared/api/rbd.service';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { FinishedTask } from '~/app/shared/models/finished-task';
+import { ImageSpec } from '~/app/shared/models/image-spec';
+import { NotificationService } from '~/app/shared/services/notification.service';
+import { TaskManagerService } from '~/app/shared/services/task-manager.service';
 
 @Component({
   selector: 'cd-rbd-snapshot-form-modal',
@@ -23,6 +23,7 @@ export class RbdSnapshotFormModalComponent implements OnInit {
   namespace: string;
   imageName: string;
   snapName: string;
+  mirroring: string;
 
   snapshotForm: CdFormGroup;
 
@@ -30,36 +31,50 @@ export class RbdSnapshotFormModalComponent implements OnInit {
   action: string;
   resource: string;
 
-  public onSubmit: Subject<string>;
+  public onSubmit: Subject<string> = new Subject();
+
+  peerConfigured$: Observable<any>;
 
   constructor(
-    public modalRef: BsModalRef,
+    public activeModal: NgbActiveModal,
     private rbdService: RbdService,
     private taskManagerService: TaskManagerService,
     private notificationService: NotificationService,
-    private i18n: I18n,
-    private actionLabels: ActionLabelsI18n
+    private actionLabels: ActionLabelsI18n,
+    private rbdMirrorService: RbdMirroringService
   ) {
     this.action = this.actionLabels.CREATE;
-    this.resource = this.i18n('RBD Snapshot');
+    this.resource = $localize`RBD Snapshot`;
     this.createForm();
   }
 
   createForm() {
     this.snapshotForm = new CdFormGroup({
-      snapshotName: new FormControl('', {
+      snapshotName: new UntypedFormControl('', {
         validators: [Validators.required]
-      })
+      }),
+      mirrorImageSnapshot: new UntypedFormControl(false, {})
     });
   }
 
-  ngOnInit() {
-    this.onSubmit = new Subject();
+  ngOnInit(): void {
+    this.peerConfigured$ = this.rbdMirrorService.getPeerForPool(this.poolName);
   }
 
   setSnapName(snapName: string) {
     this.snapName = snapName;
     this.snapshotForm.get('snapshotName').setValue(snapName);
+  }
+
+  onMirrorCheckBoxChange() {
+    if (this.snapshotForm.getValue('mirrorImageSnapshot') === true) {
+      this.snapshotForm.get('snapshotName').setValue('');
+      this.snapshotForm.get('snapshotName').clearValidators();
+    } else {
+      this.snapshotForm.get('snapshotName').setValue(this.snapName);
+      this.snapshotForm.get('snapshotName').setValidators([Validators.required]);
+      this.snapshotForm.get('snapshotName').updateValueAndValidity();
+    }
   }
 
   /**
@@ -92,7 +107,7 @@ export class RbdSnapshotFormModalComponent implements OnInit {
             this.notificationService.notifyTask(asyncFinishedTask);
           }
         );
-        this.modalRef.hide();
+        this.activeModal.close();
         this.onSubmit.next(this.snapName);
       })
       .catch(() => {
@@ -102,6 +117,7 @@ export class RbdSnapshotFormModalComponent implements OnInit {
 
   createAction() {
     const snapshotName = this.snapshotForm.getValue('snapshotName');
+    const mirrorImageSnapshot = this.snapshotForm.getValue('mirrorImageSnapshot');
     const imageSpec = new ImageSpec(this.poolName, this.namespace, this.imageName);
     const finishedTask = new FinishedTask();
     finishedTask.name = 'rbd/snap/create';
@@ -110,7 +126,7 @@ export class RbdSnapshotFormModalComponent implements OnInit {
       snapshot_name: snapshotName
     };
     this.rbdService
-      .createSnapshot(imageSpec, snapshotName)
+      .createSnapshot(imageSpec, snapshotName, mirrorImageSnapshot)
       .toPromise()
       .then(() => {
         this.taskManagerService.subscribe(
@@ -120,7 +136,7 @@ export class RbdSnapshotFormModalComponent implements OnInit {
             this.notificationService.notifyTask(asyncFinishedTask);
           }
         );
-        this.modalRef.hide();
+        this.activeModal.close();
         this.onSubmit.next(snapshotName);
       })
       .catch(() => {

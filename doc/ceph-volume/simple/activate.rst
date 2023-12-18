@@ -11,7 +11,7 @@ them, to prevent the UDEV/ceph-disk interaction that will attempt to start them
 up at boot time.
 
 The disabling of ``ceph-disk`` units is done only when calling ``ceph-volume
-simple activate`` directly, but is is avoided when being called by systemd when
+simple activate`` directly, but is avoided when being called by systemd when
 the system is booting up.
 
 The activation process requires using both the :term:`OSD id` and :term:`OSD uuid`
@@ -73,8 +73,7 @@ identify the OSD and its devices, and it will proceed to:
 # mount the device in the corresponding location (by convention this is
   ``/var/lib/ceph/osd/<cluster name>-<osd id>/``)
 
-# ensure that all required devices are ready for that OSD and properly linked,
-regardless of objectstore used (filestore or bluestore). The symbolic link will
-**always** be re-done to ensure that the correct device is linked.
+# ensure that all required devices are ready for that OSD and properly linked. 
+The symbolic link will **always** be re-done to ensure that the correct device is linked.
 
 # start the ``ceph-osd@0`` systemd unit

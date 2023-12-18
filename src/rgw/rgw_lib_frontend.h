@@ -1,19 +1,19 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef RGW_LIB_FRONTEND_H
-#define RGW_LIB_FRONTEND_H
+#pragma once
 
 #include <boost/container/flat_map.hpp>
 
 #include "rgw_lib.h"
-#include "rgw_file.h"
+#include "rgw_file_int.h"
 
 namespace rgw {
 
   class RGWLibProcess : public RGWProcess {
     RGWAccessKey access_key;
     std::mutex mtx;
+    std::condition_variable cv;
     int gen;
     bool shutdown;
 
@@ -24,9 +24,10 @@ namespace rgw {
     using unique_lock = std::unique_lock<std::mutex>;
 
   public:
-    RGWLibProcess(CephContext* cct, RGWProcessEnv* pe, int num_threads,
-		  RGWFrontendConfig* _conf) :
-      RGWProcess(cct, pe, num_threads, _conf), gen(0), shutdown(false) {}
+    RGWLibProcess(CephContext* cct, RGWProcessEnv& pe, int num_threads,
+		  std::string uri_prefix, RGWFrontendConfig* _conf) :
+      RGWProcess(cct, pe, num_threads, std::move(uri_prefix), _conf),
+      gen(0), shutdown(false) {}
 
     void run() override;
     void checkpoint();
@@ -36,6 +37,7 @@ namespace rgw {
       for (const auto& fs: mounted_fs) {
 	fs.second->stop();
       }
+      cv.notify_all();
     }
 
     void register_fs(RGWLibFS* fs) {
@@ -57,14 +59,14 @@ namespace rgw {
 
       lsubdout(g_ceph_context, rgw, 10)
 	<< __func__ << " enqueue request req="
-	<< hex << req << dec << dendl;
+	<< std::hex << req << std::dec << dendl;
 
       req_throttle.get(1);
       req_wq.queue(req);
     } /* enqueue_req */
 
     /* "regular" requests */
-    void handle_request(RGWRequest* req) override; // async handler, deletes req
+    void handle_request(const DoutPrefixProvider *dpp, RGWRequest* req) override; // async handler, deletes req
     int process_request(RGWLibRequest* req);
     int process_request(RGWLibRequest* req, RGWLibIO* io);
     void set_access_key(RGWAccessKey& key) { access_key = key; }
@@ -109,5 +111,3 @@ namespace rgw {
   }; /* RGWLibFrontend */
 
 } /* namespace rgw */
-
-#endif /* RGW_LIB_FRONTEND_H */

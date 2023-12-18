@@ -1,15 +1,15 @@
------------------------------
-Monitoring the iSCSI gateways
------------------------------
+------------------------------
+Monitoring Ceph iSCSI gateways
+------------------------------
 
-Ceph provides an additional tool for iSCSI gateway environments
+Ceph provides a tool for iSCSI gateway environments
 to monitor performance of exported RADOS Block Device (RBD) images.
 
 The ``gwtop`` tool is a ``top``-like tool that displays aggregated
 performance metrics of RBD images that are exported to clients over
 iSCSI. The metrics are sourced from a Performance Metrics Domain Agent
 (PMDA). Information from the Linux-IO target (LIO) PMDA is used to list
-each exported RBD image with the connected client and its associated I/O
+each exported RBD image, the connected client, and its associated I/O
 metrics.
 
 **Requirements:**
@@ -21,37 +21,37 @@ metrics.
 #. As ``root``, install the ``ceph-iscsi-tools`` package on each iSCSI
    gateway node:
 
-   ::
+   .. prompt:: bash #
 
-       # yum install ceph-iscsi-tools
+      yum install ceph-iscsi-tools
 
 #. As ``root``, install the performance co-pilot package on each iSCSI
    gateway node:
 
-   ::
+   .. prompt:: bash #
 
-       # yum install pcp
+      yum install pcp
 
 #. As ``root``, install the LIO PMDA package on each iSCSI gateway node:
 
-   ::
+   .. prompt:: bash #
 
-       # yum install pcp-pmda-lio
+      yum install pcp-pmda-lio
 
 #. As ``root``, enable and start the performance co-pilot service on
    each iSCSI gateway node:
 
-   ::
+   .. prompt:: bash #
 
-       # systemctl enable pmcd
-       # systemctl start pmcd
+      systemctl enable pmcd
+      systemctl start pmcd
 
 #. As ``root``, register the ``pcp-pmda-lio`` agent:
 
-   ::
+   .. prompt:: bash #
 
-       cd /var/lib/pcp/pmdas/lio
-       ./Install
+      cd /var/lib/pcp/pmdas/lio
+      ./Install
 
 By default, ``gwtop`` assumes the iSCSI gateway configuration object is
 stored in a RADOS object called ``gateway.conf`` in the ``rbd`` pool.

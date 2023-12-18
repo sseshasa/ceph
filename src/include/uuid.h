@@ -7,6 +7,7 @@
  */
 
 #include "encoding.h"
+#include "random.h"
 
 #include <ostream>
 #include <random>
@@ -14,6 +15,10 @@
 #include <boost/uuid/uuid.hpp>
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
+
+#if FMT_VERSION >= 90000
+#include <fmt/ostream.h>
+#endif
 
 namespace ceph {
   class Formatter;
@@ -32,7 +37,7 @@ struct uuid_d {
   }
 
   void generate_random() {
-    std::random_device rng;
+    random_device_t rng;
     boost::uuids::basic_random_generator gen(rng);
     uuid = gen();
   }
@@ -54,22 +59,27 @@ struct uuid_d {
     return boost::uuids::to_string(uuid);
   }
 
-  char *bytes() const {
-    return (char*)uuid.data;
+  const char *bytes() const {
+    return (const char*)uuid.data;
   }
 
-  void encode(ceph::buffer::list& bl) const {
-    ceph::encode_raw(uuid, bl);
+  void encode(::ceph::buffer::list::contiguous_appender& p) const {
+    p.append(reinterpret_cast<const char *>(&uuid), sizeof(uuid));
   }
 
-  void decode(ceph::buffer::list::const_iterator& p) const {
-    ceph::decode_raw(uuid, p);
+  void bound_encode(size_t& p) const {
+    p += sizeof(uuid);
+  }
+
+  void decode(::ceph::buffer::ptr::const_iterator& p) {
+    assert((p.get_end() - p.get_pos()) >= (int)sizeof(*this));
+    memcpy((char *)this, p.get_pos_add(sizeof(*this)), sizeof(*this));
   }
 
   void dump(ceph::Formatter *f) const;
   static void generate_test_instances(std::list<uuid_d*>& o);
 };
-WRITE_CLASS_ENCODER(uuid_d)
+WRITE_CLASS_DENC_BOUNDED(uuid_d)
 
 inline std::ostream& operator<<(std::ostream& out, const uuid_d& u) {
   char b[37];
@@ -86,6 +96,12 @@ inline bool operator!=(const uuid_d& l, const uuid_d& r) {
 inline bool operator<(const uuid_d& l, const uuid_d& r) {
   return l.to_string() < r.to_string();
 }
+inline bool operator>(const uuid_d& l, const uuid_d& r) {
+  return l.to_string() > r.to_string();
+}
 
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<uuid_d> : fmt::ostream_formatter {};
+#endif
 
 #endif

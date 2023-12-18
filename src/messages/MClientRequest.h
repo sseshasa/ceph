@@ -35,27 +35,57 @@
 
 #include <string_view>
 
-#include "msg/Message.h"
 #include "include/filepath.h"
 #include "mds/mdstypes.h"
 #include "include/ceph_features.h"
+#include "mds/cephfs_features.h"
+#include "messages/MMDSOp.h"
 
 #include <sys/types.h>
 #include <utime.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 
+struct SnapPayload {
+  std::map<std::string, std::string> metadata;
+
+  void encode(ceph::buffer::list &bl) const {
+    ENCODE_START(1, 1, bl);
+    encode(metadata, bl);
+    ENCODE_FINISH(bl);
+  }
+
+  void decode(ceph::buffer::list::const_iterator &iter) {
+    DECODE_START(1, iter);
+    decode(metadata, iter);
+    DECODE_FINISH(iter);
+  }
+  void dump(ceph::Formatter *f) const {
+    for (const auto &i : metadata) {
+      f->dump_string(i.first.c_str(), i.second);
+    }
+  }
+  static void generate_test_instances(std::list<SnapPayload *> &o) {
+    o.push_back(new SnapPayload);
+    o.push_back(new SnapPayload);
+    o.back()->metadata["key1"] = "val1";
+    o.back()->metadata["key2"] = "val2";
+  }
+};
+
+WRITE_CLASS_ENCODER(SnapPayload)
 
 // metadata ops.
 
-class MClientRequest : public SafeMessage {
+class MClientRequest final : public MMDSOp {
 private:
-  static constexpr int HEAD_VERSION = 4;
+  static constexpr int HEAD_VERSION = 6;
   static constexpr int COMPAT_VERSION = 1;
 
 public:
   mutable struct ceph_mds_request_head head; /* XXX HACK! */
   utime_t stamp;
+  feature_bitset_t mds_features;
 
   struct Release {
     mutable ceph_mds_request_release item;
@@ -76,12 +106,36 @@ public:
       decode(item, bl);
       ceph::decode_nohead(item.dname_len, dname, bl);
     }
+
+    void dump(ceph::Formatter *f) const {
+      f->dump_string("dname", dname);
+      f->dump_unsigned("ino", item.ino);
+      f->dump_unsigned("cap_id", item.cap_id);
+      f->dump_unsigned("caps", item.caps);
+      f->dump_unsigned("wanted", item.wanted);
+      f->dump_unsigned("seq", item.seq);
+      f->dump_unsigned("issue_seq", item.issue_seq);
+      f->dump_unsigned("mseq", item.mseq);
+      f->dump_unsigned("dname_seq", item.dname_seq);
+      f->dump_unsigned("dname_len", item.dname_len);
+    }
+
+    static void generate_test_instances(std::list<Release*>& ls) {
+      ls.push_back(new Release);
+      ls.push_back(new Release);
+      ls.back()->item.dname_len = 4;
+      ls.back()->dname = "test";
+    }
   };
   mutable std::vector<Release> releases; /* XXX HACK! */
 
   // path arguments
   filepath path, path2;
+  std::string alternate_name;
   std::vector<uint64_t> gid_list;
+
+  std::vector<uint8_t> fscrypt_auth;
+  std::vector<uint8_t> fscrypt_file;
 
   /* XXX HACK */
   mutable bool queued_for_replay = false;
@@ -89,13 +143,20 @@ public:
 protected:
   // cons
   MClientRequest()
-    : SafeMessage(CEPH_MSG_CLIENT_REQUEST, HEAD_VERSION, COMPAT_VERSION) {}
-  MClientRequest(int op)
-    : SafeMessage(CEPH_MSG_CLIENT_REQUEST, HEAD_VERSION, COMPAT_VERSION) {
+    : MMDSOp(CEPH_MSG_CLIENT_REQUEST, HEAD_VERSION, COMPAT_VERSION) {
+    memset(&head, 0, sizeof(head));
+    head.owner_uid = -1;
+    head.owner_gid = -1;
+  }
+  MClientRequest(int op, feature_bitset_t features = 0)
+    : MMDSOp(CEPH_MSG_CLIENT_REQUEST, HEAD_VERSION, COMPAT_VERSION) {
     memset(&head, 0, sizeof(head));
     head.op = op;
+    mds_features = features;
+    head.owner_uid = -1;
+    head.owner_gid = -1;
   }
-  ~MClientRequest() override {}
+  ~MClientRequest() final {}
 
 public:
   void set_mdsmap_epoch(epoch_t e) { head.mdsmap_epoch = e; }
@@ -139,8 +200,8 @@ public:
   // normal fields
   void set_stamp(utime_t t) { stamp = t; }
   void set_oldest_client_tid(ceph_tid_t t) { head.oldest_client_tid = t; }
-  void inc_num_fwd() { head.num_fwd = head.num_fwd + 1; }
-  void set_retry_attempt(int a) { head.num_retry = a; }
+  void inc_num_fwd() { head.ext_num_fwd = head.ext_num_fwd + 1; }
+  void set_retry_attempt(int a) { head.ext_num_retry = a; }
   void set_filepath(const filepath& fp) { path = fp; }
   void set_filepath2(const filepath& fp) { path2 = fp; }
   void set_string2(const char *s) { path2.set_path(std::string_view(s), 0); }
@@ -162,19 +223,29 @@ public:
     head.flags = head.flags | CEPH_MDS_FLAG_ASYNC;
   }
 
+  void set_alternate_name(std::string _alternate_name) {
+    alternate_name = std::move(_alternate_name);
+  }
+  void set_alternate_name(bufferptr&& cipher) {
+    alternate_name = std::move(cipher.c_str());
+  }
+
   utime_t get_stamp() const { return stamp; }
   ceph_tid_t get_oldest_client_tid() const { return head.oldest_client_tid; }
-  int get_num_fwd() const { return head.num_fwd; }
-  int get_retry_attempt() const { return head.num_retry; }
+  int get_num_fwd() const { return head.ext_num_fwd; }
+  int get_retry_attempt() const { return head.ext_num_retry; }
   int get_op() const { return head.op; }
   unsigned get_caller_uid() const { return head.caller_uid; }
   unsigned get_caller_gid() const { return head.caller_gid; }
+  unsigned get_owner_uid() const { return head.owner_uid; }
+  unsigned get_owner_gid() const { return head.owner_gid; }
   const std::vector<uint64_t>& get_caller_gid_list() const { return gid_list; }
 
   const std::string& get_path() const { return path.get_path(); }
   const filepath& get_filepath() const { return path; }
   const std::string& get_path2() const { return path2.get_path(); }
   const filepath& get_filepath2() const { return path2; }
+  std::string_view get_alternate_name() const { return std::string_view(alternate_name); }
 
   int get_dentry_wanted() const { return get_flags() & CEPH_MDS_FLAG_WANT_DENTRY; }
 
@@ -194,13 +265,19 @@ public:
       copy_from_legacy_head(&head, &old_mds_head);
       head.version = 0;
 
+      head.ext_num_retry = head.num_retry;
+      head.ext_num_fwd = head.num_fwd;
+
+      head.owner_uid = head.caller_uid;
+      head.owner_gid = head.caller_gid;
+
       /* Can't set the btime from legacy struct */
       if (head.op == CEPH_MDS_OP_SETATTR) {
 	int localmask = head.args.setattr.mask;
 
 	localmask &= ~CEPH_SETATTR_BTIME;
 
-	head.args.setattr.btime = { init_le32(0), init_le32(0) };
+	head.args.setattr.btime = { ceph_le32(0), ceph_le32(0) };
 	head.args.setattr.mask = localmask;
       }
     }
@@ -212,12 +289,30 @@ public:
       decode(stamp, p);
     if (header.version >= 4) // epoch 3 was for a ceph_mds_request_args change
       decode(gid_list, p);
+    if (header.version >= 5)
+      decode(alternate_name, p);
+    if (header.version >= 6) {
+      decode(fscrypt_auth, p);
+      decode(fscrypt_file, p);
+    }
   }
 
   void encode_payload(uint64_t features) override {
     using ceph::encode;
     head.num_releases = releases.size();
-    head.version = CEPH_MDS_REQUEST_HEAD_VERSION;
+    /*
+     * If the peer is old version, we must skip all the
+     * new members, because the old version of MDS or
+     * client will just copy the 'head' memory and isn't
+     * that smart to skip them.
+     */
+    if (!mds_features.test(CEPHFS_FEATURE_32BITS_RETRY_FWD)) {
+      head.version = 1;
+    } else if (!mds_features.test(CEPHFS_FEATURE_HAS_OWNER_UIDGID)) {
+      head.version = 2;
+    } else {
+      head.version = CEPH_MDS_REQUEST_HEAD_VERSION;
+    }
 
     if (features & CEPH_FEATURE_FS_BTIME) {
       encode(head, payload);
@@ -233,6 +328,9 @@ public:
     ceph::encode_nohead(releases, payload);
     encode(stamp, payload);
     encode(gid_list, payload);
+    encode(alternate_name, payload);
+    encode(fscrypt_auth, payload);
+    encode(fscrypt_file, payload);
   }
 
   std::string_view get_type_name() const override { return "creq"; }
@@ -240,6 +338,10 @@ public:
     out << "client_request(" << get_orig_source()
 	<< ":" << get_tid()
 	<< " " << ceph_mds_op_name(get_op());
+    if (IS_CEPH_MDS_OP_NEWINODE(head.op)) {
+      out << " owner_uid=" << head.owner_uid
+	  << ", owner_gid=" << head.owner_gid;
+    }
     if (head.op == CEPH_MDS_OP_GETATTR)
       out << " " << ccap_string(head.args.getattr.mask);
     if (head.op == CEPH_MDS_OP_SETATTR) {
@@ -268,12 +370,16 @@ public:
     }
     //if (!get_filepath().empty()) 
     out << " " << get_filepath();
+    if (alternate_name.size())
+      out << " (" << alternate_name << ") ";
     if (!get_filepath2().empty())
       out << " " << get_filepath2();
     if (stamp != utime_t())
       out << " " << stamp;
-    if (head.num_retry)
-      out << " RETRY=" << (int)head.num_retry;
+    if (head.ext_num_fwd)
+      out << " FWD=" << (int)head.ext_num_fwd;
+    if (head.ext_num_retry)
+      out << " RETRY=" << (int)head.ext_num_retry;
     if (is_async())
       out << " ASYNC";
     if (is_replay())
@@ -291,6 +397,8 @@ public:
 private:
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 };
 
 WRITE_CLASS_ENCODER(MClientRequest::Release)

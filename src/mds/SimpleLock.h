@@ -256,8 +256,9 @@ public:
     return get_sm()->states[state].next == 0;
   }
   bool is_unstable_and_locked() const {
-    if (is_stable())
-      return false;
+    return (!is_stable() && is_locked());
+  }
+  bool is_locked() const {
     return is_rdlocked() || is_wrlocked() || is_xlocked();
   }
   int get_next_state() {
@@ -291,7 +292,7 @@ public:
   }
 
   void init_gather() {
-    for (const auto p : parent->get_replicas()) {
+    for (const auto& p : parent->get_replicas()) {
       more()->gather_set.insert(p.first);
     }
   }
@@ -398,7 +399,7 @@ public:
   void get_xlock(MutationRef who, client_t client) { 
     ceph_assert(get_xlock_by() == MutationRef());
     ceph_assert(state == LOCK_XLOCK || is_locallock() ||
-	   state == LOCK_LOCK /* if we are a slave */);
+	   state == LOCK_LOCK /* if we are a peer */);
     parent->get(MDSCacheObject::PIN_LOCK);
     more()->num_xlock++;
     more()->xlock_by = who; 
@@ -407,7 +408,7 @@ public:
   void set_xlock_done() {
     ceph_assert(more()->xlock_by);
     ceph_assert(state == LOCK_XLOCK || is_locallock() ||
-	   state == LOCK_LOCK /* if we are a slave */);
+	   state == LOCK_LOCK /* if we are a peer */);
     if (!is_locallock())
       state = LOCK_XLOCKDONE;
     more()->xlock_by.reset();
@@ -415,7 +416,8 @@ public:
   void put_xlock() {
     ceph_assert(state == LOCK_XLOCK || state == LOCK_XLOCKDONE ||
 	   state == LOCK_XLOCKSNAP || state == LOCK_LOCK_XLOCK ||
-	   state == LOCK_LOCK  || /* if we are a master of a slave */
+	   state == LOCK_LOCK  || /* if we are a leader of a peer */
+	   state == LOCK_PREXLOCK || state == LOCK_SYNC ||
 	   is_locallock());
     --more()->num_xlock;
     parent->put(MDSCacheObject::PIN_LOCK);

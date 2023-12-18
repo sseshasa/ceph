@@ -15,9 +15,9 @@
 #ifndef CEPH_MMDSFRAGMENTNOTIFY_H
 #define CEPH_MMDSFRAGMENTNOTIFY_H
 
-#include "msg/Message.h"
+#include "messages/MMDSOp.h"
 
-class MMDSFragmentNotify : public SafeMessage {
+class MMDSFragmentNotify final : public MMDSOp {
 private:
   static constexpr int HEAD_VERSION = 2;
   static constexpr int COMPAT_VERSION = 1;
@@ -38,13 +38,13 @@ private:
 
 protected:
   MMDSFragmentNotify() :
-    SafeMessage{MSG_MDS_FRAGMENTNOTIFY, HEAD_VERSION, COMPAT_VERSION} {}
+    MMDSOp{MSG_MDS_FRAGMENTNOTIFY, HEAD_VERSION, COMPAT_VERSION} {}
   MMDSFragmentNotify(dirfrag_t df, int b, uint64_t tid) :
-    SafeMessage{MSG_MDS_FRAGMENTNOTIFY, HEAD_VERSION, COMPAT_VERSION},
+    MMDSOp{MSG_MDS_FRAGMENTNOTIFY, HEAD_VERSION, COMPAT_VERSION},
     base_dirfrag(df), bits(b) {
     set_tid(tid);
   }
-  ~MMDSFragmentNotify() override {}
+  ~MMDSFragmentNotify() final {}
 
 public: 
   std::string_view get_type_name() const override { return "fragment_notify"; }
@@ -70,7 +70,9 @@ public:
   }
 private:
   template<class T, typename... Args>
-  friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);  
+  friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);  
 };
 
 #endif

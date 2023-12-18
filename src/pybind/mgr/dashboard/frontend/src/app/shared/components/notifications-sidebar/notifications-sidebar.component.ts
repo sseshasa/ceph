@@ -9,20 +9,27 @@ import {
 } from '@angular/core';
 
 import { Mutex } from 'async-mutex';
-import * as _ from 'lodash';
-import * as moment from 'moment';
+import _ from 'lodash';
+import moment from 'moment';
 import { Subscription } from 'rxjs';
 
-import { Icons } from '../../enum/icons.enum';
-import { CdNotification } from '../../models/cd-notification';
-import { ExecutingTask } from '../../models/executing-task';
-import { FinishedTask } from '../../models/finished-task';
-import { AuthStorageService } from '../../services/auth-storage.service';
-import { NotificationService } from '../../services/notification.service';
-import { PrometheusAlertService } from '../../services/prometheus-alert.service';
-import { PrometheusNotificationService } from '../../services/prometheus-notification.service';
-import { SummaryService } from '../../services/summary.service';
-import { TaskMessageService } from '../../services/task-message.service';
+import { PrometheusService } from '~/app/shared/api/prometheus.service';
+import { SucceededActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { NotificationType } from '~/app/shared/enum/notification-type.enum';
+import {
+  AlertmanagerSilence,
+  AlertmanagerSilenceMatcher
+} from '~/app/shared/models/alertmanager-silence';
+import { CdNotification } from '~/app/shared/models/cd-notification';
+import { ExecutingTask } from '~/app/shared/models/executing-task';
+import { FinishedTask } from '~/app/shared/models/finished-task';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { NotificationService } from '~/app/shared/services/notification.service';
+import { PrometheusAlertService } from '~/app/shared/services/prometheus-alert.service';
+import { PrometheusNotificationService } from '~/app/shared/services/prometheus-notification.service';
+import { SummaryService } from '~/app/shared/services/summary.service';
+import { TaskMessageService } from '~/app/shared/services/task-message.service';
 
 @Component({
   selector: 'cd-notifications-sidebar',
@@ -56,8 +63,10 @@ export class NotificationsSidebarComponent implements OnInit, OnDestroy {
     private summaryService: SummaryService,
     private taskMessageService: TaskMessageService,
     private prometheusNotificationService: PrometheusNotificationService,
+    private succeededLabels: SucceededActionLabelsI18n,
     private authStorageService: AuthStorageService,
     private prometheusAlertService: PrometheusAlertService,
+    private prometheusService: PrometheusService,
     private ngZone: NgZone,
     private cdRef: ChangeDetectorRef
   ) {
@@ -108,15 +117,12 @@ export class NotificationsSidebarComponent implements OnInit, OnDestroy {
     );
 
     this.subs.add(
-      this.summaryService.subscribe((data: any) => {
-        if (!data) {
-          return;
-        }
-        this._handleTasks(data.executing_tasks);
+      this.summaryService.subscribe((summary) => {
+        this._handleTasks(summary.executing_tasks);
 
         this.mutex.acquire().then((release) => {
           _.filter(
-            data.finished_tasks,
+            summary.finished_tasks,
             (task: FinishedTask) => !this.last_task || moment(task.end_time).isAfter(this.last_task)
           ).forEach((task) => {
             const config = this.notificationService.finishedTaskToNotification(task, task.success);
@@ -141,8 +147,8 @@ export class NotificationsSidebarComponent implements OnInit, OnDestroy {
   }
 
   _handleTasks(executingTasks: ExecutingTask[]) {
-    for (const excutingTask of executingTasks) {
-      excutingTask.description = this.taskMessageService.getRunningTitle(excutingTask);
+    for (const executingTask of executingTasks) {
+      executingTask.description = this.taskMessageService.getRunningTitle(executingTask);
     }
     this.executingTasks = executingTasks;
   }
@@ -166,5 +172,57 @@ export class NotificationsSidebarComponent implements OnInit, OnDestroy {
 
   trackByFn(index: number) {
     return index;
+  }
+
+  silence(data: CdNotification) {
+    const datetimeFormat = 'YYYY-MM-DD HH:mm';
+    const resource = $localize`silence`;
+    const matcher: AlertmanagerSilenceMatcher = {
+      name: 'alertname',
+      value: data['title'].split(' ')[0],
+      isRegex: false
+    };
+    const silencePayload: AlertmanagerSilence = {
+      matchers: [matcher],
+      startsAt: moment(moment().format(datetimeFormat)).toISOString(),
+      endsAt: moment(moment().add(2, 'hours').format(datetimeFormat)).toISOString(),
+      createdBy: this.authStorageService.getUsername(),
+      comment: 'Silence created from the alert notification'
+    };
+    let msg = '';
+
+    data.alertSilenced = true;
+    msg = msg.concat(` ${matcher.name} - ${matcher.value},`);
+    const title = `${this.succeededLabels.CREATED} ${resource} for ${msg.slice(0, -1)}`;
+    this.prometheusService.setSilence(silencePayload).subscribe((resp) => {
+      if (data) {
+        data.silenceId = resp.body['silenceId'];
+      }
+      this.notificationService.show(
+        NotificationType.success,
+        title,
+        undefined,
+        undefined,
+        'Prometheus'
+      );
+    });
+  }
+
+  expire(data: CdNotification) {
+    data.alertSilenced = false;
+    this.prometheusService.expireSilence(data.silenceId).subscribe(
+      () => {
+        this.notificationService.show(
+          NotificationType.success,
+          `${this.succeededLabels.EXPIRED} ${data.silenceId}`,
+          undefined,
+          undefined,
+          'Prometheus'
+        );
+      },
+      (resp) => {
+        resp['application'] = 'Prometheus';
+      }
+    );
   }
 }

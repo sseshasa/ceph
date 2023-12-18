@@ -29,6 +29,7 @@ const std::map<uint64_t, std::string> ImageFeatures::FEATURE_MAPPING = {
   {RBD_FEATURE_OPERATIONS, RBD_FEATURE_NAME_OPERATIONS},
   {RBD_FEATURE_MIGRATING, RBD_FEATURE_NAME_MIGRATING},
   {RBD_FEATURE_NON_PRIMARY, RBD_FEATURE_NAME_NON_PRIMARY},
+  {RBD_FEATURE_DIRTY_CACHE, RBD_FEATURE_NAME_DIRTY_CACHE},
 };
 
 Format::Formatter Format::create_formatter(bool pretty) const {
@@ -201,7 +202,7 @@ void add_snap_spec_options(po::options_description *pos,
   pos->add_options()
     ((get_name_prefix(modifier) + SNAPSHOT_SPEC).c_str(),
      (get_description_prefix(modifier) + "snapshot specification\n" +
-      "(example: [<pool-name>/[<namespace>/]]<image-name>@<snapshot-name>)").c_str());
+      "(example: [<pool-name>/[<namespace>/]]<image-name>@<snap-name>)").c_str());
   add_pool_option(opt, modifier);
   add_namespace_option(opt, modifier);
   add_image_option(opt, modifier);
@@ -307,7 +308,7 @@ void add_verbose_option(boost::program_options::options_description *opt) {
 
 void add_no_error_option(boost::program_options::options_description *opt) {
   opt->add_options()
-    (NO_ERROR.c_str(), po::bool_switch(), "continue after error");
+    (NO_ERR.c_str(), po::bool_switch(), "continue after error");
 }
 
 void add_export_format_option(boost::program_options::options_description *opt) {
@@ -319,6 +320,25 @@ void add_flatten_option(boost::program_options::options_description *opt) {
   opt->add_options()
     (IMAGE_FLATTEN.c_str(), po::bool_switch(),
      "fill clone with parent data (make it independent)");
+}
+
+void add_snap_create_options(po::options_description *opt) {
+  opt->add_options()
+    (SKIP_QUIESCE.c_str(), po::bool_switch(), "do not run quiesce hooks")
+    (IGNORE_QUIESCE_ERROR.c_str(), po::bool_switch(),
+     "ignore quiesce hook error");
+}
+
+void add_encryption_options(boost::program_options::options_description *opt) {
+  opt->add_options()
+    (ENCRYPTION_FORMAT.c_str(),
+     po::value<std::vector<EncryptionFormat>>(),
+     "encryption format (luks, luks1, luks2) [default: luks]");
+
+  opt->add_options()
+    (ENCRYPTION_PASSPHRASE_FILE.c_str(),
+     po::value<std::vector<std::string>>(),
+     "path to file containing passphrase for unlocking the image");
 }
 
 std::string get_short_features_help(bool append_suffix) {
@@ -375,7 +395,7 @@ void validate(boost::any& v, const std::vector<std::string>& values,
   const std::string &s = po::validators::get_single_string(values);
 
   std::string parse_error;
-  uint64_t size = strict_iecstrtoll(s.c_str(), &parse_error);
+  uint64_t size = strict_iecstrtoll(s, &parse_error);
   if (!parse_error.empty()) {
     throw po::validation_error(po::validation_error::invalid_option_value);
   }
@@ -409,7 +429,7 @@ void validate(boost::any& v, const std::vector<std::string>& values,
   const std::string &s = po::validators::get_single_string(values);
 
   std::string parse_error;
-  uint64_t objectsize = strict_iecstrtoll(s.c_str(), &parse_error);
+  uint64_t objectsize = strict_iecstrtoll(s, &parse_error);
   if (!parse_error.empty()) {
     throw po::validation_error(po::validation_error::invalid_option_value);
   }
@@ -493,7 +513,7 @@ void validate(boost::any& v, const std::vector<std::string>& values,
   const std::string &s = po::validators::get_single_string(values);
 
   std::string parse_error;
-  uint64_t size = strict_iecstrtoll(s.c_str(), &parse_error);
+  uint64_t size = strict_iecstrtoll(s, &parse_error);
   if (parse_error.empty() && (size >= (1 << 12)) && (size <= (1 << 26))) {
     v = boost::any(size);
     return;
@@ -502,12 +522,40 @@ void validate(boost::any& v, const std::vector<std::string>& values,
 }
 
 void validate(boost::any& v, const std::vector<std::string>& values,
+              EncryptionAlgorithm *target_type, int) {
+  po::validators::check_first_occurrence(v);
+  const std::string &s = po::validators::get_single_string(values);
+  if (s == "aes-128") {
+    v = boost::any(RBD_ENCRYPTION_ALGORITHM_AES128);
+  } else if (s == "aes-256") {
+    v = boost::any(RBD_ENCRYPTION_ALGORITHM_AES256);
+  } else {
+    throw po::validation_error(po::validation_error::invalid_option_value);
+  }
+}
+
+void validate(boost::any& v, const std::vector<std::string>& values,
+              EncryptionFormat *target_type, int) {
+  po::validators::check_first_occurrence(v);
+  const std::string &s = po::validators::get_single_string(values);
+  if (s == "luks") {
+    v = boost::any(EncryptionFormat{RBD_ENCRYPTION_FORMAT_LUKS});
+  } else if (s == "luks1") {
+    v = boost::any(EncryptionFormat{RBD_ENCRYPTION_FORMAT_LUKS1});
+  } else if (s == "luks2") {
+    v = boost::any(EncryptionFormat{RBD_ENCRYPTION_FORMAT_LUKS2});
+  } else {
+    throw po::validation_error(po::validation_error::invalid_option_value);
+  }
+}
+
+void validate(boost::any& v, const std::vector<std::string>& values,
               ExportFormat *target_type, int) {
   po::validators::check_first_occurrence(v);
   const std::string &s = po::validators::get_single_string(values);
 
   std::string parse_error;
-  uint64_t format = strict_iecstrtoll(s.c_str(), &parse_error);
+  uint64_t format = strict_iecstrtoll(s, &parse_error);
   if (!parse_error.empty() || (format != 1 && format != 2)) {
     throw po::validation_error(po::validation_error::invalid_option_value);
   }

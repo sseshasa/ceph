@@ -12,14 +12,14 @@
  *
  */
 
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/config/warning_disable.hpp>
-#include <boost/spirit/include/qi_uint.hpp>
-#include <boost/spirit/include/qi.hpp>
-#include <boost/fusion/include/std_pair.hpp>
-#include <boost/spirit/include/phoenix.hpp>
 #include <boost/fusion/adapted/struct/adapt_struct.hpp>
 #include <boost/fusion/include/adapt_struct.hpp>
-#include <boost/algorithm/string/predicate.hpp>
+#include <boost/fusion/include/std_pair.hpp>
+#include <boost/phoenix.hpp>
+#include <boost/spirit/include/qi.hpp>
+#include <boost/spirit/include/qi_uint.hpp>
 
 #include "MgrCap.h"
 #include "include/stringify.h"
@@ -186,7 +186,7 @@ void MgrCapGrant::expand_profile(std::ostream *err) const {
       perms = mgr_rwxa_t{MGR_CAP_R | MGR_CAP_W};
     }
 
-    // whitelist all 'rbd_support' commands (restricted by optional
+    // allow all 'rbd_support' commands (restricted by optional
     // pool/namespace constraints)
     profile_grants.push_back({{}, "rbd_support", {}, {},
                               std::move(filtered_arguments), perms});

@@ -1,22 +1,25 @@
-import { Component, Input, OnInit } from '@angular/core';
+import { Component, Inject, OnInit } from '@angular/core';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
+import _ from 'lodash';
 
-import { ListWithDetails } from '../../../../shared/classes/list-with-details.class';
-import { CdTableColumn } from '../../../../shared/models/cd-table-column';
-import { PrometheusRule } from '../../../../shared/models/prometheus-alerts';
-import { DurationPipe } from '../../../../shared/pipes/duration.pipe';
+import { PrometheusService } from '~/app/shared/api/prometheus.service';
+import { CellTemplate } from '~/app/shared/enum/cell-template.enum';
+import { PrometheusListHelper } from '~/app/shared/helpers/prometheus-list-helper';
+import { CdTableColumn } from '~/app/shared/models/cd-table-column';
+import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
+import { PrometheusRule } from '~/app/shared/models/prometheus-alerts';
+import { DurationPipe } from '~/app/shared/pipes/duration.pipe';
+import { PrometheusAlertService } from '~/app/shared/services/prometheus-alert.service';
 
 @Component({
   selector: 'cd-rules-list',
   templateUrl: './rules-list.component.html',
   styleUrls: ['./rules-list.component.scss']
 })
-export class RulesListComponent extends ListWithDetails implements OnInit {
-  @Input()
-  data: any;
+export class RulesListComponent extends PrometheusListHelper implements OnInit {
   columns: CdTableColumn[];
-  expandedRow: PrometheusRule;
+  declare expandedRow: PrometheusRule;
+  selection = new CdTableSelection();
 
   /**
    * Hide active alerts in details of alerting rules as they are already shown
@@ -25,18 +28,42 @@ export class RulesListComponent extends ListWithDetails implements OnInit {
    */
   hideKeys = ['alerts', 'type'];
 
-  constructor(private i18n: I18n) {
-    super();
+  constructor(
+    public prometheusAlertService: PrometheusAlertService,
+    @Inject(PrometheusService) prometheusService: PrometheusService
+  ) {
+    super(prometheusService);
   }
 
   ngOnInit() {
+    super.ngOnInit();
     this.columns = [
-      { prop: 'name', name: this.i18n('Name') },
-      { prop: 'labels.severity', name: this.i18n('Severity') },
-      { prop: 'group', name: this.i18n('Group') },
-      { prop: 'duration', name: this.i18n('Duration'), pipe: new DurationPipe() },
-      { prop: 'query', name: this.i18n('Query'), isHidden: true },
-      { prop: 'annotations.description', name: this.i18n('Description') }
+      { prop: 'name', name: $localize`Name`, cellClass: 'fw-bold', flexGrow: 2 },
+      {
+        prop: 'labels.severity',
+        name: $localize`Severity`,
+        flexGrow: 1,
+        cellTransformation: CellTemplate.badge,
+        customTemplateConfig: {
+          map: {
+            critical: { class: 'badge-danger' },
+            warning: { class: 'badge-warning' }
+          }
+        }
+      },
+      {
+        prop: 'group',
+        name: $localize`Group`,
+        flexGrow: 1,
+        cellTransformation: CellTemplate.badge
+      },
+      { prop: 'duration', name: $localize`Duration`, pipe: new DurationPipe(), flexGrow: 1 },
+      { prop: 'query', name: $localize`Query`, isHidden: true, flexGrow: 1 },
+      { prop: 'annotations.summary', name: $localize`Summary`, flexGrow: 3 }
     ];
+  }
+
+  updateSelection(selection: CdTableSelection) {
+    this.selection = selection;
   }
 }

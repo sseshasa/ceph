@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 
-set -ex
+# set -x
+set -e
 
 # if defined, debug messages will be displayed and prepended with the string
 # debug="DEBUG"
 
-huge_size=2222 # in megabytes
-big_size=6 # in megabytes
+huge_size=5100 # in megabytes
+big_size=7 # in megabytes
 
 huge_obj=/tmp/huge_obj.temp.$$
 big_obj=/tmp/big_obj.temp.$$
@@ -17,6 +18,13 @@ awscli_dir=${HOME}/awscli_temp
 export PATH=${PATH}:${awscli_dir}
 
 rgw_host=$(hostname --fqdn)
+if echo "$rgw_host" | grep -q '\.' ; then
+    :
+else
+    host_domain=".front.sepia.ceph.com"
+    echo "WARNING: rgw hostname -- $rgw_host -- does not appear to be fully qualified; PUNTING and appending $host_domain"
+    rgw_host="${rgw_host}${host_domain}"
+fi
 rgw_port=80
 
 echo "Fully Qualified Domain Name: $rgw_host"
@@ -49,9 +57,8 @@ uninstall_awscli() {
     cd "$here"
 }
 
-sudo dnf install -y s3cmd
-
-sudo yum install python3-setuptools
+sudo yum -y install s3cmd
+sudo yum -y install python3-setuptools
 sudo yum -y install python3-pip
 sudo pip3 install --upgrade setuptools
 sudo pip3 install python-swiftclient
@@ -154,7 +161,6 @@ mys3uploadkill() {
 	exit 1
     fi
 
-    set -v
     local_file="$1"
     remote_bkt="$2"
     remote_obj="$3"
@@ -223,8 +229,16 @@ mys3cmd ls s3://multipart-bkt
 bkt="incomplete-mp-bkt-1"
 
 mys3cmd mb s3://$bkt
-mys3uploadkill $huge_obj $bkt incomplete-mp-obj-1 $fifo 20
-mys3uploadkill $huge_obj $bkt incomplete-mp-obj-2 $fifo 100
+
+mys3uploadkill $huge_obj $bkt incomplete-mp-obj-c $fifo 20
+
+# generate an incomplete multipart with more than 1,000 parts
+mys3uploadkill $huge_obj $bkt incomplete-mp-obj-b $fifo 1005
+
+# generate more than 1000 incomplet multiparts
+for c in $(seq 1005) ;do
+    mys3uploadkill $huge_obj $bkt incomplete-mp-obj-c-$c $fifo 3
+done
 
 ####################################
 # resharded bucket

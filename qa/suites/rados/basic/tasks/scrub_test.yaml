@@ -1,7 +1,7 @@
 overrides:
   ceph:
     wait-for-scrub: false
-    log-whitelist:
+    log-ignorelist:
     - '!= data_digest'
     - '!= omap_digest'
     - '!= size'
@@ -22,6 +22,7 @@ overrides:
     - \(PG_
     - \(OSD_SCRUB_ERRORS\)
     - \(TOO_FEW_PGS\)
+    - \(POOL_APP_NOT_ENABLED\)
     conf:
       osd:
         osd deep scrub update digest min age: 0

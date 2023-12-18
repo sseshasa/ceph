@@ -14,7 +14,10 @@
 
 #include "Mutation.h"
 #include "ScatterLock.h"
+#include "CInode.h"
 #include "CDir.h"
+
+using namespace std;
 
 // MutationImpl
 
@@ -215,33 +218,6 @@ void MutationImpl::_clear_remote_auth_pinned(ObjectState &stat)
   --num_remote_auth_pins;
 }
 
-void MutationImpl::add_projected_inode(CInode *in)
-{
-  projected_inodes.push_back(in);
-}
-
-void MutationImpl::pop_and_dirty_projected_inodes()
-{
-  while (!projected_inodes.empty()) {
-    CInode *in = projected_inodes.front();
-    projected_inodes.pop_front();
-    in->pop_and_dirty_projected_inode(ls);
-  }
-}
-
-void MutationImpl::add_projected_fnode(CDir *dir)
-{
-  projected_fnodes.push_back(dir);
-}
-
-void MutationImpl::pop_and_dirty_projected_fnodes()
-{
-  for (const auto& dir : projected_fnodes) {
-    dir->pop_and_dirty_projected_fnode(ls);
-  }
-  projected_fnodes.clear();
-}
-
 void MutationImpl::add_updated_lock(ScatterLock *lock)
 {
   updated_locks.push_back(lock);
@@ -256,24 +232,34 @@ void MutationImpl::add_cow_inode(CInode *in)
 void MutationImpl::add_cow_dentry(CDentry *dn)
 {
   pin(dn);
-  dirty_cow_dentries.push_back(pair<CDentry*,version_t>(dn, dn->get_projected_version()));
+  dirty_cow_dentries.emplace_back(dn, dn->get_projected_version());
 }
 
 void MutationImpl::apply()
 {
-  pop_and_dirty_projected_inodes();
-  pop_and_dirty_projected_fnodes();
-  
+  for (auto& obj : projected_nodes) {
+    if (CInode *in = dynamic_cast<CInode*>(obj))
+      in->pop_and_dirty_projected_inode(ls, nullptr);
+  }
+
   for (const auto& in : dirty_cow_inodes) {
     in->_mark_dirty(ls);
   }
-  for (const auto& [dentry, v] : dirty_cow_dentries) {
-    dentry->mark_dirty(v, ls);
+
+  for (const auto& [dn, v] : dirty_cow_dentries) {
+    dn->mark_dirty(v, ls);
   }
-  
+
+  for (auto& obj : projected_nodes) {
+    if (CDir *dir = dynamic_cast<CDir*>(obj))
+      dir->pop_and_dirty_projected_fnode(ls, nullptr);
+  }
+
   for (const auto& lock : updated_locks) {
     lock->mark_dirty();
   }
+
+  projected_nodes.clear();
 }
 
 void MutationImpl::cleanup()
@@ -282,7 +268,7 @@ void MutationImpl::cleanup()
   drop_pins();
 }
 
-void MutationImpl::_dump_op_descriptor_unlocked(ostream& stream) const
+void MutationImpl::_dump_op_descriptor(ostream& stream) const
 {
   stream << "Mutation";
 }
@@ -311,14 +297,14 @@ bool MDRequestImpl::has_witnesses()
   return (_more != nullptr) && (!_more->witnessed.empty());
 }
 
-bool MDRequestImpl::slave_did_prepare()
+bool MDRequestImpl::peer_did_prepare()
 {
-  return has_more() && more()->slave_commit;
+  return has_more() && more()->peer_commit;
 }
 
-bool MDRequestImpl::slave_rolling_back()
+bool MDRequestImpl::peer_rolling_back()
 {
-  return has_more() && more()->slave_rolling_back;
+  return has_more() && more()->peer_rolling_back;
 }
 
 bool MDRequestImpl::freeze_auth_pin(CInode *inode)
@@ -418,12 +404,31 @@ bool MDRequestImpl::is_queued_for_replay() const
   return client_request ? client_request->is_queued_for_replay() : false;
 }
 
-bool MDRequestImpl::is_batch_op()
+bool MDRequestImpl::can_batch()
 {
-  return (client_request->get_op() == CEPH_MDS_OP_LOOKUP &&
-      client_request->get_filepath().depth() == 1) ||
-    (client_request->get_op() == CEPH_MDS_OP_GETATTR &&
-     client_request->get_filepath().depth() == 0);
+  if (num_auth_pins || num_remote_auth_pins || lock_cache || !locks.empty())
+    return false;
+
+  auto op = client_request->get_op();
+  auto& path = client_request->get_filepath();
+  if (op == CEPH_MDS_OP_GETATTR) {
+    if (path.depth() == 0)
+      return true;
+  } else if (op == CEPH_MDS_OP_LOOKUP) {
+    if (path.depth() == 1 && !path.is_last_snap())
+      return true;
+  }
+
+  return false;
+}
+
+std::unique_ptr<BatchOp> MDRequestImpl::release_batch_op()
+{
+  int mask = client_request->head.args.getattr.mask;
+  auto it = batch_op_map->find(mask);
+  std::unique_ptr<BatchOp> bop = std::move(it->second);
+  batch_op_map->erase(it);
+  return bop;
 }
 
 int MDRequestImpl::compare_paths()
@@ -441,111 +446,112 @@ int MDRequestImpl::compare_paths()
 
 cref_t<MClientRequest> MDRequestImpl::release_client_request()
 {
-  msg_lock.lock();
+  std::lock_guard l(lock);
   cref_t<MClientRequest> req;
   req.swap(client_request);
-  msg_lock.unlock();
+  client_request = req;
   return req;
 }
 
-void MDRequestImpl::reset_slave_request(const cref_t<MMDSSlaveRequest>& req)
+void MDRequestImpl::reset_peer_request(const cref_t<MMDSPeerRequest>& req)
 {
-  msg_lock.lock();
-  cref_t<MMDSSlaveRequest> old;
-  old.swap(slave_request);
-  slave_request = req;
-  msg_lock.unlock();
-  old.reset();
+  std::lock_guard l(lock);
+  peer_request = req;
 }
 
 void MDRequestImpl::print(ostream &out) const
 {
   out << "request(" << reqid << " nref=" << nref;
   //if (request) out << " " << *request;
-  if (is_slave()) out << " slave_to mds." << slave_to_mds;
+  if (is_peer()) out << " peer_to mds." << peer_to_mds;
   if (client_request) out << " cr=" << client_request;
-  if (slave_request) out << " sr=" << slave_request;
+  if (peer_request) out << " sr=" << peer_request;
   out << ")";
 }
 
-void MDRequestImpl::dump(Formatter *f) const
+void MDRequestImpl::_dump(Formatter *f, bool has_mds_lock) const
 {
-  _dump(f);
-}
+  std::lock_guard l(lock);
+  f->dump_string("flag_point", _get_state_string());
+  f->dump_object("reqid", reqid);
+  if (client_request) {
+    f->dump_string("op_type", "client_request");
+  } else if (is_peer()) { // replies go to an existing mdr
+    f->dump_string("op_type", "peer_request");
+    f->open_object_section("leader_info");
+    f->dump_stream("leader") << peer_to_mds;
+    f->close_section(); // leader_info
 
-void MDRequestImpl::_dump(Formatter *f) const
-{
-  f->dump_string("flag_point", state_string());
-  f->dump_stream("reqid") << reqid;
-  {
-    msg_lock.lock();
-    auto _client_request = client_request;
-    auto _slave_request =slave_request;
-    msg_lock.unlock();
-
-    if (_client_request) {
-      f->dump_string("op_type", "client_request");
-      f->open_object_section("client_info");
-      f->dump_stream("client") << _client_request->get_orig_source();
-      f->dump_int("tid", _client_request->get_tid());
-      f->close_section(); // client_info
-    } else if (is_slave() && _slave_request) { // replies go to an existing mdr
-      f->dump_string("op_type", "slave_request");
-      f->open_object_section("master_info");
-      f->dump_stream("master") << _slave_request->get_orig_source();
-      f->close_section(); // master_info
-
+    if (peer_request) {
       f->open_object_section("request_info");
-      f->dump_int("attempt", _slave_request->get_attempt());
+      f->dump_int("attempt", peer_request->get_attempt());
       f->dump_string("op_type",
-	  MMDSSlaveRequest::get_opname(_slave_request->get_op()));
-      f->dump_int("lock_type", _slave_request->get_lock_type());
-      f->dump_stream("object_info") << _slave_request->get_object_info();
-      f->dump_stream("srcdnpath") << _slave_request->srcdnpath;
-      f->dump_stream("destdnpath") << _slave_request->destdnpath;
-      f->dump_stream("witnesses") << _slave_request->witnesses;
+         MMDSPeerRequest::get_opname(peer_request->get_op()));
+      f->dump_int("lock_type", peer_request->get_lock_type());
+      f->dump_stream("object_info") << peer_request->get_object_info();
+      f->dump_stream("srcdnpath") << peer_request->srcdnpath;
+      f->dump_stream("destdnpath") << peer_request->destdnpath;
+      f->dump_stream("witnesses") << peer_request->witnesses;
       f->dump_bool("has_inode_export",
-	  _slave_request->inode_export_v != 0);
-      f->dump_int("inode_export_v", _slave_request->inode_export_v);
-      f->dump_stream("op_stamp") << _slave_request->op_stamp;
+         peer_request->inode_export_v != 0);
+      f->dump_int("inode_export_v", peer_request->inode_export_v);
+      f->dump_stream("op_stamp") << peer_request->op_stamp;
       f->close_section(); // request_info
     }
-    else if (internal_op != -1) { // internal request
-      f->dump_string("op_type", "internal_op");
-      f->dump_int("internal_op", internal_op);
-      f->dump_string("op_name", ceph_mds_op_name(internal_op));
-    }
-    else {
-      f->dump_string("op_type", "no_available_op_found");
-    }
   }
+  else if (internal_op != -1) { // internal request
+    f->dump_string("op_type", "internal_op");
+    f->dump_int("internal_op", internal_op);
+    f->dump_string("op_name", ceph_mds_op_name(internal_op));
+  }
+  else {
+    f->dump_string("op_type", "no_available_op_found");
+  }
+
   {
     f->open_array_section("events");
-    std::lock_guard l(lock);
     for (auto& i : events) {
       f->dump_object("event", i);
     }
     f->close_section(); // events
   }
+
+  if (has_mds_lock) {
+    f->open_array_section("locks");
+    for (auto& l : locks) {
+      f->open_object_section("lock");
+      {
+        auto* mdsco = l.lock->get_parent();
+        f->dump_object("object", *mdsco);
+        CachedStackStringStream css;
+        *css << *mdsco;
+        f->dump_string("object_string", css->strv());
+        f->dump_object("lock", *l.lock);
+        f->dump_int("flags", l.flags);
+        f->dump_int("wrlock_target", l.wrlock_target);
+      }
+      f->close_section();
+    }
+    f->close_section();
+  } else {
+    f->dump_null("locks");
+  }
 }
 
-void MDRequestImpl::_dump_op_descriptor_unlocked(ostream& stream) const
+void MDRequestImpl::_dump_op_descriptor(ostream& os) const
 {
-  msg_lock.lock();
-  auto _client_request = client_request;
-  auto _slave_request = slave_request;
-  msg_lock.unlock();
-
-  if (_client_request) {
-    _client_request->print(stream);
-  } else if (_slave_request) {
-    _slave_request->print(stream);
+  if (client_request) {
+    client_request->print(os);
+  } else if (peer_request) {
+    peer_request->print(os);
+  } else if (is_peer()) {
+    os << "peer_request:" << reqid;
   } else if (internal_op >= 0) {
-    stream << "internal op " << ceph_mds_op_name(internal_op) << ":" << reqid;
+    os << "internal op " << ceph_mds_op_name(internal_op) << ":" << reqid;
   } else {
-    // drat, it's triggered by a slave request, but we don't have a message
+    // drat, it's triggered by a peer request, but we don't have a message
     // FIXME
-    stream << "rejoin:" << reqid;
+    os << "rejoin:" << reqid;
   }
 }
 

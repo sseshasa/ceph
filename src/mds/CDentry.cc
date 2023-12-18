@@ -17,6 +17,7 @@
 #include "CDentry.h"
 #include "CInode.h"
 #include "CDir.h"
+#include "SnapClient.h"
 
 #include "MDSRank.h"
 #include "MDCache.h"
@@ -28,12 +29,13 @@
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_mds
 #undef dout_prefix
-#define dout_prefix *_dout << "mds." << dir->cache->mds->get_nodeid() << ".cache.den(" << dir->dirfrag() << " " << name << ") "
+#define dout_prefix *_dout << "mds." << dir->mdcache->mds->get_nodeid() << ".cache.den(" << dir->dirfrag() << " " << name << ") "
 
+using namespace std;
 
-ostream& CDentry::print_db_line_prefix(ostream& out)
+ostream& CDentry::print_db_line_prefix(ostream& out) const
 {
-  return out << ceph_clock_now() << " mds." << dir->cache->mds->get_nodeid() << ".cache.den(" << dir->ino() << " " << name << ") ";
+  return out << ceph_clock_now() << " mds." << dir->mdcache->mds->get_nodeid() << ".cache.den(" << dir->ino() << " " << name << ") ";
 }
 
 LockType CDentry::lock_type(CEPH_LOCK_DN);
@@ -63,7 +65,10 @@ ostream& operator<<(ostream& out, const CDentry& dn)
     if (dn.is_replicated()) 
       out << dn.get_replicas();
   } else {
-    out << " rep@" << dn.authority();
+    mds_authority_t a = dn.authority();
+    out << " rep@" << a.first;
+    if (a.second != CDIR_AUTH_UNKNOWN)
+      out << "," << a.second;
     out << "." << dn.get_replica_nonce();
   }
 
@@ -109,6 +114,10 @@ ostream& operator<<(ostream& out, const CDentry& dn)
     dn.print_pin_set(out);
   }
 
+  if (dn.get_alternate_name().size()) {
+    out << " altname=" << binstrprint(dn.get_alternate_name(), 16);
+  }
+
   out << " " << &dn;
   out << "]";
   return out;
@@ -126,7 +135,7 @@ bool operator<(const CDentry& l, const CDentry& r)
 }
 
 
-void CDentry::print(ostream& out)
+void CDentry::print(ostream& out) const
 {
   out << *this;
 }
@@ -190,7 +199,7 @@ void CDentry::mark_dirty(version_t pv, LogSegment *ls)
   _mark_dirty(ls);
 
   // mark dir too
-  dir->mark_dirty(pv, ls);
+  dir->mark_dirty(ls, pv);
 }
 
 
@@ -215,6 +224,22 @@ void CDentry::mark_new()
 {
   dout(10) << __func__ << " " << *this << dendl;
   state_set(STATE_NEW);
+}
+
+void CDentry::mark_auth()
+{
+  if (!is_auth()) {
+    state_set(STATE_AUTH);
+    dir->adjust_dentry_lru(this);
+  }
+}
+
+void CDentry::clear_auth()
+{
+  if (is_auth()) {
+    state_clear(STATE_AUTH);
+    dir->adjust_dentry_lru(this);
+  }
 }
 
 void CDentry::make_path_string(string& s, bool projected) const
@@ -248,6 +273,9 @@ void CDentry::link_remote(CDentry::linkage_t *dnl, CInode *in)
 
   if (dnl == &linkage)
     in->add_remote_parent(this);
+
+  // check for reintegration
+  dir->mdcache->eval_remote(this);
 }
 
 void CDentry::unlink_remote(CDentry::linkage_t *dnl)
@@ -311,9 +339,11 @@ CDentry::linkage_t *CDentry::pop_projected_linkage()
       linkage.inode = n.inode;
       linkage.inode->add_remote_parent(this);
     }
-  } else if (n.inode) {
-    dir->link_primary_inode(this, n.inode);
-    n.inode->pop_projected_parent();
+  } else {
+    if (n.inode) {
+      dir->link_primary_inode(this, n.inode);
+      n.inode->pop_projected_parent();
+    }
   }
 
   ceph_assert(n.inode == linkage.inode);
@@ -414,7 +444,7 @@ void CDentry::encode_lock_state(int type, bufferlist& bl)
   if (linkage.is_primary()) {
     c = 1;
     encode(c, bl);
-    encode(linkage.get_inode()->inode.ino, bl);
+    encode(linkage.get_inode()->ino(), bl);
   }
   else if (linkage.is_remote()) {
     c = 2;
@@ -530,6 +560,37 @@ void CDentry::_put()
   }
 }
 
+void CDentry::encode_remote(inodeno_t& ino, unsigned char d_type,
+                            std::string_view alternate_name,
+                            bufferlist &bl)
+{
+  bl.append('l');  // remote link
+
+  // marker, name, ino
+  ENCODE_START(2, 1, bl);
+  encode(ino, bl);
+  encode(d_type, bl);
+  encode(alternate_name, bl);
+  ENCODE_FINISH(bl);
+}
+
+void CDentry::decode_remote(char icode, inodeno_t& ino, unsigned char& d_type,
+                            mempool::mds_co::string& alternate_name,
+                            ceph::buffer::list::const_iterator& bl)
+{
+  if (icode == 'l') {
+    DECODE_START(2, bl);
+    decode(ino, bl);
+    decode(d_type, bl);
+    if (struct_v >= 2)
+      decode(alternate_name, bl);
+    DECODE_FINISH(bl);
+  } else if (icode == 'L') {
+    decode(ino, bl);
+    decode(d_type, bl);
+  } else ceph_assert(0);
+}
+
 void CDentry::dump(Formatter *f) const
 {
   ceph_assert(f != NULL);
@@ -600,6 +661,64 @@ std::string CDentry::linkage_t::get_remote_d_type_string() const
     case S_IFIFO: return "fifo";
     default: ceph_abort(); return "";
   }
+}
+
+bool CDentry::scrub(snapid_t next_seq)
+{
+  dout(20) << "scrubbing " << *this << " next_seq = " << next_seq << dendl;
+
+  /* attempt to locate damage in first of CDentry, see:
+   * https://tracker.ceph.com/issues/56140
+   */
+  /* skip projected dentries as first/last may have placeholder values */
+  if (!is_projected()) {
+    CDir* dir = get_dir();
+
+    if (first > next_seq) {
+      derr << __func__ << ": first > next_seq (" << next_seq << ") " << *this << dendl;
+      dir->go_bad_dentry(last, get_name());
+      return true;
+    } else if (first > last) {
+      derr << __func__ << ": first > last " << *this << dendl;
+      dir->go_bad_dentry(last, get_name());
+      return true;
+    }
+
+    auto&& realm = dir->get_inode()->find_snaprealm();
+    if (realm) {
+      auto&& snaps = realm->get_snaps();
+      auto it = snaps.lower_bound(first);
+      bool stale = last != CEPH_NOSNAP && (it == snaps.end() || *it > last);
+      if (stale) {
+        dout(20) << "is stale" << dendl;
+        /* TODO: maybe trim? */
+      }
+    }
+  }
+  return false;
+}
+
+bool CDentry::check_corruption(bool load)
+{
+  auto&& snapclient = dir->mdcache->mds->snapclient;
+  auto next_snap = snapclient->get_last_seq()+1;
+  if (first > last || (snapclient->is_server_ready() && first > next_snap)) {
+    if (load) {
+      dout(1) << "loaded already corrupt dentry: " << *this << dendl;
+      corrupt_first_loaded = true;
+    } else {
+      derr << "newly corrupt dentry to be committed: " << *this << dendl;
+    }
+    if (g_conf().get_val<bool>("mds_go_bad_corrupt_dentry")) {
+      dir->go_bad_dentry(last, get_name());
+    }
+    if (!load && g_conf().get_val<bool>("mds_abort_on_newly_corrupt_dentry")) {
+      dir->mdcache->mds->clog->error() << "MDS abort because newly corrupt dentry to be committed: " << *this;
+      dir->mdcache->mds->abort("detected newly corrupt dentry"); /* avoid writing out newly corrupted dn */
+    }
+    return true;
+  }
+  return false;
 }
 
 MEMPOOL_DEFINE_OBJECT_FACTORY(CDentry, co_dentry, mds_co);

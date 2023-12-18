@@ -1,11 +1,11 @@
 import { Component, Input, OnInit } from '@angular/core';
-import { FormControl, NgForm } from '@angular/forms';
+import { UntypedFormControl, NgForm } from '@angular/forms';
 
-import * as _ from 'lodash';
+import _ from 'lodash';
 
-import { Icons } from '../../../shared/enum/icons.enum';
-import { ConfigurationService } from '../../api/configuration.service';
-import { CdFormGroup } from '../../forms/cd-form-group';
+import { ConfigurationService } from '~/app/shared/api/configuration.service';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
 import { ConfigOptionTypes } from './config-option.types';
 
 @Component({
@@ -48,7 +48,7 @@ export class ConfigOptionComponent implements OnInit {
   private createForm() {
     this.optionsForm.addControl(this.optionsFormGroupName, this.optionsFormGroup);
     this.optionNames.forEach((optionName) => {
-      this.optionsFormGroup.addControl(optionName, new FormControl(null));
+      this.optionsFormGroup.addControl(optionName, new UntypedFormControl(null));
     });
   }
 

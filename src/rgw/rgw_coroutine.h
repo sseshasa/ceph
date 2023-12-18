@@ -1,15 +1,14 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef CEPH_RGW_COROUTINE_H
-#define CEPH_RGW_COROUTINE_H
+#pragma once
 
 #ifdef _ASSERT_H
 #define NEED_ASSERT_H
 #pragma push_macro("_ASSERT_H")
 #endif
 
-#include <boost/asio.hpp>
+#include <boost/asio/coroutine.hpp>
 #include <boost/intrusive_ptr.hpp>
 
 #ifdef NEED_ASSERT_H
@@ -21,7 +20,6 @@
 #include "common/debug.h"
 #include "common/Timer.h"
 #include "common/admin_socket.h"
-#include "common/RWLock.h"
 
 #include "rgw_common.h"
 #include "rgw_http_client_types.h"
@@ -45,10 +43,10 @@ class RGWCompletionManager : public RefCountedObject {
     rgw_io_id io_id;
     void *user_info;
   };
-  list<io_completion> complete_reqs;
-  set<rgw_io_id> complete_reqs_set;
+  std::list<io_completion> complete_reqs;
+  std::set<rgw_io_id> complete_reqs_set;
   using NotifierRef = boost::intrusive_ptr<RGWAioCompletionNotifier>;
-  set<NotifierRef> cns;
+  std::set<NotifierRef> cns;
 
   ceph::mutex lock = ceph::make_mutex("RGWCompletionManager::lock");
   ceph::condition_variable cond;
@@ -57,7 +55,7 @@ class RGWCompletionManager : public RefCountedObject {
 
   std::atomic<bool> going_down = { false };
 
-  map<void *, void *> waiters;
+  std::map<void *, void *> waiters;
 
   class WaitContext;
 
@@ -66,7 +64,7 @@ protected:
   void _complete(RGWAioCompletionNotifier *cn, const rgw_io_id& io_id, void *user_info);
 public:
   explicit RGWCompletionManager(CephContext *_cct);
-  ~RGWCompletionManager() override;
+  virtual ~RGWCompletionManager() override;
 
   void complete(RGWAioCompletionNotifier *cn, const rgw_io_id& io_id, void *user_info);
   int get_next(io_completion *io);
@@ -95,7 +93,7 @@ class RGWAioCompletionNotifier : public RefCountedObject {
 
 public:
   RGWAioCompletionNotifier(RGWCompletionManager *_mgr, const rgw_io_id& _io_id, void *_user_data);
-  ~RGWAioCompletionNotifier() override {
+  virtual ~RGWAioCompletionNotifier() override {
     c->release();
     lock.lock();
     bool need_unregister = registered;
@@ -153,7 +151,7 @@ public:
 struct RGWCoroutinesEnv {
   uint64_t run_context;
   RGWCoroutinesManager *manager;
-  list<RGWCoroutinesStack *> *scheduled_stacks;
+  std::list<RGWCoroutinesStack *> *scheduled_stacks;
   RGWCoroutinesStack *stack;
 
   RGWCoroutinesEnv() : run_context(0), manager(NULL), scheduled_stacks(NULL), stack(NULL) {}
@@ -166,7 +164,7 @@ enum RGWCoroutineState {
 };
 
 struct rgw_spawned_stacks {
-  vector<RGWCoroutinesStack *> entries;
+  std::vector<RGWCoroutinesStack *> entries;
 
   rgw_spawned_stacks() {}
 
@@ -175,9 +173,8 @@ struct rgw_spawned_stacks {
   }
 
   void inherit(rgw_spawned_stacks *source) {
-    for (vector<RGWCoroutinesStack *>::iterator iter = source->entries.begin();
-         iter != source->entries.end(); ++iter) {
-      add_pending(*iter);
+    for (auto* entry : source->entries) {
+      add_pending(entry);
     }
     source->entries.clear();
   }
@@ -190,9 +187,9 @@ class RGWCoroutine : public RefCountedObject, public boost::asio::coroutine {
 
   struct StatusItem {
     utime_t timestamp;
-    string status;
+    std::string status;
 
-    StatusItem(utime_t& t, const string& s) : timestamp(t), status(s) {}
+    StatusItem(utime_t& t, const std::string& s) : timestamp(t), status(s) {}
 
     void dump(Formatter *f) const;
   };
@@ -206,20 +203,31 @@ class RGWCoroutine : public RefCountedObject, public boost::asio::coroutine {
     int max_history;
 
     utime_t timestamp;
-    stringstream status;
+    std::stringstream status;
 
     explicit Status(CephContext *_cct) : cct(_cct), max_history(MAX_COROUTINE_HISTORY) {}
 
-    deque<StatusItem> history;
+    std::deque<StatusItem> history;
 
-    stringstream& set_status();
+    std::stringstream& set_status();
   } status;
 
-  stringstream description;
+  std::stringstream description;
 
 protected:
   bool _yield_ret;
-  boost::asio::coroutine drain_cr;
+
+  struct {
+    boost::asio::coroutine cr;
+    bool should_exit{false};
+    int ret{0};
+
+    void init() {
+      cr = boost::asio::coroutine();
+      should_exit = false;
+      ret = 0;
+    }
+  } drain_status;
 
   CephContext *cct;
 
@@ -229,7 +237,7 @@ protected:
 
   rgw_spawned_stacks spawned;
 
-  stringstream error_stream;
+  std::stringstream error_stream;
 
   int set_state(int s, int ret = 0) {
     retcode = ret;
@@ -245,36 +253,36 @@ protected:
   void set_io_blocked(bool flag);
 
   void reset_description() {
-    description.str(string());
+    description.str(std::string());
   }
 
-  stringstream& set_description() {
+  std::stringstream& set_description() {
     return description;
   }
-  stringstream& set_status() {
+  std::stringstream& set_status() {
     return status.set_status();
   }
 
-  stringstream& set_status(const string& s) {
-    stringstream& status = set_status();
+  std::stringstream& set_status(const std::string& s) {
+    std::stringstream& status = set_status();
     status << s;
     return status;
   }
 
-  virtual int operate_wrapper() {
-    return operate();
+  virtual int operate_wrapper(const DoutPrefixProvider *dpp) {
+    return operate(dpp);
   }
 public:
   RGWCoroutine(CephContext *_cct) : status(_cct), _yield_ret(false), cct(_cct), stack(NULL), retcode(0), state(RGWCoroutine_Run) {}
-  ~RGWCoroutine() override;
+  virtual ~RGWCoroutine() override;
 
-  virtual int operate() = 0;
+  virtual int operate(const DoutPrefixProvider *dpp) = 0;
 
   bool is_done() { return (state == RGWCoroutine_Done || state == RGWCoroutine_Error); }
   bool is_error() { return (state == RGWCoroutine_Error); }
 
-  stringstream& log_error() { return error_stream; }
-  string error_str() {
+  std::stringstream& log_error() { return error_stream; }
+  std::string error_str() {
     return error_stream.str();
   }
 
@@ -288,11 +296,20 @@ public:
 
   void call(RGWCoroutine *op); /* call at the same stack we're in */
   RGWCoroutinesStack *spawn(RGWCoroutine *op, bool wait); /* execute on a different stack */
-  bool collect(int *ret, RGWCoroutinesStack *skip_stack); /* returns true if needs to be called again */
+  bool collect(int *ret, RGWCoroutinesStack *skip_stack, uint64_t *stack_id = nullptr); /* returns true if needs to be called again */
   bool collect_next(int *ret, RGWCoroutinesStack **collected_stack = NULL); /* returns true if found a stack to collect */
 
   int wait(const utime_t& interval);
-  bool drain_children(int num_cr_left, RGWCoroutinesStack *skip_stack = NULL); /* returns true if needed to be called again */
+  bool drain_children(int num_cr_left,
+                      RGWCoroutinesStack *skip_stack = nullptr,
+                      std::optional<std::function<void(uint64_t stack_id, int ret)> > cb = std::nullopt); /* returns true if needed to be called again,
+                                                                                                             cb will be called on completion of every
+                                                                                                             completion. */
+  bool drain_children(int num_cr_left,
+                      std::optional<std::function<int(uint64_t stack_id, int ret)> > cb); /* returns true if needed to be called again,
+                                                                                             cb will be called on every completion, can filter errors.
+                                                                                             A negative return value from cb means that current cr
+                                                                                             will need to exit */
   void wakeup();
   void set_sleeping(bool flag); /* put in sleep, or wakeup from sleep */
 
@@ -302,7 +319,7 @@ public:
 
   void wait_for_child();
 
-  virtual string to_str() const;
+  virtual std::string to_str() const;
 
   RGWCoroutinesStack *get_stack() const {
     return stack;
@@ -325,7 +342,7 @@ public:
   void io_complete(const rgw_io_id& io_id);
 };
 
-ostream& operator<<(ostream& out, const RGWCoroutine& cr);
+std::ostream& operator<<(std::ostream& out, const RGWCoroutine& cr);
 
 #define yield_until_true(x)     \
 do {                            \
@@ -336,20 +353,42 @@ do {                            \
 } while (0)
 
 #define drain_all() \
-  drain_cr = boost::asio::coroutine(); \
+  drain_status.init(); \
   yield_until_true(drain_children(0))
 
 #define drain_all_but(n) \
-  drain_cr = boost::asio::coroutine(); \
+  drain_status.init(); \
   yield_until_true(drain_children(n))
 
 #define drain_all_but_stack(stack) \
-  drain_cr = boost::asio::coroutine(); \
+  drain_status.init(); \
   yield_until_true(drain_children(1, stack))
+
+#define drain_all_but_stack_cb(stack, cb) \
+  drain_status.init(); \
+  yield_until_true(drain_children(1, stack, cb))
+
+#define drain_with_cb(n, cb) \
+  drain_status.init(); \
+  yield_until_true(drain_children(n, cb)); \
+  if (drain_status.should_exit) { \
+    return set_cr_error(drain_status.ret); \
+  }
+
+#define drain_all_cb(cb) \
+  drain_with_cb(0, cb)
+
+#define yield_spawn_window(cr, n, cb) \
+  do { \
+    spawn(cr, false); \
+    drain_with_cb(n, cb); /* this is guaranteed to yield */ \
+  } while (0)
+
+
 
 template <class T>
 class RGWConsumerCR : public RGWCoroutine {
-  list<T> product;
+  std::list<T> product;
 
 public:
   explicit RGWConsumerCR(CephContext *_cct) : RGWCoroutine(_cct) {}
@@ -374,7 +413,7 @@ public:
   }
 
   void receive(const T& p, bool wakeup = true);
-  void receive(list<T>& l, bool wakeup = true);
+  void receive(std::list<T>& l, bool wakeup = true);
 };
 
 class RGWCoroutinesStack : public RefCountedObject {
@@ -383,17 +422,19 @@ class RGWCoroutinesStack : public RefCountedObject {
 
   CephContext *cct;
 
+  int64_t id{-1};
+
   RGWCoroutinesManager *ops_mgr;
 
-  list<RGWCoroutine *> ops;
-  list<RGWCoroutine *>::iterator pos;
+  std::list<RGWCoroutine *> ops;
+  std::list<RGWCoroutine *>::iterator pos;
 
   rgw_spawned_stacks spawned;
 
-  set<RGWCoroutinesStack *> blocked_by_stack;
-  set<RGWCoroutinesStack *> blocking_stacks;
+  std::set<RGWCoroutinesStack *> blocked_by_stack;
+  std::set<RGWCoroutinesStack *> blocking_stacks;
 
-  map<int64_t, rgw_io_id> io_finish_ids;
+  std::map<int64_t, rgw_io_id> io_finish_ids;
   rgw_io_id io_blocked_id;
 
   bool done_flag;
@@ -415,13 +456,17 @@ protected:
   RGWCoroutinesStack *parent;
 
   RGWCoroutinesStack *spawn(RGWCoroutine *source_op, RGWCoroutine *next_op, bool wait);
-  bool collect(RGWCoroutine *op, int *ret, RGWCoroutinesStack *skip_stack); /* returns true if needs to be called again */
+  bool collect(RGWCoroutine *op, int *ret, RGWCoroutinesStack *skip_stack, uint64_t *stack_id); /* returns true if needs to be called again */
   bool collect_next(RGWCoroutine *op, int *ret, RGWCoroutinesStack **collected_stack); /* returns true if found a stack to collect */
 public:
   RGWCoroutinesStack(CephContext *_cct, RGWCoroutinesManager *_ops_mgr, RGWCoroutine *start = NULL);
-  ~RGWCoroutinesStack() override;
+  virtual ~RGWCoroutinesStack() override;
 
-  int operate(RGWCoroutinesEnv *env);
+  int64_t get_id() const {
+    return id;
+  }
+
+  int operate(const DoutPrefixProvider *dpp, RGWCoroutinesEnv *env);
 
   bool is_done() {
     return done_flag;
@@ -479,7 +524,7 @@ public:
     return retcode;
   }
 
-  string error_str();
+  std::string error_str();
 
   void call(RGWCoroutine *next_op);
   RGWCoroutinesStack *spawn(RGWCoroutine *next_op, bool wait);
@@ -492,7 +537,7 @@ public:
   }
   void io_complete(const rgw_io_id& io_id);
 
-  bool collect(int *ret, RGWCoroutinesStack *skip_stack); /* returns true if needs to be called again */
+  bool collect(int *ret, RGWCoroutinesStack *skip_stack, uint64_t *stack_id); /* returns true if needs to be called again */
 
   void cancel();
 
@@ -524,7 +569,7 @@ public:
 };
 
 template <class T>
-void RGWConsumerCR<T>::receive(list<T>& l, bool wakeup)
+void RGWConsumerCR<T>::receive(std::list<T>& l, bool wakeup)
 {
   product.splice(product.end(), l);
   if (wakeup) {
@@ -545,21 +590,22 @@ void RGWConsumerCR<T>::receive(const T& p, bool wakeup)
 class RGWCoroutinesManagerRegistry : public RefCountedObject, public AdminSocketHook {
   CephContext *cct;
 
-  set<RGWCoroutinesManager *> managers;
+  std::set<RGWCoroutinesManager *> managers;
   ceph::shared_mutex lock =
     ceph::make_shared_mutex("RGWCoroutinesRegistry::lock");
 
-  string admin_command;
+  std::string admin_command;
 
 public:
   explicit RGWCoroutinesManagerRegistry(CephContext *_cct) : cct(_cct) {}
-  ~RGWCoroutinesManagerRegistry() override;
+  virtual ~RGWCoroutinesManagerRegistry() override;
 
   void add(RGWCoroutinesManager *mgr);
   void remove(RGWCoroutinesManager *mgr);
 
-  int hook_to_admin_command(const string& command);
+  int hook_to_admin_command(const std::string& command);
   int call(std::string_view command, const cmdmap_t& cmdmap,
+	   const bufferlist&,
 	   Formatter *f,
 	   std::ostream& ss,
 	   bufferlist& out) override;
@@ -572,24 +618,25 @@ class RGWCoroutinesManager {
   std::atomic<bool> going_down = { false };
 
   std::atomic<int64_t> run_context_count = { 0 };
-  map<uint64_t, set<RGWCoroutinesStack *> > run_contexts;
+  std::map<uint64_t, std::set<RGWCoroutinesStack *> > run_contexts;
 
   std::atomic<int64_t> max_io_id = { 0 };
+  std::atomic<uint64_t> max_stack_id = { 0 };
 
   mutable ceph::shared_mutex lock =
     ceph::make_shared_mutex("RGWCoroutinesManager::lock");
 
   RGWIOIDProvider io_id_provider;
 
-  void handle_unblocked_stack(set<RGWCoroutinesStack *>& context_stacks, list<RGWCoroutinesStack *>& scheduled_stacks,
-                              RGWCompletionManager::io_completion& io, int *waiting_count);
+  void handle_unblocked_stack(std::set<RGWCoroutinesStack *>& context_stacks, std::list<RGWCoroutinesStack *>& scheduled_stacks,
+                              RGWCompletionManager::io_completion& io, int *waiting_count, int *interval_wait_count);
 protected:
   RGWCompletionManager *completion_mgr;
   RGWCoroutinesManagerRegistry *cr_registry;
 
   int ops_window;
 
-  string id;
+  std::string id;
 
   void put_completion_notifier(RGWAioCompletionNotifier *cn);
 public:
@@ -600,16 +647,10 @@ public:
       cr_registry->add(this);
     }
   }
-  virtual ~RGWCoroutinesManager() {
-    stop();
-    completion_mgr->put();
-    if (cr_registry) {
-      cr_registry->remove(this);
-    }
-  }
+  virtual ~RGWCoroutinesManager();
 
-  int run(list<RGWCoroutinesStack *>& ops);
-  int run(RGWCoroutine *op);
+  int run(const DoutPrefixProvider *dpp, std::list<RGWCoroutinesStack *>& ops);
+  int run(const DoutPrefixProvider *dpp, RGWCoroutine *op);
   void stop() {
     bool expected = false;
     if (going_down.compare_exchange_strong(expected, true)) {
@@ -629,11 +670,12 @@ public:
   RGWCoroutinesStack *allocate_stack();
 
   int64_t get_next_io_id();
+  uint64_t get_next_stack_id();
 
   void set_sleeping(RGWCoroutine *cr, bool flag);
   void io_complete(RGWCoroutine *cr, const rgw_io_id& io_id);
 
-  virtual string get_id();
+  virtual std::string get_id();
   void dump(Formatter *f) const;
 
   RGWIOIDProvider& get_io_id_provider() {
@@ -659,10 +701,10 @@ RGWAioCompletionNotifier *RGWCoroutinesStack::create_completion_notifier(T value
 class RGWSimpleCoroutine : public RGWCoroutine {
   bool called_cleanup;
 
-  int operate() override;
+  int operate(const DoutPrefixProvider *dpp) override;
 
   int state_init();
-  int state_send_request();
+  int state_send_request(const DoutPrefixProvider *dpp);
   int state_request_complete();
   int state_all_complete();
 
@@ -670,13 +712,11 @@ class RGWSimpleCoroutine : public RGWCoroutine {
 
 public:
   RGWSimpleCoroutine(CephContext *_cct) : RGWCoroutine(_cct), called_cleanup(false) {}
-  ~RGWSimpleCoroutine() override;
+  virtual ~RGWSimpleCoroutine() override;
 
   virtual int init() { return 0; }
-  virtual int send_request() = 0;
+  virtual int send_request(const DoutPrefixProvider *dpp) = 0;
   virtual int request_complete() = 0;
   virtual int finish() { return 0; }
   virtual void request_cleanup() {}
 };
-
-#endif

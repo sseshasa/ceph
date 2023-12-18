@@ -16,8 +16,9 @@
 #include <time.h>
 #include <string.h>
 #include <iostream>
+#include <iterator>
 #include <sstream>
-#include "os/filestore/FileStore.h"
+#include "os/bluestore/BlueStore.h"
 #include "include/Context.h"
 #include "common/ceph_argparse.h"
 #include "common/ceph_mutex.h"
@@ -32,7 +33,7 @@
 #include "include/unordered_map.h"
 
 void usage(const string &name) {
-  std::cerr << "Usage: " << name << " [xattr|omap] store_path store_journal"
+  std::cerr << "Usage: " << name << " [xattr|omap] store_path"
 	    << std::endl;
 }
 
@@ -40,14 +41,10 @@ const int THREADS = 5;
 
 template <typename T>
 typename T::iterator rand_choose(T &cont) {
-  if (cont.size() == 0) {
-    return cont.end();
+  if (std::empty(cont) == 0) {
+    return std::end(cont);
   }
-  int index = rand() % cont.size();
-  typename T::iterator retval = cont.begin();
-
-  for (; index > 0; --index) ++retval;
-  return retval;
+  return std::next(std::begin(cont), rand() % cont.size());
 }
 
 class OnApplied : public Context {
@@ -147,8 +144,7 @@ uint64_t do_run(ObjectStore *store, int attrsize, int numattrs,
 }
 
 int main(int argc, char **argv) {
-  vector<const char*> args;
-  argv_to_vec(argc, (const char **)argv, args);
+  auto args = argv_to_vec(argc, argv);
   if (args.empty()) {
     cerr << argv[0] << ": -h or --help for usage" << std::endl;
     exit(1);
@@ -164,16 +160,14 @@ int main(int argc, char **argv) {
   common_init_finish(g_ceph_context);
 
   std::cerr << "args: " << args << std::endl;
-  if (args.size() < 3) {
+  if (args.size() < 2) {
     usage(argv[0]);
     return 1;
   }
 
   string store_path(args[1]);
-  string store_dev(args[2]);
 
-  boost::scoped_ptr<ObjectStore> store(new FileStore(cct.get(), store_path,
-						     store_dev));
+  boost::scoped_ptr<ObjectStore> store(new BlueStore(cct.get(), store_path));
 
   std::cerr << "mkfs starting" << std::endl;
   ceph_assert(!store->mkfs());

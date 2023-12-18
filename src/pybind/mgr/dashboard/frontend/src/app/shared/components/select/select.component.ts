@@ -1,11 +1,10 @@
 import { Component, EventEmitter, Input, OnChanges, OnInit, Output } from '@angular/core';
-import { FormControl, ValidatorFn } from '@angular/forms';
+import { UntypedFormControl, ValidatorFn } from '@angular/forms';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import _ from 'lodash';
 
-import { Icons } from '../../../shared/enum/icons.enum';
-import { CdFormGroup } from '../../forms/cd-form-group';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
 import { SelectMessages } from './select-messages.model';
 import { SelectOption } from './select-option.model';
 
@@ -22,7 +21,7 @@ export class SelectComponent implements OnInit, OnChanges {
   @Input()
   options: Array<SelectOption> = [];
   @Input()
-  messages = new SelectMessages({}, this.i18n);
+  messages = new SelectMessages({});
   @Input()
   selectionLimit: number;
   @Input()
@@ -34,12 +33,10 @@ export class SelectComponent implements OnInit, OnChanges {
   selection = new EventEmitter();
 
   form: CdFormGroup;
-  filter: FormControl;
+  filter: UntypedFormControl;
   Object = Object;
   filteredOptions: Array<SelectOption> = [];
   icons = Icons;
-
-  constructor(private i18n: I18n) {}
 
   ngOnInit() {
     this.initFilter();
@@ -51,7 +48,7 @@ export class SelectComponent implements OnInit, OnChanges {
   }
 
   private initFilter() {
-    this.filter = new FormControl('', { validators: this.customBadgeValidators });
+    this.filter = new UntypedFormControl('', { validators: this.customBadgeValidators });
     this.form = new CdFormGroup({ filter: this.filter });
     this.filteredOptions = [...(this.options || [])];
   }

@@ -15,8 +15,9 @@ openstack:
 tasks:
 - install:
 - ceph:
-    log-whitelist:
+    log-ignorelist:
       - but it is still running
+      - \(POOL_APP_NOT_ENABLED\)
 - thrashosds:
     op_delay: 30
     clean_interval: 120

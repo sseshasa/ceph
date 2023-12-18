@@ -23,6 +23,7 @@
 #include "include/types.h"
 #include "common/debug.h"
 #include "include/str_list.h"
+#include "common/ceph_json.h"
 #include "common/Formatter.h"
 
 #include "rgw_cors.h"
@@ -30,14 +31,25 @@
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
 
+using namespace std;
+
 void RGWCORSRule::dump_origins() {
   unsigned num_origins = allowed_origins.size();
   dout(10) << "Allowed origins : " << num_origins << dendl;
-  for(set<string>::iterator it = allowed_origins.begin();
-      it != allowed_origins.end(); 
-      ++it) {
-    dout(10) << *it << "," << dendl;
+  for(auto& origin : allowed_origins) {
+    dout(10) << origin << "," << dendl;
   }
+}
+
+void RGWCORSRule::dump(Formatter *f) const
+{
+  f->open_object_section("CORSRule");
+  f->dump_string("ID", id);
+  f->dump_unsigned("MaxAgeSeconds", max_age);
+  f->dump_unsigned("AllowedMethod", allowed_methods);
+  encode_json("AllowedOrigin", allowed_origins, f);
+  encode_json("AllowedHeader", allowed_hdrs, f);
+  encode_json("ExposeHeader", exposable_hdrs, f);
 }
 
 void RGWCORSRule::erase_origin_if_present(string& origin, bool *rule_empty) {
@@ -51,6 +63,20 @@ void RGWCORSRule::erase_origin_if_present(string& origin, bool *rule_empty) {
     allowed_origins.erase(it);
     *rule_empty = (allowed_origins.empty());
   }
+}
+
+void RGWCORSRule::generate_test_instances(list<RGWCORSRule*>& o)
+{
+  o.push_back(new RGWCORSRule);
+  o.push_back(new RGWCORSRule);
+  o.back()->id = "test";
+  o.back()->max_age = 100;
+  o.back()->allowed_methods = RGW_CORS_GET | RGW_CORS_PUT;
+  o.back()->allowed_origins.insert("http://origin1");
+  o.back()->allowed_origins.insert("http://origin2");
+  o.back()->allowed_hdrs.insert("accept-encoding");
+  o.back()->allowed_hdrs.insert("accept-language");
+  o.back()->exposable_hdrs.push_back("x-rgw-something");
 }
 
 /*
@@ -144,11 +170,12 @@ bool RGWCORSRule::is_header_allowed(const char *h, size_t len) {
 
 void RGWCORSRule::format_exp_headers(string& s) {
   s = "";
-  for(list<string>::iterator it = exposable_hdrs.begin();
-      it != exposable_hdrs.end(); ++it) {
-      if (s.length() > 0)
-        s.append(",");
-      s.append((*it));
+  for (const auto& header : exposable_hdrs) {
+    if (s.length() > 0)
+      s.append(",");
+    // these values are sent to clients in a 'Access-Control-Expose-Headers'
+    // response header, so we escape '\n' to avoid header injection
+    boost::replace_all_copy(std::back_inserter(s), header, "\n", "\\n");
   }
 }
 

@@ -13,8 +13,7 @@
  *
  */
 
-#ifndef CEPH_RGW_CORS_H
-#define CEPH_RGW_CORS_H
+#pragma once
 
 #include <map>
 #include <string>
@@ -41,15 +40,15 @@ protected:
   uint32_t       max_age;
   uint8_t        allowed_methods;
   std::string         id;
-  std::set<string> allowed_hdrs; /* If you change this, you need to discard lowercase_allowed_hdrs */
-  std::set<string> lowercase_allowed_hdrs; /* Not built until needed in RGWCORSRule::is_header_allowed */
-  std::set<string> allowed_origins;
-  std::list<string> exposable_hdrs;
+  std::set<std::string> allowed_hdrs; /* If you change this, you need to discard lowercase_allowed_hdrs */
+  std::set<std::string> lowercase_allowed_hdrs; /* Not built until needed in RGWCORSRule::is_header_allowed */
+  std::set<std::string> allowed_origins;
+  std::list<std::string> exposable_hdrs;
 
 public:
   RGWCORSRule() : max_age(CORS_MAX_AGE_INVALID),allowed_methods(0) {}
-  RGWCORSRule(std::set<string>& o, std::set<string>& h, 
-              std::list<string>& e, uint8_t f, uint32_t a)
+  RGWCORSRule(std::set<std::string>& o, std::set<std::string>& h,
+              std::list<std::string>& e, uint8_t f, uint32_t a)
       :max_age(a),
        allowed_methods(f),
        allowed_hdrs(h),
@@ -81,6 +80,7 @@ public:
     decode(exposable_hdrs, bl);
     DECODE_FINISH(bl);
   }
+  static void generate_test_instances(std::list<RGWCORSRule*>& o);
   bool has_wildcard_origin();
   bool is_origin_present(const char *o);
   void format_exp_headers(std::string& s);
@@ -116,7 +116,7 @@ class RGWCORSConfiguration
   bool is_empty() {
     return rules.empty();
   }
-  void get_origins_list(const char *origin, std::list<string>& origins);
+  void get_origins_list(const char *origin, std::list<std::string>& origins);
   RGWCORSRule * host_name_rule(const char *origin);
   void erase_host_name_rule(std::string& origin);
   void dump();
@@ -126,11 +126,22 @@ class RGWCORSConfiguration
 };
 WRITE_CLASS_ENCODER(RGWCORSConfiguration)
 
-static inline int validate_name_string(string& o) {
+static inline int validate_name_string(std::string_view o) {
   if (o.length() == 0)
     return -1;
   if (o.find_first_of("*") != o.find_last_of("*"))
     return -1;
   return 0;
 }
-#endif /*CEPH_RGW_CORS_H*/
+
+static inline uint8_t get_cors_method_flags(const char *req_meth) {
+  uint8_t flags = 0;
+
+  if (strcmp(req_meth, "GET") == 0) flags = RGW_CORS_GET;
+  else if (strcmp(req_meth, "POST") == 0) flags = RGW_CORS_POST;
+  else if (strcmp(req_meth, "PUT") == 0) flags = RGW_CORS_PUT;
+  else if (strcmp(req_meth, "DELETE") == 0) flags = RGW_CORS_DELETE;
+  else if (strcmp(req_meth, "HEAD") == 0) flags = RGW_CORS_HEAD;
+
+  return flags;
+}

@@ -5,15 +5,14 @@ import logging
 import pipes
 import os
 import re
-
-import six
+import shlex
 
 from tasks.util import get_remote_for_role
 from tasks.util.workunit import get_refspec_after_overrides
 
 from teuthology import misc
 from teuthology.config import config as teuth_config
-from teuthology.orchestra.run import CommandFailedError
+from teuthology.exceptions import CommandFailedError
 from teuthology.parallel import parallel
 from teuthology.orchestra import run
 
@@ -62,6 +61,14 @@ def task(ctx, config):
               BAZ: quux
             timeout: 3h
 
+    You can also pass optional arguments to the found workunits:
+
+        tasks:
+        - workunit:
+            clients:
+              all:
+                - test-ceph-helpers.sh test_get_config
+
     This task supports roles that include a ceph cluster, e.g.::
 
         tasks:
@@ -105,11 +112,11 @@ def task(ctx, config):
     # Create scratch dirs for any non-all workunits
     log.info('Making a separate scratch dir for every client...')
     for role in clients.keys():
-        assert isinstance(role, six.string_types)
+        assert isinstance(role, str)
         if role == "all":
             continue
 
-        assert 'client' in role
+        assert 'client' in role, f"unexpected client name: {role}"
         created_mnt_dir = _make_scratch_dir(ctx, role, config.get('subdir'))
         created_mountpoint[role] = created_mnt_dir
 
@@ -122,6 +129,7 @@ def task(ctx, config):
                 p.spawn(_run_tests, ctx, refspec, role, tests,
                         config.get('env'),
                         basedir=config.get('basedir','qa/workunits'),
+                        subdir=config.get('subdir'),
                         timeout=timeout,
                         cleanup=cleanup,
                         coverage_and_limits=not config.get('no_coverage_and_limits', None))
@@ -316,7 +324,7 @@ def _run_tests(ctx, refspec, role, tests, env, basedir,
                     to False is passed, the 'timeout' command is not used.
     """
     testdir = misc.get_testdir(ctx)
-    assert isinstance(role, six.string_types)
+    assert isinstance(role, str)
     cluster, type_, id_ = misc.split_role(role)
     assert type_ == 'client'
     remote = get_remote_for_role(ctx, role)
@@ -364,15 +372,18 @@ def _run_tests(ctx, refspec, role, tests, env, basedir,
     )
 
     workunits_file = '{tdir}/workunits.list.{role}'.format(tdir=testdir, role=role)
-    workunits = sorted(six.ensure_str(misc.get_file(remote, workunits_file)).split('\0'))
+    workunits = sorted(remote.read_file(workunits_file).decode().split('\0'))
     assert workunits
 
     try:
         assert isinstance(tests, list)
         for spec in tests:
-            log.info('Running workunits matching %s on %s...', spec, role)
-            prefix = '{spec}/'.format(spec=spec)
-            to_run = [w for w in workunits if w == spec or w.startswith(prefix)]
+            dir_or_fname, *optional_args = shlex.split(spec)
+            log.info('Running workunits matching %s on %s...', dir_or_fname, role)
+            # match executables named "foo" or "foo/*" with workunit named
+            # "foo"
+            to_run = [w for w in workunits
+                      if os.path.commonpath([w, dir_or_fname]) == dir_or_fname]
             if not to_run:
                 raise RuntimeError('Spec did not match any workunits: {spec!r}'.format(spec=spec))
             for workunit in to_run:
@@ -390,6 +401,7 @@ def _run_tests(ctx, refspec, role, tests, env, basedir,
                     run.Raw('PATH=$PATH:/usr/sbin'),
                     run.Raw('CEPH_BASE={dir}'.format(dir=clonedir)),
                     run.Raw('CEPH_ROOT={dir}'.format(dir=clonedir)),
+                    run.Raw('CEPH_MNT={dir}'.format(dir=mnt)),
                 ]
                 if env is not None:
                     for var, val in env.items():
@@ -409,11 +421,21 @@ def _run_tests(ctx, refspec, role, tests, env, basedir,
                         workunit=workunit,
                     ),
                 ])
-                remote.run(
-                    logger=log.getChild(role),
-                    args=args,
-                    label="workunit test {workunit}".format(workunit=workunit)
-                )
+                if 'unit_test_scan' in optional_args:
+                    optional_args.remove('unit_test_scan')
+                    remote.run_unit_test(
+                        logger=log.getChild(role),
+                        args=args + optional_args,
+                        label="workunit test {workunit}".format(workunit=workunit),
+                        xml_path_regex=f'{testdir}/archive/gtest_xml_report-*.xml',
+                        output_yaml=os.path.join(ctx.archive, 'unit_test_summary.yaml'),
+                    )
+                else:
+                    remote.run(
+                        logger=log.getChild(role),
+                        args=args + optional_args,
+                        label="workunit test {workunit}".format(workunit=workunit)
+                    )
                 if cleanup:
                     args=['sudo', 'rm', '-rf', '--', scratch_tmp]
                     remote.run(logger=log.getChild(role), args=args, timeout=(60*60))

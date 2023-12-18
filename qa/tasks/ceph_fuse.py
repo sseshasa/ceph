@@ -5,31 +5,10 @@ Ceph FUSE client task
 import contextlib
 import logging
 
-from teuthology import misc as teuthology
+from teuthology import misc
 from tasks.cephfs.fuse_mount import FuseMount
 
 log = logging.getLogger(__name__)
-
-
-def get_client_configs(ctx, config):
-    """
-    Get a map of the configuration for each FUSE client in the configuration by
-    combining the configuration of the current task with any global overrides.
-
-    :param ctx: Context instance
-    :param config: configuration for this task
-    :return: dict of client name to config or to None
-    """
-    if config is None:
-        config = dict(('client.{id}'.format(id=id_), None)
-                      for id_ in teuthology.all_roles_of_type(ctx.cluster, 'client'))
-    elif isinstance(config, list):
-        config = dict((name, None) for name in config)
-
-    overrides = ctx.config.get('overrides', {})
-    teuthology.deep_merge(config, overrides.get('ceph-fuse', {}))
-
-    return config
 
 
 @contextlib.contextmanager
@@ -93,32 +72,65 @@ def task(ctx, config):
               mount_timeout: 120 # default is 30, give up if /sys/ is not populated
         - interactive:
 
+    Example that creates and mounts a subvol:
+
+        overrides:
+          ceph:
+            subvols:
+              create: 2
+              subvol_options: "--namespace-isolated --size 25000000000"
+          ceph-fuse:
+            client.0:
+              mount_subvol_num: 0
+          kclient:
+            client.1:
+              mount_subvol_num: 1
+
     :param ctx: Context
     :param config: Configuration
     """
     log.info('Running ceph_fuse task...')
 
-    testdir = teuthology.get_testdir(ctx)
-    log.info("config is {}".format(str(config)))
-    config = get_client_configs(ctx, config)
-    log.info("new config is {}".format(str(config)))
+    if config is None:
+        ids = misc.all_roles_of_type(ctx.cluster, 'client')
+        client_roles = [f'client.{id_}' for id_ in ids]
+        config = dict([r, dict()] for r in client_roles)
+    elif isinstance(config, list):
+        client_roles = config
+        config = dict([r, dict()] for r in client_roles)
+    elif isinstance(config, dict):
+        client_roles = filter(lambda x: 'client.' in x, config.keys())
+    else:
+        raise ValueError(f"Invalid config object: {config} ({config.__class__})")
+    log.info(f"config is {config}")
 
-    # List clients we will configure mounts for, default is all clients
-    clients = list(teuthology.get_clients(ctx=ctx, roles=filter(lambda x: 'client.' in x, config.keys())))
-
+    clients = list(misc.get_clients(ctx=ctx, roles=client_roles))
+    testdir = misc.get_testdir(ctx)
     all_mounts = getattr(ctx, 'mounts', {})
     mounted_by_me = {}
     skipped = {}
+    remotes = set()
 
     brxnet = config.get("brxnet", None)
 
     # Construct any new FuseMount instances
+    overrides = ctx.config.get('overrides', {}).get('ceph-fuse', {})
+    top_overrides = dict(filter(lambda x: 'client.' not in x[0], overrides.items()))
     for id_, remote in clients:
-        client_config = config.get("client.%s" % id_)
+        entity = f"client.{id_}"
+        client_config = config.get(entity)
         if client_config is None:
             client_config = {}
+        # top level overrides
+        misc.deep_merge(client_config, top_overrides)
+        # mount specific overrides
+        client_config_overrides = overrides.get(entity)
+        misc.deep_merge(client_config, client_config_overrides)
+        log.info(f"{entity} config is {client_config}")
 
+        remotes.add(remote)
         auth_id = client_config.get("auth_id", id_)
+        cephfs_name = client_config.get("cephfs_name")
 
         skip = client_config.get("skip", False)
         if skip:
@@ -126,7 +138,10 @@ def task(ctx, config):
             continue
 
         if id_ not in all_mounts:
-            fuse_mount = FuseMount(ctx, client_config, testdir, auth_id, remote, brxnet)
+            fuse_mount = FuseMount(ctx=ctx, client_config=client_config,
+                                   test_dir=testdir, client_id=auth_id,
+                                   client_remote=remote, brxnet=brxnet,
+                                   cephfs_name=cephfs_name)
             all_mounts[id_] = fuse_mount
         else:
             # Catch bad configs where someone has e.g. tried to use ceph-fuse and kcephfs for the same client
@@ -137,22 +152,24 @@ def task(ctx, config):
 
     ctx.mounts = all_mounts
 
-    # Mount any clients we have been asked to (default to mount all)
-    log.info('Mounting ceph-fuse clients...')
-    for info in mounted_by_me.values():
-        config = info["config"]
-        mount_path = config.get("mount_path")
-        mountpoint = config.get("mountpoint")
-        info["mount"].mount(mountpoint=mountpoint, mount_path=mount_path)
-
-    for info in mounted_by_me.values():
-        info["mount"].wait_until_mounted()
-
     # Umount any pre-existing clients that we have not been asked to mount
     for client_id in set(all_mounts.keys()) - set(mounted_by_me.keys()) - set(skipped.keys()):
         mount = all_mounts[client_id]
         if mount.is_mounted():
             mount.umount_wait()
+
+    for remote in remotes:
+        FuseMount.cleanup_stale_netnses_and_bridge(remote)
+
+    # Mount any clients we have been asked to (default to mount all)
+    log.info('Mounting ceph-fuse clients...')
+    for info in mounted_by_me.values():
+        config = info["config"]
+        mount_x = info['mount']
+        mount_x.mount(mntopts=config.get('mntopts', []), mntargs=config.get('mntargs', []))
+
+    for info in mounted_by_me.values():
+        info["mount"].wait_until_mounted()
 
     try:
         yield all_mounts
@@ -164,3 +181,5 @@ def task(ctx, config):
             mount = info["mount"]
             if mount.is_mounted():
                 mount.umount_wait()
+        for remote in remotes:
+            FuseMount.cleanup_stale_netnses_and_bridge(remote)

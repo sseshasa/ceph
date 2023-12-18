@@ -4,23 +4,25 @@ ISA erasure code plugin
 
 The *isa* plugin encapsulates the `ISA
 <https://01.org/intel%C2%AE-storage-acceleration-library-open-source-version/>`_
-library. It only runs on Intel processors.
+library.
 
 Create an isa profile
 =====================
 
-To create a new *isa* erasure code profile::
+To create a new *isa* erasure code profile:
 
-        ceph osd erasure-code-profile set {name} \
-             plugin=isa \
-             technique={reed_sol_van|cauchy} \
-             [k={data-chunks}] \
-             [m={coding-chunks}] \
-             [crush-root={root}] \
-             [crush-failure-domain={bucket-type}] \
-             [crush-device-class={device-class}] \
-             [directory={directory}] \
-             [--force]
+.. prompt:: bash $
+
+   ceph osd erasure-code-profile set {name} \
+     plugin=isa \
+     technique={reed_sol_van|cauchy} \
+     [k={data-chunks}] \
+     [m={coding-chunks}] \
+     [crush-root={root}] \
+     [crush-failure-domain={bucket-type}] \
+     [crush-device-class={device-class}] \
+     [directory={directory}] \
+     [--force]
 
 Where:
 

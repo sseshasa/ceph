@@ -39,47 +39,49 @@ int ClientIO::init_env(CephContext *cct)
     const auto& value = header->value();
 
     if (field == beast::http::field::content_length) {
-      env.set("CONTENT_LENGTH", value.to_string());
+      env.set("CONTENT_LENGTH", std::string(value));
       continue;
     }
     if (field == beast::http::field::content_type) {
-      env.set("CONTENT_TYPE", value.to_string());
+      env.set("CONTENT_TYPE", std::string(value));
       continue;
     }
 
-    static const boost::string_ref HTTP_{"HTTP_"};
+    static const std::string_view HTTP_{"HTTP_"};
 
     char buf[name.size() + HTTP_.size() + 1];
     auto dest = std::copy(std::begin(HTTP_), std::end(HTTP_), buf);
     for (auto src = name.begin(); src != name.end(); ++src, ++dest) {
       if (*src == '-') {
         *dest = '_';
+      } else if (*src == '_') {
+        *dest = '-';
       } else {
         *dest = std::toupper(*src);
       }
     }
     *dest = '\0';
 
-    env.set(buf, value.to_string());
+    env.set(buf, std::string(value));
   }
 
   int major = request.version() / 10;
   int minor = request.version() % 10;
   env.set("HTTP_VERSION", std::to_string(major) + '.' + std::to_string(minor));
 
-  env.set("REQUEST_METHOD", request.method_string().to_string());
+  env.set("REQUEST_METHOD", std::string(request.method_string()));
 
   // split uri from query
   auto uri = request.target();
   auto pos = uri.find('?');
   if (pos != uri.npos) {
     auto query = uri.substr(pos + 1);
-    env.set("QUERY_STRING", query.to_string());
+    env.set("QUERY_STRING", std::string(query));
     uri = uri.substr(0, pos);
   }
-  env.set("SCRIPT_URI", uri.to_string());
+  env.set("SCRIPT_URI", std::string(uri));
 
-  env.set("REQUEST_URI", request.target().to_string());
+  env.set("REQUEST_URI", std::string(request.target()));
 
   char port_buf[16];
   snprintf(port_buf, sizeof(port_buf), "%d", local_endpoint.port());
@@ -117,10 +119,11 @@ size_t ClientIO::send_status(int status, const char* status_name)
 
 size_t ClientIO::send_100_continue()
 {
-  const char HTTTP_100_CONTINUE[] = "HTTP/1.1 100 CONTINUE\r\n\r\n";
-  const size_t sent = txbuf.sputn(HTTTP_100_CONTINUE,
-                                  sizeof(HTTTP_100_CONTINUE) - 1);
+  const char HTTP_100_CONTINUE[] = "HTTP/1.1 100 CONTINUE\r\n\r\n";
+  const size_t sent = txbuf.sputn(HTTP_100_CONTINUE,
+                                  sizeof(HTTP_100_CONTINUE) - 1);
   flush();
+  sent100continue = true;
   return sent;
 }
 
@@ -161,8 +164,8 @@ size_t ClientIO::complete_header()
   return sent;
 }
 
-size_t ClientIO::send_header(const boost::string_ref& name,
-                             const boost::string_ref& value)
+size_t ClientIO::send_header(const std::string_view& name,
+                             const std::string_view& value)
 {
   static constexpr char HEADER_SEP[] = ": ";
   static constexpr char HEADER_END[] = "\r\n";

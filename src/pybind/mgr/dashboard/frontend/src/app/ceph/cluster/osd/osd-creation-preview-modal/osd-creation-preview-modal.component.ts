@@ -1,21 +1,21 @@
-import { Component, EventEmitter, Input, OnInit, Output } from '@angular/core';
+import { Component, EventEmitter, Input, Output } from '@angular/core';
 
-import * as _ from 'lodash';
-import { BsModalRef } from 'ngx-bootstrap/modal';
+import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
+import _ from 'lodash';
 
-import { OsdService } from '../../../../shared/api/osd.service';
-import { ActionLabelsI18n, URLVerbs } from '../../../../shared/constants/app.constants';
-import { CdFormBuilder } from '../../../../shared/forms/cd-form-builder';
-import { CdFormGroup } from '../../../../shared/forms/cd-form-group';
-import { FinishedTask } from '../../../../shared/models/finished-task';
-import { TaskWrapperService } from '../../../../shared/services/task-wrapper.service';
+import { OsdService } from '~/app/shared/api/osd.service';
+import { ActionLabelsI18n, URLVerbs } from '~/app/shared/constants/app.constants';
+import { CdFormBuilder } from '~/app/shared/forms/cd-form-builder';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { FinishedTask } from '~/app/shared/models/finished-task';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
 
 @Component({
   selector: 'cd-osd-creation-preview-modal',
   templateUrl: './osd-creation-preview-modal.component.html',
   styleUrls: ['./osd-creation-preview-modal.component.scss']
 })
-export class OsdCreationPreviewModalComponent implements OnInit {
+export class OsdCreationPreviewModalComponent {
   @Input()
   driveGroups: Object[] = [];
 
@@ -26,7 +26,7 @@ export class OsdCreationPreviewModalComponent implements OnInit {
   formGroup: CdFormGroup;
 
   constructor(
-    public bsModalRef: BsModalRef,
+    public activeModal: NgbActiveModal,
     public actionLabels: ActionLabelsI18n,
     private formBuilder: CdFormBuilder,
     private osdService: OsdService,
@@ -36,29 +36,27 @@ export class OsdCreationPreviewModalComponent implements OnInit {
     this.createForm();
   }
 
-  ngOnInit() {}
-
   createForm() {
     this.formGroup = this.formBuilder.group({});
   }
 
   onSubmit() {
+    const trackingId = _.join(_.map(this.driveGroups, 'service_id'), ', ');
     this.taskWrapper
       .wrapTaskAroundCall({
         task: new FinishedTask('osd/' + URLVerbs.CREATE, {
-          tracking_id: _.join(_.map(this.driveGroups, 'service_id'), ', ')
+          tracking_id: trackingId
         }),
-        call: this.osdService.create(this.driveGroups)
+        call: this.osdService.create(this.driveGroups, trackingId)
       })
-      .subscribe(
-        undefined,
-        () => {
+      .subscribe({
+        error: () => {
           this.formGroup.setErrors({ cdSubmitButton: true });
         },
-        () => {
+        complete: () => {
           this.submitAction.emit();
-          this.bsModalRef.hide();
+          this.activeModal.close();
         }
-      );
+      });
   }
 }

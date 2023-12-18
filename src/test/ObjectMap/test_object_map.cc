@@ -1,4 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+#include <iterator>
 #include <map>
 #include <set>
 #include <boost/scoped_ptr.hpp>
@@ -6,8 +7,7 @@
 #include "include/buffer.h"
 #include "test/ObjectMap/KeyValueDBMemory.h"
 #include "kv/KeyValueDB.h"
-#include "os/filestore/DBObjectMap.h"
-#include "os/filestore/HashIndex.h"
+#include "os/DBObjectMap.h"
 #include <sys/types.h>
 #include "global/global_init.h"
 #include "common/ceph_argparse.h"
@@ -20,14 +20,10 @@ using namespace std;
 
 template <typename T>
 typename T::iterator rand_choose(T &cont) {
-  if (cont.size() == 0) {
-    return cont.end();
+  if (std::empty(cont)) {
+    return std::end(cont);
   }
-  int index = rand() % cont.size();
-  typename T::iterator retval = cont.begin();
-
-  for (; index > 0; --index) ++retval;
-  return retval;
+  return std::next(std::begin(cont), rand() % cont.size());
 }
 
 string num_str(unsigned i) {
@@ -645,7 +641,7 @@ public:
     string strpath(path);
 
     cerr << "using path " << strpath << std::endl;
-    KeyValueDB *store = KeyValueDB::create(g_ceph_context, "leveldb", strpath);
+    KeyValueDB *store = KeyValueDB::create(g_ceph_context, "rocksdb", strpath);
     ceph_assert(!store->create_and_open(cerr));
 
     db.reset(new DBObjectMap(g_ceph_context, store));
@@ -660,8 +656,7 @@ public:
 
 
 int main(int argc, char **argv) {
-  vector<const char*> args;
-  argv_to_vec(argc, (const char **)argv, args);
+  auto args = argv_to_vec(argc, argv);
 
   auto cct = global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT,
 			 CODE_ENVIRONMENT_UTILITY,

@@ -8,10 +8,7 @@ import boto.s3.connection
 import dateutil.parser
 
 from nose.tools import eq_ as eq
-try:
-    from itertools import izip_longest as zip_longest  # type: ignore
-except ImportError:
-    from itertools import zip_longest
+from itertools import zip_longest  # type: ignore
 
 from .multisite import *
 from .tools import *
@@ -202,6 +199,9 @@ class ESZone(Zone):
     def has_buckets(self):
         return False
 
+    def has_roles(self):
+        return False
+
     class Conn(ZoneConn):
         def __init__(self, zone, credentials):
             super(ESZone.Conn, self).__init__(zone, credentials)
@@ -242,6 +242,9 @@ class ESZone(Zone):
             log.info('success, bucket identical: bucket=%s zones={%s, %s}', bucket_name, self.name, zone_conn.name)
 
             return True
+
+        def create_role(self, path, rolename, policy_document, tag_list):
+            assert False
 
     def get_conn(self, credentials):
         return self.Conn(self, credentials)

@@ -24,6 +24,12 @@
 #include "common/debug.h"
 #include "common/dout.h"
 
+namespace TOPNSPC {
+
+#ifdef HAVE_QATZIP
+  QatAccel Compressor::qat_accel;
+#endif
+
 const char* Compressor::get_comp_alg_name(int a) {
 
   auto p = std::find_if(std::cbegin(compression_algorithms), std::cend(compression_algorithms),
@@ -35,7 +41,8 @@ const char* Compressor::get_comp_alg_name(int a) {
   return p->first;
 }
 
-boost::optional<Compressor::CompressionAlgorithm> Compressor::get_comp_alg_type(const std::string &s) {
+std::optional<Compressor::CompressionAlgorithm>
+Compressor::get_comp_alg_type(std::string_view s) {
 
   auto p = std::find_if(std::cbegin(compression_algorithms), std::cend(compression_algorithms),
 		   [&s](const auto& kv) { return kv.first == s; });
@@ -54,7 +61,8 @@ const char *Compressor::get_comp_mode_name(int m) {
     default: return "???";
   }
 }
-boost::optional<Compressor::CompressionMode> Compressor::get_comp_mode_type(const std::string &s) {
+std::optional<Compressor::CompressionMode>
+Compressor::get_comp_mode_type(std::string_view s) {
   if (s == "force")
     return COMP_FORCE;
   if (s == "aggressive")
@@ -63,7 +71,7 @@ boost::optional<Compressor::CompressionMode> Compressor::get_comp_mode_type(cons
     return COMP_PASSIVE;
   if (s == "none")
     return COMP_NONE;
-  return boost::optional<CompressionMode>();
+  return {};
 }
 
 CompressorRef Compressor::create(CephContext *cct, const std::string &type)
@@ -100,3 +108,5 @@ CompressorRef Compressor::create(CephContext *cct, int alg)
   std::string type_name = get_comp_alg_name(alg);
   return create(cct, type_name);
 }
+
+} // namespace TOPNSPC

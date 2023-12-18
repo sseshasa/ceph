@@ -1,6 +1,6 @@
 overrides:
   ceph:
-    log-whitelist:
+    log-ignorelist:
       - reached quota
       - overall HEALTH_
       - \(CACHE_POOL_NO_HIT_SET\)
@@ -9,7 +9,6 @@ overrides:
       - \(SLOW_OPS\)
       - \(MON_DOWN\)
       - \(PG_
-      - \(POOL_APP_NOT_ENABLED\)
       - \(SMALLER_PGP_NUM\)
       - slow request
     conf:
@@ -19,8 +18,11 @@ overrides:
         debug ms: 1
       mon:
         mon warn on pool no app: false
+      osd:
+        osd class load list: "*"
+        osd class default list: "*"
 tasks:
 - workunit:
     clients:
       client.0:
-        - rados/test.sh
+        - rados/test.sh unit_test_scan

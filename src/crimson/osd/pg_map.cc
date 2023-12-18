@@ -12,6 +12,8 @@ namespace {
   }
 }
 
+using std::make_pair;
+
 namespace crimson::osd {
 
 PGMap::PGCreationState::PGCreationState(spg_t pgid) : pgid(pgid) {}
@@ -23,17 +25,32 @@ void PGMap::PGCreationState::dump_detail(Formatter *f) const
   f->dump_bool("creating", creating);
 }
 
-std::pair<blocking_future<Ref<PG>>, bool> PGMap::get_pg(spg_t pgid, bool wait)
+PGMap::wait_for_pg_ret
+PGMap::wait_for_pg(PGCreationBlockingEvent::TriggerI&& trigger, spg_t pgid)
 {
-  if (auto pg = pgs.find(pgid); pg != pgs.end()) {
-    return make_pair(make_ready_blocking_future<Ref<PG>>(pg->second), true);
-  } else if (!wait) {
-    return make_pair(make_ready_blocking_future<Ref<PG>>(nullptr), true);
+  if (auto pg = get_pg(pgid)) {
+    return make_pair(
+      wait_for_pg_fut(wait_for_pg_ertr::ready_future_marker{}, pg),
+      true);
   } else {
     auto &state = pgs_creating.emplace(pgid, pgid).first->second;
     return make_pair(
-      state.make_blocking_future(state.promise.get_shared_future()),
-      state.creating);
+      wait_for_pg_fut(
+	trigger.maybe_record_blocking(state.promise.get_shared_future(), state)
+      ), state.creating);
+  }
+}
+
+void PGMap::remove_pg(spg_t pgid) {
+  ceph_assert(pgs.erase(pgid) == 1);
+}
+
+Ref<PG> PGMap::get_pg(spg_t pgid)
+{
+  if (auto pg = pgs.find(pgid); pg != pgs.end()) {
+    return pg->second;
+  } else {
+    return nullptr;
   }
 }
 
@@ -53,16 +70,31 @@ void PGMap::pg_created(spg_t pgid, Ref<PG> pg)
   ceph_assert(!pgs.count(pgid));
   pgs.emplace(pgid, pg);
 
-  auto state = pgs_creating.find(pgid);
-  ceph_assert(state != pgs_creating.end());
-  state->second.promise.set_value(pg);
-  pgs_creating.erase(pgid);
+  auto creating_iter = pgs_creating.find(pgid);
+  ceph_assert(creating_iter != pgs_creating.end());
+  auto promise = std::move(creating_iter->second.promise);
+  pgs_creating.erase(creating_iter);
+  promise.set_value(pg);
 }
 
 void PGMap::pg_loaded(spg_t pgid, Ref<PG> pg)
 {
   ceph_assert(!pgs.count(pgid));
   pgs.emplace(pgid, pg);
+}
+
+void PGMap::pg_creation_canceled(spg_t pgid)
+{
+  logger().debug("PGMap::pg_creation_canceled: {}", pgid);
+  ceph_assert(!pgs.count(pgid));
+
+  auto creating_iter = pgs_creating.find(pgid);
+  ceph_assert(creating_iter != pgs_creating.end());
+  auto promise = std::move(creating_iter->second.promise);
+  pgs_creating.erase(creating_iter);
+  promise.set_exception(
+    crimson::ct_error::ecanceled::exception_ptr()
+  );
 }
 
 PGMap::~PGMap() {}

@@ -1,21 +1,31 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
 
 from cherrypy import NotFound
 
-from . import ApiController, RESTController, Endpoint, ReadPermission, UiApiController
+from .. import mgr
 from ..security import Scope
 from ..services.ceph_service import CephService
-from .. import mgr
+from . import APIDoc, APIRouter, Endpoint, EndpointDoc, ReadPermission, RESTController, UIRouter
+
+LIST_CODE__SCHEMA = {
+    "crush-failure-domain": (str, ''),
+    "k": (int, 'Number of data chunks'),
+    "m": (int, 'Number of coding chunks'),
+    "plugin": (str, 'Plugin Info'),
+    "technique": (str, ''),
+    "name": (str, 'Name of the profile')
+}
 
 
-@ApiController('/erasure_code_profile', Scope.POOL)
+@APIRouter('/erasure_code_profile', Scope.POOL)
+@APIDoc("Erasure Code Profile Management API", "ErasureCodeProfile")
 class ErasureCodeProfile(RESTController):
     """
     create() supports additional key-value arguments that are passed to the
     ECP plugin.
     """
-
+    @EndpointDoc("List Erasure Code Profile Information",
+                 responses={'200': [LIST_CODE__SCHEMA]})
     def list(self):
         return CephService.get_erasure_code_profiles()
 
@@ -35,7 +45,8 @@ class ErasureCodeProfile(RESTController):
         CephService.send_command('mon', 'osd erasure-code-profile rm', name=name)
 
 
-@UiApiController('/erasure_code_profile', Scope.POOL)
+@UIRouter('/erasure_code_profile', Scope.POOL)
+@APIDoc("Dashboard UI helper function; not part of the public API", "ErasureCodeProfileUi")
 class ErasureCodeProfileUi(ErasureCodeProfile):
     @Endpoint()
     @ReadPermission
@@ -45,8 +56,8 @@ class ErasureCodeProfileUi(ErasureCodeProfile):
         """
         config = mgr.get('config')
         return {
-            # Because 'shec' is experimental it's not included
-            'plugins': config['osd_erasure_code_plugins'].split() + ['shec'],
+            # Because 'shec' and 'clay' are experimental they're not included
+            'plugins': config['osd_erasure_code_plugins'].split() + ['shec', 'clay'],
             'directory': config['erasure_code_dir'],
             'nodes': mgr.get('osd_map_tree')['nodes'],
             'names': [name for name, _ in

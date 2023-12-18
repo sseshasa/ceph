@@ -26,6 +26,8 @@
 #include "common/config_proxy.h"
 #include "log/Log.h"
 
+using namespace std;
+
 TEST(CephContext, do_command)
 {
   CephContext *cct = (new CephContext(CEPH_ENTITY_TYPE_CLIENT))->get();
@@ -41,7 +43,7 @@ TEST(CephContext, do_command)
   {
     stringstream ss;
     bufferlist out;
-    std::unique_ptr<Formatter> f(Formatter::create("xml", "xml"));
+    std::unique_ptr<Formatter> f{Formatter::create_unique("xml", "xml")};
     cct->do_command("config get", cmdmap, f.get(), ss, &out);
     f->flush(out);
     string s(out.c_str(), out.length());
@@ -52,7 +54,7 @@ TEST(CephContext, do_command)
     stringstream ss;
     bufferlist out;
     cmdmap_t bad_cmdmap; // no 'var' field
-    std::unique_ptr<Formatter> f(Formatter::create("xml", "xml"));
+    std::unique_ptr<Formatter> f{Formatter::create_unique("xml", "xml")};
     int r = cct->do_command("config get", bad_cmdmap, f.get(), ss, &out);
     if (r >= 0) {
       f->flush(out);
@@ -67,7 +69,7 @@ TEST(CephContext, do_command)
     bufferlist out;
     cmdmap_t bad_cmdmap;
     bad_cmdmap["var"] = string("doesnotexist123");
-    std::unique_ptr<Formatter> f(Formatter::create("xml", "xml"));
+    std::unique_ptr<Formatter> f{Formatter::create_unique("xml", "xml")};
     int r = cct->do_command("config help", bad_cmdmap, f.get(), ss, &out);
     if (r >= 0) {
       f->flush(out);
@@ -81,11 +83,11 @@ TEST(CephContext, do_command)
   {
     stringstream ss;
     bufferlist out;
-    std::unique_ptr<Formatter> f(Formatter::create("xml", "xml"));
+    std::unique_ptr<Formatter> f{Formatter::create_unique("xml", "xml")};
     cct->do_command("config diff get", cmdmap, f.get(), ss, &out);
     f->flush(out);
     string s(out.c_str(), out.length());
-    EXPECT_EQ("<config_diff_get><diff><key><default></default><override>" + value + "</override><final>value</final></key><rbd_default_features><default>61</default><final>61</final></rbd_default_features></diff></config_diff_get>", s);
+    EXPECT_EQ("<config_diff_get><diff><key><default></default><override>" + value + "</override><final>value</final></key><rbd_default_features><default>61</default><final>61</final></rbd_default_features><rbd_qos_exclude_ops><default>0</default><final>0</final></rbd_qos_exclude_ops></diff></config_diff_get>", s);
   }
   cct->put();
 }

@@ -14,6 +14,8 @@
 #include "include/Context.h"
 #include "os/bluestore/Allocator.h"
 
+using namespace std;
+
 typedef boost::mt11213b gen_type;
 
 class AllocTest : public ::testing::TestWithParam<const char*> {
@@ -23,8 +25,9 @@ public:
   AllocTest(): alloc(0) { }
   void init_alloc(int64_t size, uint64_t min_alloc_size) {
     std::cout << "Creating alloc type " << string(GetParam()) << " \n";
-    alloc.reset(Allocator::create(g_ceph_context, string(GetParam()), size,
-				  min_alloc_size));
+    alloc.reset(Allocator::create(g_ceph_context, GetParam(), size,
+				  min_alloc_size,
+				  256*1048576, 100*256*1048576ull));
   }
 
   void init_close() {
@@ -45,6 +48,23 @@ TEST_P(AllocTest, test_alloc_init)
   blocks = 1024 * 2;
   init_alloc(blocks, 1);
   ASSERT_EQ(alloc->get_free(), (uint64_t) 0);
+}
+
+TEST_P(AllocTest, test_init_add_free)
+{
+  int64_t block_size = 1024;
+  int64_t capacity = 4 * 1024 * block_size;
+
+  {
+    init_alloc(capacity, block_size);
+
+    auto free = alloc->get_free();
+    alloc->init_add_free(block_size, 0);
+    ASSERT_EQ(free, alloc->get_free());
+
+    alloc->init_rm_free(block_size, 0);
+    ASSERT_EQ(free, alloc->get_free());
+  }
 }
 
 TEST_P(AllocTest, test_alloc_min_alloc)
@@ -281,7 +301,6 @@ TEST_P(AllocTest, test_alloc_fragmentation)
     alloc->release(release_set);
   }
   EXPECT_EQ(1.0, alloc->get_fragmentation());
-  EXPECT_EQ(66u, uint64_t(alloc->get_fragmentation_score() * 100));
 
   for (size_t i = 1; i < allocated.size() / 2; i += 2)
   {
@@ -296,7 +315,6 @@ TEST_P(AllocTest, test_alloc_fragmentation)
     // fragmentation approx = 257 intervals / 768 max intervals
     EXPECT_EQ(33u, uint64_t(alloc->get_fragmentation() * 100));
   }
-  EXPECT_EQ(27u, uint64_t(alloc->get_fragmentation_score() * 100));
 
   for (size_t i = allocated.size() / 2 + 1; i < allocated.size(); i += 2)
   {
@@ -309,11 +327,84 @@ TEST_P(AllocTest, test_alloc_fragmentation)
   // Hence leaving just two 
   // digits after decimal point due to this.
   EXPECT_EQ(0u, uint64_t(alloc->get_fragmentation() * 100));
-  if (bitmap_alloc) {
-    EXPECT_EQ(0u, uint64_t(alloc->get_fragmentation_score() * 100));
-  } else {
-    EXPECT_EQ(11u, uint64_t(alloc->get_fragmentation_score() * 100));
+}
+
+TEST_P(AllocTest, test_fragmentation_score_0)
+{
+  uint64_t capacity = 16LL * 1024 * 1024 * 1024; //16 GB, very small
+  uint64_t alloc_unit = 4096;
+
+  init_alloc(capacity, alloc_unit);
+  alloc->init_add_free(0, capacity);
+  EXPECT_EQ(0, alloc->get_fragmentation_score());
+
+  // alloc every 100M, should get very small score
+  for (uint64_t pos = 0; pos < capacity; pos +=  100 * 1024 * 1024) {
+    alloc->init_rm_free(pos, alloc_unit);
   }
+  EXPECT_LT(alloc->get_fragmentation_score(), 0.0001); // frag < 0.01%
+  for (uint64_t pos = 0; pos < capacity; pos +=  100 * 1024 * 1024) {
+    // put back
+    alloc->init_add_free(pos, alloc_unit);
+  }
+
+  // 10% space is trashed, rest is free, small score
+  for (uint64_t pos = 0; pos < capacity / 10; pos +=  3 * alloc_unit) {
+    alloc->init_rm_free(pos, alloc_unit);
+  }
+  EXPECT_LT(0.01, alloc->get_fragmentation_score()); // 1% < frag < 10%
+  EXPECT_LT(alloc->get_fragmentation_score(), 0.1);
+}
+
+TEST_P(AllocTest, test_fragmentation_score_some)
+{
+  uint64_t capacity = 1024 * 1024 * 1024; //1 GB, very small
+  uint64_t alloc_unit = 4096;
+
+  init_alloc(capacity, alloc_unit);
+  alloc->init_add_free(0, capacity);
+  // half (in 16 chunks) is completely free,
+  // other half completely fragmented, expect less than 50% fragmentation score
+  for (uint64_t chunk = 0; chunk < capacity; chunk += capacity / 16) {
+    for (uint64_t pos = 0; pos < capacity / 32; pos += alloc_unit * 3) {
+      alloc->init_rm_free(chunk + pos, alloc_unit);
+    }
+  }
+  EXPECT_LT(alloc->get_fragmentation_score(), 0.5); // f < 50%
+
+  init_alloc(capacity, alloc_unit);
+  alloc->init_add_free(0, capacity);
+  // half (in 16 chunks) is completely full,
+  // other half completely fragmented, expect really high fragmentation score
+  for (uint64_t chunk = 0; chunk < capacity; chunk += capacity / 16) {
+    alloc->init_rm_free(chunk + capacity / 32, capacity / 32);
+    for (uint64_t pos = 0; pos < capacity / 32; pos += alloc_unit * 3) {
+      alloc->init_rm_free(chunk + pos, alloc_unit);
+    }
+  }
+  EXPECT_LT(0.9, alloc->get_fragmentation_score()); // 50% < f
+}
+
+TEST_P(AllocTest, test_fragmentation_score_1)
+{
+  uint64_t capacity = 1024 * 1024 * 1024; //1 GB, very small
+  uint64_t alloc_unit = 4096;
+
+  init_alloc(capacity, alloc_unit);
+  alloc->init_add_free(0, capacity);
+  // alloc every second AU, max fragmentation
+  for (uint64_t pos = 0; pos < capacity; pos += alloc_unit * 2) {
+    alloc->init_rm_free(pos, alloc_unit);
+  }
+  EXPECT_LT(0.99, alloc->get_fragmentation_score()); // 99% < f
+
+  init_alloc(capacity, alloc_unit);
+  alloc->init_add_free(0, capacity);
+  // 1 allocated, 4 empty; expect very high score
+  for (uint64_t pos = 0; pos < capacity; pos += alloc_unit * 5) {
+    alloc->init_rm_free(pos, alloc_unit);
+  }
+  EXPECT_LT(0.90, alloc->get_fragmentation_score()); // 90% < f
 }
 
 TEST_P(AllocTest, test_dump_fragmentation_score)
@@ -341,12 +432,14 @@ TEST_P(AllocTest, test_dump_fragmentation_score)
 	//allocate
 	want_size = ( rng() % one_alloc_max ) / alloc_unit * alloc_unit + alloc_unit;
 	tmp.clear();
-	uint64_t r = alloc->allocate(want_size, alloc_unit, 0, 0, &tmp);
-	for (auto& t: tmp) {
-	  if (t.length > 0)
-	    allocated.push_back(t);
-	}
-	allocated_cnt += r;
+        int64_t r = alloc->allocate(want_size, alloc_unit, 0, 0, &tmp);
+        if (r > 0) {
+          for (auto& t: tmp) {
+            if (t.length > 0)
+              allocated.push_back(t);
+          }
+          allocated_cnt += r;
+        }
       } else {
 	//free
 	ceph_assert(allocated.size() > 0);
@@ -366,7 +459,7 @@ TEST_P(AllocTest, test_dump_fragmentation_score)
       ceph_assert(len > 0);
       free_sum += len;
     };
-    alloc->dump(iterated_allocation);
+    alloc->foreach(iterated_allocation);
     EXPECT_GT(1, alloc->get_fragmentation_score());
     EXPECT_EQ(capacity, free_sum + allocated_cnt);
   }
@@ -480,7 +573,87 @@ TEST_P(AllocTest, test_alloc_contiguous)
   alloc->shutdown();
 }
 
+TEST_P(AllocTest, test_alloc_47883)
+{
+  uint64_t block = 0x1000;
+  uint64_t size = 1599858540544ul;
+
+  init_alloc(size, block);
+
+  alloc->init_add_free(0x1b970000, 0x26000);
+  alloc->init_add_free(0x1747e9d5000, 0x493000);
+  alloc->init_add_free(0x1747ee6a000, 0x196000);
+
+  PExtentVector extents;
+  auto need = 0x3f980000;
+  auto got = alloc->allocate(need, 0x10000, 0, (int64_t)0, &extents);
+  EXPECT_GE(got, 0x630000);
+}
+
+TEST_P(AllocTest, test_alloc_50656_best_fit)
+{
+  uint64_t block = 0x1000;
+  uint64_t size = 0x3b9e400000;
+
+  init_alloc(size, block);
+
+  // too few free extents - causes best fit mode for avls
+  for (size_t i = 0; i < 0x10; i++) {
+    alloc->init_add_free(i * 2 * 0x100000, 0x100000);
+  }
+
+  alloc->init_add_free(0x1e1bd13000, 0x404000);
+
+  PExtentVector extents;
+  auto need = 0x400000;
+  auto got = alloc->allocate(need, 0x10000, 0, (int64_t)0, &extents);
+  EXPECT_GT(got, 0);
+  EXPECT_EQ(got, 0x400000);
+}
+
+TEST_P(AllocTest, test_alloc_50656_first_fit)
+{
+  uint64_t block = 0x1000;
+  uint64_t size = 0x3b9e400000;
+
+  init_alloc(size, block);
+
+  for (size_t i = 0; i < 0x10000; i += 2) {
+    alloc->init_add_free(i * 0x100000, 0x100000);
+  }
+
+  alloc->init_add_free(0x1e1bd13000, 0x404000);
+
+  PExtentVector extents;
+  auto need = 0x400000;
+  auto got = alloc->allocate(need, 0x10000, 0, (int64_t)0, &extents);
+  EXPECT_GT(got, 0);
+  EXPECT_EQ(got, 0x400000);
+}
+
+TEST_P(AllocTest, test_init_rm_free_unbound)
+{
+  int64_t block_size = 1024;
+  int64_t capacity = 4 * 1024 * block_size;
+
+  {
+    init_alloc(capacity, block_size);
+
+    alloc->init_add_free(0, block_size * 2);
+    alloc->init_add_free(block_size * 3, block_size * 3);
+    alloc->init_add_free(block_size * 7, block_size * 2);
+
+    alloc->init_rm_free(block_size * 4, block_size);
+    ASSERT_EQ(alloc->get_free(), block_size * 6);
+
+    auto cb = [&](size_t off, size_t len) {
+      cout << std::hex << "0x" << off << "~" << len << std::dec << std::endl;
+    };
+    alloc->foreach(cb);
+  }
+}
+
 INSTANTIATE_TEST_SUITE_P(
   Allocator,
   AllocTest,
-  ::testing::Values("stupid", "bitmap", "avl", "hybrid"));
+  ::testing::Values("stupid", "bitmap", "avl", "hybrid", "btree"));

@@ -16,6 +16,7 @@
 
 #define dout_subsys ceph_subsys_rgw
 
+using namespace std;
 
 void dump_array(JSONObj *obj)
 {
@@ -55,7 +56,9 @@ struct UserInfo {
   }
 };
 
-
+// This has an uncaught exception. Even if the exception is caught, the program
+// would need to be terminated, so the warning is simply suppressed.
+// coverity[root_function:SUPPRESS]
 int main(int argc, char **argv) {
   JSONParser parser;
 

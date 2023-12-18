@@ -1,21 +1,29 @@
+import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
+import { RouterTestingModule } from '@angular/router/testing';
 
-import { configureTestSuite } from 'ng-bullet';
-import { MockModule } from 'ng-mocks';
+import { ToastrModule } from 'ngx-toastr';
+import { SimplebarAngularModule } from 'simplebar-angular';
 import { of } from 'rxjs';
 
-import { Permission, Permissions } from '../../../shared/models/permissions';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
+import { Permission, Permissions } from '~/app/shared/models/permissions';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
 import {
   Features,
   FeatureTogglesMap,
   FeatureTogglesService
-} from '../../../shared/services/feature-toggles.service';
-import { PrometheusAlertService } from '../../../shared/services/prometheus-alert.service';
-import { SummaryService } from '../../../shared/services/summary.service';
-import { NavigationModule } from '../navigation.module';
+} from '~/app/shared/services/feature-toggles.service';
+import { PrometheusAlertService } from '~/app/shared/services/prometheus-alert.service';
+import { SummaryService } from '~/app/shared/services/summary.service';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { NavigationComponent } from './navigation.component';
+import { NotificationsComponent } from '../notifications/notifications.component';
+import { AdministrationComponent } from '../administration/administration.component';
+import { IdentityComponent } from '../identity/identity.component';
+import { NgbModule } from '@ng-bootstrap/ng-bootstrap';
+import { DashboardHelpComponent } from '../dashboard-help/dashboard-help.component';
 
 function everythingPermittedExcept(disabledPermissions: string[] = []): any {
   const permissions: Permissions = new Permissions({});
@@ -49,28 +57,44 @@ describe('NavigationComponent', () => {
   let component: NavigationComponent;
   let fixture: ComponentFixture<NavigationComponent>;
 
-  configureTestSuite(() => {
-    TestBed.configureTestingModule({
-      declarations: [NavigationComponent],
-      imports: [MockModule(NavigationModule)],
-      providers: [
-        {
-          provide: AuthStorageService,
-          useValue: {
-            getPermissions: jest.fn(),
-            isPwdDisplayed$: { subscribe: jest.fn() }
-          }
-        },
-        { provide: SummaryService, useValue: { subscribe: jest.fn() } },
-        { provide: FeatureTogglesService, useValue: { get: jest.fn() } },
-        { provide: PrometheusAlertService, useValue: { alerts: [] } }
-      ]
-    });
+  configureTestBed({
+    declarations: [
+      NavigationComponent,
+      NotificationsComponent,
+      AdministrationComponent,
+      DashboardHelpComponent,
+      IdentityComponent
+    ],
+    imports: [
+      HttpClientTestingModule,
+      SharedModule,
+      ToastrModule.forRoot(),
+      RouterTestingModule,
+      SimplebarAngularModule,
+      NgbModule
+    ],
+    providers: [AuthStorageService, SummaryService, FeatureTogglesService, PrometheusAlertService]
   });
 
   beforeEach(() => {
+    spyOn(TestBed.inject(AuthStorageService), 'getPermissions').and.callFake(() =>
+      everythingPermittedExcept()
+    );
+
+    spyOn(TestBed.inject(FeatureTogglesService), 'get').and.callFake(() =>
+      of(everythingEnabledExcept())
+    );
+    spyOn(TestBed.inject(SummaryService), 'subscribe').and.callFake(() =>
+      of({ health: { status: 'HEALTH_OK' } })
+    );
+    spyOn(TestBed.inject(PrometheusAlertService), 'getAlerts').and.callFake(() => of([]));
     fixture = TestBed.createComponent(NavigationComponent);
     component = fixture.componentInstance;
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    fixture.destroy();
   });
 
   describe('Test Permissions', () => {
@@ -78,23 +102,31 @@ describe('NavigationComponent', () => {
       [
         ['hosts'],
         [
-          '.tc_submenuitem_hosts',
+          '.tc_submenuitem_cluster_hosts',
           '.tc_submenuitem_cluster_inventory',
-          '.tc_submenuitem_cluster_services'
+          '.tc_submenuitem_admin_services'
         ]
       ],
       [['monitor'], ['.tc_submenuitem_cluster_monitor']],
-      [['osd'], ['.tc_submenuitem_osds', '.tc_submenuitem_crush']],
-      [['configOpt'], ['.tc_submenuitem_configuration', '.tc_submenuitem_modules']],
-      [['log'], ['.tc_submenuitem_log']],
-      [['prometheus'], ['.tc_submenuitem_monitoring']],
-      [['pool'], ['.tc_menuitem_pool']],
+      [['osd'], ['.tc_submenuitem_cluster_osds', '.tc_submenuitem_cluster_crush']],
+      [
+        ['configOpt'],
+        [
+          '.tc_submenuitem_admin_configuration',
+          '.tc_submenuitem_admin_modules',
+          '.tc_submenuitem_admin_users',
+          '.tc_submenuitem_admin_upgrade'
+        ]
+      ],
+      [['log'], ['.tc_submenuitem_observe_log']],
+      [['prometheus'], ['.tc_submenuitem_observe_monitoring']],
+      [['pool'], ['.tc_submenuitem_cluster_pool']],
       [['rbdImage'], ['.tc_submenuitem_block_images']],
       [['rbdMirroring'], ['.tc_submenuitem_block_mirroring']],
       [['iscsi'], ['.tc_submenuitem_block_iscsi']],
       [['rbdImage', 'rbdMirroring', 'iscsi'], ['.tc_menuitem_block']],
-      [['nfs'], ['.tc_menuitem_nfs']],
-      [['cephfs'], ['.tc_menuitem_cephfs']],
+      [['nfs'], ['.tc_submenuitem_file_nfs']],
+      [['cephfs'], ['.tc_submenuitem_file_cephfs']],
       [
         ['rgw'],
         [
@@ -141,8 +173,8 @@ describe('NavigationComponent', () => {
       [['mirroring'], ['.tc_submenuitem_block_mirroring']],
       [['iscsi'], ['.tc_submenuitem_block_iscsi']],
       [['rbd', 'mirroring', 'iscsi'], ['.tc_menuitem_block']],
-      [['nfs'], ['.tc_menuitem_nfs']],
-      [['cephfs'], ['.tc_menuitem_cephfs']],
+      [['nfs'], ['.tc_submenuitem_file_nfs']],
+      [['cephfs'], ['.tc_submenuitem_file_cephfs']],
       [
         ['rgw'],
         [
@@ -181,5 +213,57 @@ describe('NavigationComponent', () => {
         }
       });
     }
+  });
+
+  describe('showTopNotification', () => {
+    const notification1 = 'notificationName1';
+    const notification2 = 'notificationName2';
+
+    beforeEach(() => {
+      component.notifications = [];
+    });
+
+    it('should show notification', () => {
+      component.showTopNotification(notification1, true);
+      expect(component.notifications.includes(notification1)).toBeTruthy();
+      expect(component.notifications.length).toBe(1);
+    });
+
+    it('should not add a second notification if it is already shown', () => {
+      component.showTopNotification(notification1, true);
+      component.showTopNotification(notification1, true);
+      expect(component.notifications.includes(notification1)).toBeTruthy();
+      expect(component.notifications.length).toBe(1);
+    });
+
+    it('should add a second notification if the first one is different', () => {
+      component.showTopNotification(notification1, true);
+      component.showTopNotification(notification2, true);
+      expect(component.notifications.includes(notification1)).toBeTruthy();
+      expect(component.notifications.includes(notification2)).toBeTruthy();
+      expect(component.notifications.length).toBe(2);
+    });
+
+    it('should hide an active notification', () => {
+      component.showTopNotification(notification1, true);
+      expect(component.notifications.includes(notification1)).toBeTruthy();
+      expect(component.notifications.length).toBe(1);
+      component.showTopNotification(notification1, false);
+      expect(component.notifications.length).toBe(0);
+    });
+
+    it('should not fail if it tries to hide an inactive notification', () => {
+      expect(() => component.showTopNotification(notification1, false)).not.toThrow();
+      expect(component.notifications.length).toBe(0);
+    });
+
+    it('should keep other notifications if it hides one', () => {
+      component.showTopNotification(notification1, true);
+      component.showTopNotification(notification2, true);
+      expect(component.notifications.length).toBe(2);
+      component.showTopNotification(notification2, false);
+      expect(component.notifications.length).toBe(1);
+      expect(component.notifications.includes(notification1)).toBeTruthy();
+    });
   });
 });

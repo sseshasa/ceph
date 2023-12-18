@@ -18,6 +18,7 @@
 #define CEPH_ASYNCMESSENGER_H
 
 #include <map>
+#include <optional>
 
 #include "include/types.h"
 #include "include/xlist.h"
@@ -94,7 +95,6 @@ public:
    * @{
    */
   bool set_addr_unknowns(const entity_addrvec_t &addr) override;
-  void set_addrs(const entity_addrvec_t &addrs) override;
 
   int get_dispatch_queue_len() override {
     return dispatch_queue.get_queue_len();
@@ -114,9 +114,11 @@ public:
     cluster_protocol = p;
   }
 
-  int bind(const entity_addr_t& bind_addr) override;
+  int bind(const entity_addr_t& bind_addr,
+	   std::optional<entity_addrvec_t> public_addrs=std::nullopt) override;
   int rebind(const std::set<int>& avoid_ports) override;
-  int bindv(const entity_addrvec_t& bind_addrs) override;
+  int bindv(const entity_addrvec_t& bind_addrs,
+	    std::optional<entity_addrvec_t> public_addrs=std::nullopt) override;
 
   int client_bind(const entity_addr_t& bind_addr) override;
 
@@ -209,8 +211,6 @@ private:
   entity_addrvec_t _filter_addrs(const entity_addrvec_t& addrs);
 
  private:
-  static const uint64_t ReapDeadConnectionThreshold = 5;
-
   NetworkStack *stack;
   std::vector<Processor*> processors;
   friend class Processor;
@@ -232,10 +232,18 @@ private:
   bool need_addr = true;
 
   /**
-   * set to bind addresses if bind was called before NetworkStack was ready to
-   * bind
+   * set to bind addresses if bind or bindv were called before NetworkStack
+   * was ready to bind
    */
   entity_addrvec_t pending_bind_addrs;
+
+  /**
+   * set to public addresses (those announced by the msgr's protocols).
+   * they are stored to handle the cases when either:
+   *   a) bind or bindv were called before NetworkStack was ready to bind,
+   *   b) rebind is called down the road.
+   */
+  std::optional<entity_addrvec_t> saved_public_addrs;
 
   /**
    * false; set to true if a pending bind exists
@@ -311,6 +319,7 @@ private:
     if (p->second->is_unregistered()) {
       std::lock_guard l{deleted_lock};
       if (deleted_conns.erase(p->second)) {
+	p->second->get_perf_counter()->dec(l_msgr_active_connections);
 	conns.erase(p);
 	return nullref;
       }
@@ -399,12 +408,10 @@ public:
    */
   void unregister_conn(const AsyncConnectionRef& conn) {
     std::lock_guard l{deleted_lock};
-    if (!accepting_conns.count(conn) || anon_conns.count(conn))
-      conn->get_perf_counter()->dec(l_msgr_active_connections);
     deleted_conns.emplace(std::move(conn));
     conn->unregister();
 
-    if (deleted_conns.size() >= ReapDeadConnectionThreshold) {
+    if (deleted_conns.size() >= cct->_conf->ms_async_reap_threshold) {
       local_worker->center.dispatch_event_external(reap_handler);
     }
   }

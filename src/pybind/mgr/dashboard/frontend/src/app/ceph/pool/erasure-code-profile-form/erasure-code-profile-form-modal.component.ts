@@ -1,26 +1,27 @@
 import { Component, EventEmitter, OnInit, Output } from '@angular/core';
 import { Validators } from '@angular/forms';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import { BsModalRef } from 'ngx-bootstrap/modal';
+import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
 
-import { ErasureCodeProfileService } from '../../../shared/api/erasure-code-profile.service';
-import { CrushNodeSelectionClass } from '../../../shared/classes/crush.node.selection.class';
-import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
-import { CdFormBuilder } from '../../../shared/forms/cd-form-builder';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { CdValidators } from '../../../shared/forms/cd-validators';
-import { CrushNode } from '../../../shared/models/crush-node';
-import { ErasureCodeProfile } from '../../../shared/models/erasure-code-profile';
-import { FinishedTask } from '../../../shared/models/finished-task';
-import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
+import { ErasureCodeProfileService } from '~/app/shared/api/erasure-code-profile.service';
+import { CrushNodeSelectionClass } from '~/app/shared/classes/crush.node.selection.class';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { CdFormBuilder } from '~/app/shared/forms/cd-form-builder';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { CdValidators } from '~/app/shared/forms/cd-validators';
+import { CrushNode } from '~/app/shared/models/crush-node';
+import { ErasureCodeProfile } from '~/app/shared/models/erasure-code-profile';
+import { FinishedTask } from '~/app/shared/models/finished-task';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
 
 @Component({
   selector: 'cd-erasure-code-profile-form-modal',
   templateUrl: './erasure-code-profile-form-modal.component.html',
   styleUrls: ['./erasure-code-profile-form-modal.component.scss']
 })
-export class ErasureCodeProfileFormModalComponent extends CrushNodeSelectionClass
+export class ErasureCodeProfileFormModalComponent
+  extends CrushNodeSelectionClass
   implements OnInit {
   @Output()
   submitAction = new EventEmitter();
@@ -29,10 +30,12 @@ export class ErasureCodeProfileFormModalComponent extends CrushNodeSelectionClas
   PLUGIN = {
     LRC: 'lrc', // Locally Repairable Erasure Code
     SHEC: 'shec', // Shingled Erasure Code
+    CLAY: 'clay', // Coupled LAYer
     JERASURE: 'jerasure', // default
     ISA: 'isa' // Intel Storage Acceleration
   };
   plugin = this.PLUGIN.JERASURE;
+  icons = Icons;
 
   form: CdFormGroup;
   plugins: string[];
@@ -40,20 +43,20 @@ export class ErasureCodeProfileFormModalComponent extends CrushNodeSelectionClas
   techniques: string[];
   action: string;
   resource: string;
+  dCalc: boolean;
   lrcGroups: number;
   lrcMultiK: number;
 
   constructor(
     private formBuilder: CdFormBuilder,
-    public bsModalRef: BsModalRef,
+    public activeModal: NgbActiveModal,
     private taskWrapper: TaskWrapperService,
     private ecpService: ErasureCodeProfileService,
-    private i18n: I18n,
     public actionLabels: ActionLabelsI18n
   ) {
     super();
     this.action = this.actionLabels.CREATE;
-    this.resource = this.i18n('EC Profile');
+    this.resource = $localize`EC Profile`;
     this.createForm();
     this.setJerasureDefaults();
   }
@@ -76,7 +79,6 @@ export class ErasureCodeProfileFormModalComponent extends CrushNodeSelectionClas
         4, // Will be overwritten with plugin defaults
         [
           Validators.required,
-          Validators.min(2),
           CdValidators.custom('max', () => this.baseValueValidation(true)),
           CdValidators.custom('unequal', (v: number) => this.lrcDataValidation(v)),
           CdValidators.custom('kLowerM', (v: number) => this.shecDataValidation(v))
@@ -84,26 +86,21 @@ export class ErasureCodeProfileFormModalComponent extends CrushNodeSelectionClas
       ],
       m: [
         2, // Will be overwritten with plugin defaults
-        [
-          Validators.required,
-          Validators.min(1),
-          CdValidators.custom('max', () => this.baseValueValidation())
-        ]
+        [Validators.required, CdValidators.custom('max', () => this.baseValueValidation())]
       ],
       crushFailureDomain: '', // Will be preselected
       crushRoot: null, // Will be preselected
       crushDeviceClass: '', // Will be preselected
       directory: '',
-      // Only for 'jerasure' and 'isa' use
+      // Only for 'jerasure', 'clay' and 'isa' use
       technique: 'reed_sol_van',
       // Only for 'jerasure' use
-      packetSize: [2048, [Validators.min(1)]],
+      packetSize: [2048],
       // Only for 'lrc' use
       l: [
         3, // Will be overwritten with plugin defaults
         [
           Validators.required,
-          Validators.min(1),
           CdValidators.custom('unequal', (v: number) => this.lrcLocalityValidation(v))
         ]
       ],
@@ -113,15 +110,28 @@ export class ErasureCodeProfileFormModalComponent extends CrushNodeSelectionClas
         2, // Will be overwritten with plugin defaults
         [
           Validators.required,
-          Validators.min(1),
           CdValidators.custom('cGreaterM', (v: number) => this.shecDurabilityValidation(v))
         ]
-      ]
+      ],
+      // Only for 'clay' use
+      d: [
+        5, // Will be overwritten with plugin defaults (k+m-1) = k+1 <= d <= k+m-1
+        [
+          Validators.required,
+          CdValidators.custom('dMin', (v: number) => this.dMinValidation(v)),
+          CdValidators.custom('dMax', (v: number) => this.dMaxValidation(v))
+        ]
+      ],
+      scalar_mds: [this.PLUGIN.JERASURE, [Validators.required]] // jerasure or isa or shec
     });
-    this.form.get('k').valueChanges.subscribe(() => this.updateValidityOnChange(['m', 'l']));
-    this.form.get('m').valueChanges.subscribe(() => this.updateValidityOnChange(['k', 'l', 'c']));
+    this.toggleDCalc();
+    this.form.get('k').valueChanges.subscribe(() => this.updateValidityOnChange(['m', 'l', 'd']));
+    this.form
+      .get('m')
+      .valueChanges.subscribe(() => this.updateValidityOnChange(['k', 'l', 'c', 'd']));
     this.form.get('l').valueChanges.subscribe(() => this.updateValidityOnChange(['k', 'm']));
     this.form.get('plugin').valueChanges.subscribe((plugin) => this.onPluginChange(plugin));
+    this.form.get('scalar_mds').valueChanges.subscribe(() => this.setClayDefaultsForScalar());
   }
 
   private baseValueValidation(dataChunk: boolean = false): boolean {
@@ -176,8 +186,44 @@ export class ErasureCodeProfileFormModalComponent extends CrushNodeSelectionClas
     }, 'shec');
   }
 
+  private dMinValidation(d: number): boolean {
+    return this.validValidation(() => this.getDMin() > d, 'clay');
+  }
+
+  getDMin(): number {
+    return this.form.getValue('k') + 1;
+  }
+
+  private dMaxValidation(d: number): boolean {
+    return this.validValidation(() => d > this.getDMax(), 'clay');
+  }
+
+  getDMax(): number {
+    const m = this.form.getValue('m');
+    const k = this.form.getValue('k');
+    return k + m - 1;
+  }
+
+  toggleDCalc() {
+    this.dCalc = !this.dCalc;
+    this.form.get('d')[this.dCalc ? 'disable' : 'enable']();
+    this.calculateD();
+  }
+
+  private calculateD() {
+    if (this.plugin !== this.PLUGIN.CLAY || !this.dCalc) {
+      return;
+    }
+    this.form.silentSet('d', this.getDMax());
+  }
+
   private updateValidityOnChange(names: string[]) {
-    names.forEach((name) => this.form.get(name).updateValueAndValidity({ emitEvent: false }));
+    names.forEach((name) => {
+      if (name === 'd') {
+        this.calculateD();
+      }
+      this.form.get(name).updateValueAndValidity({ emitEvent: false });
+    });
   }
 
   private onPluginChange(plugin: string) {
@@ -190,15 +236,13 @@ export class ErasureCodeProfileFormModalComponent extends CrushNodeSelectionClas
       this.setIsaDefaults();
     } else if (plugin === this.PLUGIN.SHEC) {
       this.setShecDefaults();
+    } else if (plugin === this.PLUGIN.CLAY) {
+      this.setClayDefaults();
     }
-    this.updateValidityOnChange(['m']); // Triggers k, m, c and l
+    this.updateValidityOnChange(['m']); // Triggers k, m, c, d and l
   }
 
   private setJerasureDefaults() {
-    this.setDefaults({
-      k: 4,
-      m: 2
-    });
     this.techniques = [
       'reed_sol_van',
       'reed_sol_r6_op',
@@ -208,6 +252,11 @@ export class ErasureCodeProfileFormModalComponent extends CrushNodeSelectionClas
       'blaum_roth',
       'liber8tion'
     ];
+    this.setDefaults({
+      k: 4,
+      m: 2,
+      technique: 'reed_sol_van'
+    });
   }
 
   private setLrcDefaults() {
@@ -224,11 +273,12 @@ export class ErasureCodeProfileFormModalComponent extends CrushNodeSelectionClas
      * if they are not set, therefore it's fine to mark them as required in order to get
      * strange values that weren't set.
      */
+    this.techniques = ['reed_sol_van', 'cauchy'];
     this.setDefaults({
       k: 7,
-      m: 3
+      m: 3,
+      technique: 'reed_sol_van'
     });
-    this.techniques = ['reed_sol_van', 'cauchy'];
   }
 
   private setShecDefaults() {
@@ -244,24 +294,64 @@ export class ErasureCodeProfileFormModalComponent extends CrushNodeSelectionClas
     });
   }
 
+  private setClayDefaults() {
+    /**
+     * Actually d and scalar_mds are not required - but they will be set to show the default values
+     * in case if they are not set, therefore it's fine to mark them as required in order to not get
+     * strange values that weren't set.
+     *
+     * As d would be set to the value k+m-1 for the greatest savings, the form will
+     * automatically update d if the automatic calculation is activated (default).
+     */
+    this.setDefaults({
+      k: 4,
+      m: 2,
+      // d: 5, <- Will be automatically update to 5
+      scalar_mds: this.PLUGIN.JERASURE
+    });
+    this.setClayDefaultsForScalar();
+  }
+
+  private setClayDefaultsForScalar() {
+    const plugin = this.form.getValue('scalar_mds');
+    let defaultTechnique = 'reed_sol_van';
+    if (plugin === this.PLUGIN.JERASURE) {
+      this.techniques = [
+        'reed_sol_van',
+        'reed_sol_r6_op',
+        'cauchy_orig',
+        'cauchy_good',
+        'liber8tion'
+      ];
+    } else if (plugin === this.PLUGIN.ISA) {
+      this.techniques = ['reed_sol_van', 'cauchy'];
+    } else {
+      // this.PLUGIN.SHEC
+      defaultTechnique = 'single';
+      this.techniques = ['single', 'multiple'];
+    }
+    this.setDefaults({ technique: defaultTechnique });
+  }
+
   private setDefaults(defaults: object) {
     Object.keys(defaults).forEach((controlName) => {
       const control = this.form.get(controlName);
       const value = control.value;
-      let overwrite = control.pristine;
       /**
        * As k, m, c and l are now set touched and dirty on the beginning, plugin change will
        * overwrite their values as we can't determine if the user has changed anything.
        * k and m can have two default values where as l and c can only have one,
        * so there is no need to overwrite them.
        */
-      if ('k' === controlName) {
-        overwrite = [4, 7].includes(value);
-      } else if ('m' === controlName) {
-        overwrite = [2, 3].includes(value);
-      }
+      const overwrite =
+        control.pristine ||
+        (controlName === 'technique' && !this.techniques.includes(value)) ||
+        (controlName === 'k' && [4, 7].includes(value)) ||
+        (controlName === 'm' && [2, 3].includes(value));
       if (overwrite) {
-        this.form.get(controlName).setValue(defaults[controlName]);
+        control.setValue(defaults[controlName]); // also validates new value
+      } else {
+        control.updateValueAndValidity();
       }
     });
   }
@@ -300,12 +390,12 @@ export class ErasureCodeProfileFormModalComponent extends CrushNodeSelectionClas
    * fields got changed before by the user.
    */
   private preValidateNumericInputFields() {
-    const kml = ['k', 'm', 'l', 'c'].map((name) => this.form.get(name));
+    const kml = ['k', 'm', 'l', 'c', 'd'].map((name) => this.form.get(name));
     kml.forEach((control) => {
       control.markAsTouched();
       control.markAsDirty();
     });
-    kml[1].updateValueAndValidity(); // Update validity of k, m, c and l
+    kml[1].updateValueAndValidity(); // Update validity of k, m, c, d and l
   }
 
   onSubmit() {
@@ -319,25 +409,26 @@ export class ErasureCodeProfileFormModalComponent extends CrushNodeSelectionClas
         task: new FinishedTask('ecp/create', { name: profile.name }),
         call: this.ecpService.create(profile)
       })
-      .subscribe(
-        undefined,
-        () => {
+      .subscribe({
+        error: () => {
           this.form.setErrors({ cdSubmitButton: true });
         },
-        () => {
-          this.bsModalRef.hide();
+        complete: () => {
+          this.activeModal.close();
           this.submitAction.emit(profile);
         }
-      );
+      });
   }
 
   private createJson() {
     const pluginControls = {
-      technique: [this.PLUGIN.ISA, this.PLUGIN.JERASURE],
+      technique: [this.PLUGIN.ISA, this.PLUGIN.JERASURE, this.PLUGIN.CLAY],
       packetSize: [this.PLUGIN.JERASURE],
       l: [this.PLUGIN.LRC],
       crushLocality: [this.PLUGIN.LRC],
-      c: [this.PLUGIN.SHEC]
+      c: [this.PLUGIN.SHEC],
+      d: [this.PLUGIN.CLAY],
+      scalar_mds: [this.PLUGIN.CLAY]
     };
     const ecp = new ErasureCodeProfile();
     const plugin = this.form.getValue('plugin');

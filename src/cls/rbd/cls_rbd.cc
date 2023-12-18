@@ -1134,7 +1134,7 @@ int get_protection_status(cls_method_context_t hctx, bufferlist *in,
 }
 
 /**
- * set the proctection status of a snapshot
+ * set the protection status of a snapshot
  *
  * Input:
  * @param snapid (uint64_t) which snapshot to set the status of
@@ -2326,8 +2326,8 @@ int snapshot_add(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     return -EINVAL;
   }
 
-  if (boost::get<cls::rbd::UnknownSnapshotNamespace>(
-        &snap_meta.snapshot_namespace) != nullptr) {
+  if (std::holds_alternative<cls::rbd::UnknownSnapshotNamespace>(
+        snap_meta.snapshot_namespace)) {
     CLS_ERR("Unknown snapshot namespace provided");
     return -EINVAL;
   }
@@ -3002,7 +3002,7 @@ static int dir_remove_image_helper(cls_method_context_t hctx,
  * Rename an image in the directory, updating both indexes
  * atomically. This can't be done from the client calling
  * dir_add_image and dir_remove_image in one transaction because the
- * results of the first method are not visibale to later steps.
+ * results of the first method are not visible to later steps.
  *
  * Input:
  * @param src original name of the image
@@ -4138,7 +4138,7 @@ int children_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     return -EINVAL;
   }
 
-  CLS_LOG(20, "child_detach snap_id=%" PRIu64, snap_id);
+  CLS_LOG(20, "children_list snap_id=%" PRIu64, snap_id);
 
   cls_rbd_snap snap;
   std::string snapshot_key;
@@ -5059,7 +5059,22 @@ int image_status_set(cls_method_context_t hctx, const string &global_image_id,
   ondisk_status.up = false;
   ondisk_status.last_update = ceph_clock_now();
 
-  int r = cls_get_request_origin(hctx, &ondisk_status.origin);
+  std::string global_id_key = global_key(global_image_id);
+  std::string image_id;
+  int r = read_key(hctx, global_id_key, &image_id);
+  if (r < 0) {
+    return 0;
+  }
+  cls::rbd::MirrorImage mirror_image;
+  r = image_get(hctx, image_id, &mirror_image);
+  if (r < 0) {
+    return 0;
+  }
+  if (mirror_image.state != cls::rbd::MIRROR_IMAGE_STATE_ENABLED) {
+    return 0;
+  }
+
+  r = cls_get_request_origin(hctx, &ondisk_status.origin);
   ceph_assert(r == 0);
 
   bufferlist bl;
@@ -5693,7 +5708,7 @@ int image_snapshot_unlink_peer(cls_method_context_t hctx,
     return r;
   }
 
-  auto mirror_ns = boost::get<cls::rbd::MirrorSnapshotNamespace>(
+  auto mirror_ns = std::get_if<cls::rbd::MirrorSnapshotNamespace>(
     &snap.snapshot_namespace);
   if (mirror_ns == nullptr) {
     CLS_LOG(5, "mirror_image_snapshot_unlink_peer " \
@@ -5703,24 +5718,6 @@ int image_snapshot_unlink_peer(cls_method_context_t hctx,
 
   if (mirror_ns->mirror_peer_uuids.count(mirror_peer_uuid) == 0) {
     return -ENOENT;
-  }
-
-  if (mirror_ns->mirror_peer_uuids.size() == 1) {
-    // if this is the last peer to unlink and we have at least one additional
-    // newer mirror snapshot, return a special error to inform the caller it
-    // should remove the snapshot instead.
-    auto search_lambda = [snap_id](const cls_rbd_snap& snap_meta) {
-      if (snap_meta.id > snap_id &&
-          boost::get<cls::rbd::MirrorSnapshotNamespace>(
-                   &snap_meta.snapshot_namespace) != nullptr) {
-        return -EEXIST;
-      }
-      return 0;
-    };
-    r = image::snapshot::iterate(hctx, search_lambda);
-    if (r == -EEXIST) {
-      return -ERESTART;
-    }
   }
 
   mirror_ns->mirror_peer_uuids.erase(mirror_peer_uuid);
@@ -5748,7 +5745,7 @@ int image_snapshot_set_copy_progress(cls_method_context_t hctx,
     return r;
   }
 
-  auto mirror_ns = boost::get<cls::rbd::MirrorSnapshotNamespace>(
+  auto mirror_ns = std::get_if<cls::rbd::MirrorSnapshotNamespace>(
     &snap.snapshot_namespace);
   if (mirror_ns == nullptr) {
     CLS_LOG(5, "mirror_image_snapshot_set_copy_progress " \
@@ -6366,7 +6363,6 @@ int mirror_image_status_set(cls_method_context_t hctx, bufferlist *in,
  * Output:
  * @returns 0 on success, negative error code on failure
  *
- * NOTE: deprecated - remove this method after Octopus is unsupported
  */
 int mirror_image_status_remove(cls_method_context_t hctx, bufferlist *in,
 			       bufferlist *out) {
@@ -6786,7 +6782,7 @@ int mirror_image_snapshot_unlink_peer(cls_method_context_t hctx, bufferlist *in,
 /**
  * Input:
  * @param snap_id: snapshot id
- * @param complete: true if shapshot fully copied/complete
+ * @param complete: true if snapshot fully copied/complete
  * @param last_copied_object_number: last copied object number
  *
  * Output:
@@ -6943,6 +6939,9 @@ int snap_list(cls_method_context_t hctx, cls::rbd::GroupSnapshot start_after,
       group_snaps->push_back(snap);
     }
 
+    if (!vals.empty()) {
+      last_read = vals.rbegin()->first;
+    }
   } while (more && (group_snaps->size() < max_return));
 
   return 0;
@@ -7996,7 +7995,7 @@ int namespace_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
  */
 int sparsify(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 {
-  size_t sparse_size;
+  uint64_t sparse_size;
   bool remove_empty;
   try {
     auto iter = in->cbegin();

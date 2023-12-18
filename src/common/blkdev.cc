@@ -217,6 +217,11 @@ int BlkDev::discard(int64_t offset, int64_t len) const
   return ioctl(fd, BLKDISCARD, range);
 }
 
+int BlkDev::get_optimal_io_size() const
+{
+	return get_int_property("queue/optimal_io_size");
+}
+
 bool BlkDev::is_rotational() const
 {
   return get_int_property("queue/rotational") > 0;
@@ -333,95 +338,6 @@ void get_raw_devices(const std::string& in,
   }
 }
 
-int _get_vdo_stats_handle(const char *devname, std::string *vdo_name)
-{
-  int vdo_fd = -1;
-
-  // we need to go from the raw devname (e.g., dm-4) to the VDO volume name.
-  // currently the best way seems to be to look at /dev/mapper/* ...
-  std::string expect = std::string("../") + devname;  // expected symlink target
-  DIR *dir = ::opendir("/dev/mapper");
-  if (!dir) {
-    return -1;
-  }
-  struct dirent *de = nullptr;
-  while ((de = ::readdir(dir))) {
-    if (de->d_name[0] == '.')
-      continue;
-    char fn[4096], target[4096];
-    snprintf(fn, sizeof(fn), "/dev/mapper/%s", de->d_name);
-    int r = readlink(fn, target, sizeof(target));
-    if (r < 0 || r >= (int)sizeof(target))
-      continue;
-    target[r] = 0;
-    if (expect == target) {
-      snprintf(fn, sizeof(fn), "/sys/kvdo/%s/statistics", de->d_name);
-      vdo_fd = ::open(fn, O_RDONLY|O_CLOEXEC); //DIRECTORY);
-      if (vdo_fd >= 0) {
-	*vdo_name = de->d_name;
-	break;
-      }
-    }
-  }
-  closedir(dir);
-  return vdo_fd;
-}
-
-int get_vdo_stats_handle(const char *devname, std::string *vdo_name)
-{
-  std::set<std::string> devs = { devname };
-  while (!devs.empty()) {
-    std::string dev = *devs.begin();
-    devs.erase(devs.begin());
-    int fd = _get_vdo_stats_handle(dev.c_str(), vdo_name);
-    if (fd >= 0) {
-      // yay, it's vdo
-      return fd;
-    }
-    // ok, see if there are constituent devices
-    if (dev.find("dm-") == 0) {
-      get_dm_parents(dev, &devs);
-    }
-  }
-  return -1;
-}
-
-int64_t get_vdo_stat(int vdo_fd, const char *property)
-{
-  int64_t ret = 0;
-  int fd = ::openat(vdo_fd, property, O_RDONLY|O_CLOEXEC);
-  if (fd < 0) {
-    return 0;
-  }
-  char buf[1024];
-  int r = ::read(fd, buf, sizeof(buf) - 1);
-  if (r > 0) {
-    buf[r] = 0;
-    ret = atoll(buf);
-  }
-  TEMP_FAILURE_RETRY(::close(fd));
-  return ret;
-}
-
-bool get_vdo_utilization(int fd, uint64_t *total, uint64_t *avail)
-{
-  int64_t block_size = get_vdo_stat(fd, "block_size");
-  int64_t physical_blocks = get_vdo_stat(fd, "physical_blocks");
-  int64_t overhead_blocks_used = get_vdo_stat(fd, "overhead_blocks_used");
-  int64_t data_blocks_used = get_vdo_stat(fd, "data_blocks_used");
-  if (!block_size
-      || !physical_blocks
-      || !overhead_blocks_used
-      || !data_blocks_used) {
-    return false;
-  }
-  int64_t avail_blocks =
-    physical_blocks - overhead_blocks_used - data_blocks_used;
-  *total = block_size * physical_blocks;
-  *avail = block_size * avail_blocks;
-  return true;
-}
-
 std::string _decode_model_enc(const std::string& in)
 {
   auto v = boost::replace_all_copy(in, "\\x20", " ");
@@ -429,6 +345,14 @@ std::string _decode_model_enc(const std::string& in)
     v.erase(found + 1);
   }
   std::replace(v.begin(), v.end(), ' ', '_');
+
+  // remove "__", which seems to come up on by ubuntu box for some reason.
+  while (true) {
+    auto p = v.find("__");
+    if (p == std::string::npos) break;
+    v.replace(p, 2, "_");
+  }
+
   return v;
 }
 
@@ -533,7 +457,7 @@ std::string get_device_id(const std::string& devname,
   }
   if (err) {
     if (model.empty() && serial.empty()) {
-      *err = std::string("fallback method has no model nor serial'");
+      *err = std::string("fallback method has no model nor serial");
       return {};
     } else if (model.empty()) {
       *err = std::string("fallback method has serial '") + serial
@@ -700,8 +624,8 @@ static int block_device_run_smartctl(const string& devname, int timeout,
     timeout);
   smartctl.add_cmd_args(
     "smartctl",
-    "-a",
-    //"-x",
+    //"-a",    // all SMART info
+    "-x",    // all SMART and non-SMART info
     "--json=o",
     device.c_str(),
     NULL);
@@ -851,6 +775,11 @@ int BlkDev::discard(int64_t offset, int64_t len) const
   return -EOPNOTSUPP;
 }
 
+int BlkDev::get_optimal_io_size() const
+{
+  return 0;
+}
+
 bool BlkDev::is_rotational() const
 {
   return false;
@@ -888,21 +817,6 @@ void get_dm_parents(const std::string& dev, std::set<std::string> *ls)
 void get_raw_devices(const std::string& in,
 		     std::set<std::string> *ls)
 {
-}
-
-int get_vdo_stats_handle(const char *devname, std::string *vdo_name)
-{
-  return -1;
-}
-
-int64_t get_vdo_stat(int fd, const char *property)
-{
-  return 0;
-}
-
-bool get_vdo_utilization(int fd, uint64_t *total, uint64_t *avail)
-{
-  return false;
 }
 
 std::string get_device_id(const std::string& devname,
@@ -978,6 +892,11 @@ bool BlkDev::support_discard() const
 int BlkDev::discard(int64_t offset, int64_t len) const
 {
   return -EOPNOTSUPP;
+}
+
+int BlkDev::get_optimal_io_size() const
+{
+  return 0;
 }
 
 bool BlkDev::is_rotational() const
@@ -1058,21 +977,6 @@ void get_dm_parents(const std::string& dev, std::set<std::string> *ls)
 void get_raw_devices(const std::string& in,
 		     std::set<std::string> *ls)
 {
-}
-
-int get_vdo_stats_handle(const char *devname, std::string *vdo_name)
-{
-  return -1;
-}
-
-int64_t get_vdo_stat(int fd, const char *property)
-{
-  return 0;
-}
-
-bool get_vdo_utilization(int fd, uint64_t *total, uint64_t *avail)
-{
-  return false;
 }
 
 std::string get_device_id(const std::string& devname,
@@ -1214,21 +1118,6 @@ void get_raw_devices(const std::string& in,
 {
 }
 
-int get_vdo_stats_handle(const char *devname, std::string *vdo_name)
-{
-  return -1;
-}
-
-int64_t get_vdo_stat(int fd, const char *property)
-{
-  return 0;
-}
-
-bool get_vdo_utilization(int fd, uint64_t *total, uint64_t *avail)
-{
-  return false;
-}
-
 std::string get_device_id(const std::string& devname,
 			  std::string *err)
 {
@@ -1297,7 +1186,7 @@ void get_device_metadata(
       }
       devpaths += dev + "=" + path;
     } else {
-      (*errs)[dev] + " no unique device path for "s + dev + ": " + err;
+      (*errs)[dev] += " no unique device path for "s + dev + ": " + err;
     }
   }
 }

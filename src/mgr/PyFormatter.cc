@@ -16,6 +16,7 @@
 
 
 #include "PyFormatter.h"
+#include <fstream>
 
 #define LARGE_SIZE 1024
 
@@ -34,6 +35,11 @@ void PyFormatter::open_object_section(std::string_view name)
   dump_pyobject(name, dict);
   stack.push(cursor);
   cursor = dict;
+}
+
+void PyFormatter::dump_null(std::string_view name)
+{
+  dump_pyobject(name, Py_None);
 }
 
 void PyFormatter::dump_unsigned(std::string_view name, uint64_t u)
@@ -125,3 +131,15 @@ void PyFormatter::finish_pending_streams()
   pending_streams.clear();
 }
 
+PyObject* PyJSONFormatter::get()
+{
+  if(json_formatter::stack_size()) {
+    close_section();
+  }
+  ceph_assert(!json_formatter::stack_size());
+  std::ostringstream ss;
+  flush(ss);
+  std::string s = ss.str();
+  PyObject* obj = PyBytes_FromStringAndSize(std::move(s.c_str()), s.size());
+  return obj;
+}

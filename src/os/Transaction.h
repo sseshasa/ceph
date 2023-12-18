@@ -169,14 +169,7 @@ public:
     ceph_le32 dest_cid;
     ceph_le32 dest_oid;               //OP_CLONE, OP_CLONERANGE
     ceph_le64 dest_off;               //OP_CLONERANGE
-    union {
-	struct {
-	  ceph_le32 hint_type;          //OP_COLL_HINT
-	} __attribute__ ((packed));
-	struct {
-	  ceph_le32 alloc_hint_flags;   //OP_SETALLOCHINT
-	} __attribute__ ((packed));
-    } __attribute__ ((packed));
+    ceph_le32 hint;                   //OP_COLL_HINT,OP_SETALLOCHINT
     ceph_le64 expected_object_size;   //OP_SETALLOCHINT
     ceph_le64 expected_write_size;    //OP_SETALLOCHINT
     ceph_le32 split_bits;             //OP_SPLIT_COLLECTION2,OP_COLL_SET_BITS,
@@ -192,11 +185,11 @@ public:
     ceph_le32 fadvise_flags;
 
     TransactionData() noexcept :
-      ops(init_le64(0)),
-      largest_data_len(init_le32(0)),
-      largest_data_off(init_le32(0)),
-      largest_data_off_in_data_bl(init_le32(0)),
-      fadvise_flags(init_le32(0)) { }
+      ops(0),
+      largest_data_len(0),
+      largest_data_off(0),
+      largest_data_off_in_data_bl(0),
+      fadvise_flags(0) { }
 
     // override default move operations to reset default values
     TransactionData(TransactionData&& other) noexcept :
@@ -297,6 +290,12 @@ public:
 
   Transaction(const Transaction& other) = default;
   Transaction& operator=(const Transaction& other) = default;
+
+  Transaction claim_and_reset() {
+    auto ret = Transaction();
+    std::swap(*this, ret);
+    return ret;
+  }
 
   // expose object_index for FileStore::Op's benefit
   const std::map<ghobject_t, uint32_t>& get_object_index() const {
@@ -750,6 +749,10 @@ public:
     uint32_t get_fadvise_flags() const {
 	return t->get_fadvise_flags();
     }
+
+    const std::vector<ghobject_t> &get_objects() const {
+      return objects;
+    }
   };
 
   iterator begin() {
@@ -915,7 +918,9 @@ public:
     data.ops = data.ops + 1;
   }
   /// Set multiple xattrs of an object
-  void setattrs(const coll_t& cid, const ghobject_t& oid, const std::map<std::string,ceph::buffer::ptr>& attrset) {
+  void setattrs(const coll_t& cid,
+		const ghobject_t& oid,
+		const std::map<std::string,ceph::buffer::ptr,std::less<>>& attrset) {
     using ceph::encode;
     Op* _op = _get_next_op();
     _op->op = OP_SETATTRS;
@@ -925,7 +930,9 @@ public:
     data.ops = data.ops + 1;
   }
   /// Set multiple xattrs of an object
-  void setattrs(const coll_t& cid, const ghobject_t& oid, const std::map<std::string,ceph::buffer::list>& attrset) {
+  void setattrs(const coll_t& cid,
+		const ghobject_t& oid,
+		const std::map<std::string,ceph::buffer::list,std::less<>>& attrset) {
     using ceph::encode;
     Op* _op = _get_next_op();
     _op->op = OP_SETATTRS;
@@ -1025,7 +1032,7 @@ public:
     Op* _op = _get_next_op();
     _op->op = OP_COLL_HINT;
     _op->cid = _get_coll_id(cid);
-    _op->hint_type = type;
+    _op->hint = type;
     encode(hint, data_bl);
     data.ops = data.ops + 1;
   }
@@ -1259,7 +1266,7 @@ public:
     _op->oid = _get_object_id(oid);
     _op->expected_object_size = expected_object_size;
     _op->expected_write_size = expected_write_size;
-    _op->alloc_hint_flags = flags;
+    _op->hint = flags;
     data.ops = data.ops + 1;
   }
 

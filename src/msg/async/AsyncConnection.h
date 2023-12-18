@@ -64,6 +64,7 @@ class AsyncConnection : public Connection {
   void _stop();
   void fault();
   void inject_delay();
+  bool inject_network_congestion() const;
 
   bool is_queued() const;
   void shutdown_socket();
@@ -172,6 +173,7 @@ public:
   AsyncMessenger *async_msgr;
   uint64_t conn_id;
   PerfCounters *logger;
+  PerfCounters *labeled_logger;
   int state;
   ConnectedSocket cs;
   int port;
@@ -233,7 +235,6 @@ private:
   void process();
   void wakeup_from(uint64_t id);
   void tick(uint64_t id);
-  void local_deliver();
   void stop(bool queue_reset);
   void cleanup();
   PerfCounters *get_perf_counter() {

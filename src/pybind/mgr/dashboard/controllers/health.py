@@ -1,18 +1,113 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
 
 import json
-
-from . import ApiController, Endpoint, BaseController
 
 from .. import mgr
 from ..rest_client import RequestException
 from ..security import Permission, Scope
 from ..services.ceph_service import CephService
+from ..services.cluster import ClusterModel
 from ..services.iscsi_cli import IscsiGatewaysConfig
 from ..services.iscsi_client import IscsiClient
 from ..tools import partial_dict
+from . import APIDoc, APIRouter, BaseController, Endpoint, EndpointDoc
 from .host import get_hosts
+
+HEALTH_MINIMAL_SCHEMA = ({
+    'client_perf': ({
+        'read_bytes_sec': (int, ''),
+        'read_op_per_sec': (int, ''),
+        'recovering_bytes_per_sec': (int, ''),
+        'write_bytes_sec': (int, ''),
+        'write_op_per_sec': (int, ''),
+    }, ''),
+    'df': ({
+        'stats': ({
+            'total_avail_bytes': (int, ''),
+            'total_bytes': (int, ''),
+            'total_used_raw_bytes': (int, ''),
+        }, '')
+    }, ''),
+    'fs_map': ({
+        'filesystems': ([{
+            'mdsmap': ({
+                'session_autoclose': (int, ''),
+                'balancer': (str, ''),
+                'up': (str, ''),
+                'last_failure_osd_epoch': (int, ''),
+                'in': ([int], ''),
+                'last_failure': (int, ''),
+                'max_file_size': (int, ''),
+                'explicitly_allowed_features': (int, ''),
+                'damaged': ([int], ''),
+                'tableserver': (int, ''),
+                'failed': ([int], ''),
+                'metadata_pool': (int, ''),
+                'epoch': (int, ''),
+                'stopped': ([int], ''),
+                'max_mds': (int, ''),
+                'compat': ({
+                    'compat': (str, ''),
+                    'ro_compat': (str, ''),
+                    'incompat': (str, ''),
+                }, ''),
+                'required_client_features': (str, ''),
+                'data_pools': ([int], ''),
+                'info': (str, ''),
+                'fs_name': (str, ''),
+                'created': (str, ''),
+                'standby_count_wanted': (int, ''),
+                'enabled': (bool, ''),
+                'modified': (str, ''),
+                'session_timeout': (int, ''),
+                'flags': (int, ''),
+                'ever_allowed_features': (int, ''),
+                'root': (int, ''),
+            }, ''),
+            'standbys': (str, ''),
+        }], ''),
+    }, ''),
+    'health': ({
+        'checks': (str, ''),
+        'mutes': (str, ''),
+        'status': (str, ''),
+    }, ''),
+    'hosts': (int, ''),
+    'iscsi_daemons': ({
+        'up': (int, ''),
+        'down': (int, '')
+    }, ''),
+    'mgr_map': ({
+        'active_name': (str, ''),
+        'standbys': (str, '')
+    }, ''),
+    'mon_status': ({
+        'monmap': ({
+            'mons': (str, ''),
+        }, ''),
+        'quorum': ([int], '')
+    }, ''),
+    'osd_map': ({
+        'osds': ([{
+            'in': (int, ''),
+            'up': (int, ''),
+        }], '')
+    }, ''),
+    'pg_info': ({
+        'object_stats': ({
+            'num_objects': (int, ''),
+            'num_object_copies': (int, ''),
+            'num_objects_degraded': (int, ''),
+            'num_objects_misplaced': (int, ''),
+            'num_objects_unfound': (int, ''),
+        }, ''),
+        'pgs_per_osd': (int, ''),
+        'statuses': (str, '')
+    }, ''),
+    'pools': (str, ''),
+    'rgw': (int, ''),
+    'scrub_status': (str, '')
+})
 
 
 class HealthData(object):
@@ -154,7 +249,7 @@ class HealthData(object):
         if self._minimal:
             osd_map = partial_dict(osd_map, ['osds'])
             osd_map['osds'] = [
-                partial_dict(item, ['in', 'up'])
+                partial_dict(item, ['in', 'up', 'state'])
                 for item in osd_map['osds']
             ]
         else:
@@ -180,10 +275,11 @@ class HealthData(object):
         return CephService.get_scrub_status()
 
 
-@ApiController('/health')
+@APIRouter('/health')
+@APIDoc("Display Detailed Cluster health Status", "Health")
 class Health(BaseController):
     def __init__(self):
-        super(Health, self).__init__()
+        super().__init__()
         self.health_full = HealthData(self._has_permissions, minimal=False)
         self.health_minimal = HealthData(self._has_permissions, minimal=True)
 
@@ -192,5 +288,15 @@ class Health(BaseController):
         return self.health_full.all_health()
 
     @Endpoint()
+    @EndpointDoc("Get Cluster's minimal health report",
+                 responses={200: HEALTH_MINIMAL_SCHEMA})
     def minimal(self):
         return self.health_minimal.all_health()
+
+    @Endpoint()
+    def get_cluster_capacity(self):
+        return ClusterModel.get_capacity()
+
+    @Endpoint()
+    def get_cluster_fsid(self):
+        return mgr.get('config')['fsid']

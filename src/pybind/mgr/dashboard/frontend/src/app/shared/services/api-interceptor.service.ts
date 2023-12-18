@@ -8,10 +8,11 @@ import {
 import { Injectable } from '@angular/core';
 import { Router } from '@angular/router';
 
-import * as _ from 'lodash';
+import _ from 'lodash';
 import { Observable, throwError as observableThrowError } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 
+import { CdHelperClass } from '~/app/shared/classes/cd-helper.class';
 import { NotificationType } from '../enum/notification-type.enum';
 import { CdNotificationConfig } from '../models/cd-notification';
 import { FinishedTask } from '../models/finished-task';
@@ -34,7 +35,18 @@ export class ApiInterceptorService implements HttpInterceptor {
   ) {}
 
   intercept(request: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<any>> {
-    return next.handle(request).pipe(
+    const acceptHeader = request.headers.get('Accept');
+    let reqWithVersion: HttpRequest<any>;
+    if (acceptHeader && acceptHeader.startsWith('application/vnd.ceph.api.v')) {
+      reqWithVersion = request.clone();
+    } else {
+      reqWithVersion = request.clone({
+        setHeaders: {
+          Accept: CdHelperClass.cdVersionHeader('1', '0')
+        }
+      });
+    }
+    return next.handle(reqWithVersion).pipe(
       catchError((resp: CdHttpErrorResponse) => {
         if (resp instanceof HttpErrorResponse) {
           let timeoutId: number;
@@ -61,7 +73,14 @@ export class ApiInterceptorService implements HttpInterceptor {
               this.router.navigate(['/login']);
               break;
             case 403:
-              this.router.navigate(['/403']);
+              this.router.navigate(['error'], {
+                state: {
+                  message: $localize`Sorry, you don’t have permission to view this page or resource.`,
+                  header: $localize`Access Denied`,
+                  icon: 'fa fa-lock',
+                  source: 'forbidden'
+                }
+              });
               break;
             default:
               timeoutId = this.prepareNotification(resp);

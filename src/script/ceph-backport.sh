@@ -1,4 +1,5 @@
-#!/bin/bash -e
+#!/usr/bin/env bash 
+set -e
 #
 # ceph-backport.sh - Ceph backporting script
 #
@@ -21,7 +22,7 @@
 
 full_path="$0"
 
-SCRIPT_VERSION="15.1.1.389"
+SCRIPT_VERSION="16.0.0.6848"
 active_milestones=""
 backport_pr_labels=""
 backport_pr_number=""
@@ -57,6 +58,7 @@ declare -A comp_hash=(
 ["build/ops"]="build/ops"
 ["ceph.spec"]="build/ops"
 ["ceph-volume"]="ceph-volume"
+["cephadm"]="cephadm"
 ["cephfs"]="cephfs"
 ["cmake"]="build/ops"
 ["config"]="config"
@@ -71,6 +73,7 @@ declare -A comp_hash=(
 ["messenger"]="core"
 ["mon"]="core"
 ["msg"]="core"
+["mgr/cephadm"]="cephadm"
 ["mgr/dashboard"]="dashboard"
 ["mgr/prometheus"]="monitoring"
 ["mgr"]="core"
@@ -91,6 +94,11 @@ declare -A comp_hash=(
 )
 
 declare -A flagged_pr_hash=()
+
+function run {
+    printf '%s\n' "$*" >&2
+    "$@"
+}
 
 function abort_due_to_setup_problem {
     error "problem detected in your setup"
@@ -212,40 +220,42 @@ function cherry_pick_phase {
     verbose "Examining ${original_pr_url}"
     remote_api_output=$(curl -u ${github_user}:${github_token} --silent "https://api.github.com/repos/ceph/ceph/pulls/${original_pr}")
     base_branch=$(echo "${remote_api_output}" | jq -r '.base.label')
-    if [ "$base_branch" = "ceph:master" ] ; then
+    if [ "$base_branch" = "ceph:master" -o "$base_branch" = "ceph:main" ] ; then
         true
     else
         if [ "$FORCE" ] ; then
-            warning "base_branch ->$base_branch<- is something other than \"ceph:master\""
+            warning "base_branch ->$base_branch<- is something other than \"ceph:master\" or \"ceph:main\""
             info "--force was given, so continuing anyway"
         else
             error "${original_pr_url} is targeting ${base_branch}: cowardly refusing to perform automated cherry-pick"
-            info "Out of an abundance of caution, the script only automates cherry-picking of commits from PRs targeting \"ceph:master\"."
+            info "Out of an abundance of caution, the script only automates cherry-picking of commits from PRs targeting \"ceph:master\" or \"ceph:main\"."
             info "You can still use the script to stage the backport, though. Just prepare the local branch \"${local_branch}\" manually and re-run the script."
             false
         fi
     fi
+    base_sha="$(printf '%s' "${remote_api_output}" | jq -r .base.sha)"
+    head_sha="$(printf '%s' "${remote_api_output}" | jq -r .head.sha)"
     merged=$(echo "${remote_api_output}" | jq -r '.merged')
     if [ "$merged" = "true" ] ; then
-        true
-    else
-        error "${original_pr_url} is not merged yet"
-        info "Cowardly refusing to perform automated cherry-pick"
-        false
-    fi
-    number_of_commits=$(echo "${remote_api_output}" | jq '.commits')
-    if [ "$number_of_commits" -eq "$number_of_commits" ] 2>/dev/null ; then
-        # \$number_of_commits is set, and is an integer
-        if [ "$number_of_commits" -eq "1" ] ; then
-            singular_or_plural_commit="commit"
-        else
-            singular_or_plural_commit="commits"
+        # Use the merge commit in case the branch HEAD changes after merge.
+        merge_commit_sha=$(printf '%s' "$remote_api_output" | jq -r '.merge_commit_sha')
+        if [ -z "$merge_commit_sha" ]; then
+            error "Could not determine the merge commit of ${original_pr_url}"
+            bail_out_github_api "$remote_api_output"
+            false
         fi
+        cherry_pick_sha="${merge_commit_sha}^..${merge_commit_sha}^2"
     else
-        error "Could not determine the number of commits in ${original_pr_url}"
-        bail_out_github_api "$remote_api_output"
+        if [ "$FORCE" ] ; then
+            warning "${original_pr_url} is not merged yet"
+            info "--force was given, so continuing anyway"
+            cherry_pick_sha="${base_sha}..${head_sha}"
+        else
+            error "${original_pr_url} is not merged yet"
+            info "Cowardly refusing to perform automated cherry-pick"
+            false
+        fi
     fi
-    info "Found $number_of_commits $singular_or_plural_commit in $original_pr_url"
 
     set -x
     git fetch "$upstream_remote"
@@ -286,33 +296,16 @@ function cherry_pick_phase {
 
     set +x
     maybe_restore_set_x
-    info "Attempting to cherry pick $number_of_commits commits from ${original_pr_url} into local branch $local_branch"
-    offset="$((number_of_commits - 1))" || true
-    for ((i=offset; i>=0; i--)) ; do
-        info "Running \"git cherry-pick -x\" on $(git log --oneline --max-count=1 --no-decorate "pr-${original_pr}~${i}")"
-        sha1_to_cherry_pick=$(git rev-parse --verify "pr-${original_pr}~${i}")
-        set -x
-        if git cherry-pick -x "$sha1_to_cherry_pick" ; then
-            set +x
-            maybe_restore_set_x
-        else
-            set +x
-            maybe_restore_set_x
-            [ "$VERBOSE" ] && git status
-            error "Cherry pick failed"
-            info "Next, manually fix conflicts and complete the current cherry-pick"
-            if [ "$i" -gt "0" ] >/dev/null 2>&1 ; then
-                info "Then, cherry-pick the remaining commits from ${original_pr_url}, i.e.:"
-                for ((j=i-1; j>=0; j--)) ; do
-                    info "-> missing commit: $(git log --oneline --max-count=1 --no-decorate "pr-${original_pr}~${j}")"
-                done
-                info "Finally, re-run the script"
-            else
-                info "Then re-run the script"
-            fi
-            false
-        fi
-    done
+    info "Attempting to cherry pick ${original_pr_url} into local branch $local_branch"
+    if ! run git cherry-pick -x "$cherry_pick_sha"; then
+        [ "$VERBOSE" ] && git status
+        error "Cherry pick failed due to conflicts?"
+        info "Manually fix conflicts and complete the current cherry-pick:"
+        info "    git cherry-pick --continue"
+        info "Finally, re-run this script"
+        false
+    fi
+
     info "Cherry picking completed without conflicts"
 }
 
@@ -786,7 +779,7 @@ function maybe_deduce_remote {
     else
         assert_fail "bad remote_type ->$remote_type<- in maybe_deduce_remote"
     fi
-    remote=$(git remote -v | grep --extended-regexp --ignore-case '(://|@)github.com(/|:)'${url_component}'/ceph(\s|\.|\/)' | head -n1 | cut -f 1)
+    remote=$(git remote -v | grep --extended-regexp --ignore-case '(://|@)github.com(/|:|:/)'${url_component}'/ceph(\s|\.|\/)' | head -n1 | cut -f 1)
     echo "$remote"
 }
 
@@ -1082,7 +1075,9 @@ function try_known_milestones {
         mimic) mn="11" ;;
         nautilus) mn="12" ;;
         octopus) mn="13" ;;
-        pacific) mn="TBD" ;;
+        pacific) mn="14" ;;
+        quincy) mn="15" ;;
+        reef) mn="16" ;;
     esac
     echo "$mn"
 }
@@ -1154,7 +1149,7 @@ https://tracker.ceph.com/issues/41502, run:
 
     ${this_script} 41502
 
-Provided the commits in the corresponding master PR cherry-pick cleanly, the
+Provided the commits in the corresponding main PR cherry-pick cleanly, the
 script will automatically perform all steps required to stage the backport:
 
 Cherry-pick phase:
@@ -1197,7 +1192,7 @@ For details on all the options the script takes, run:
 
 For more information on Ceph backporting, see:
 
-    https://github.com/ceph/ceph/tree/master/SubmittingPatches-backports.rst
+    https://github.com/ceph/ceph/tree/main/SubmittingPatches-backports.rst
 
 EOM
 }
@@ -1396,6 +1391,28 @@ if git status >/dev/null 2>&1 ; then
     debug "In a local git clone. Good."
 else
     error "This script must be run from inside a local git clone"
+    abort_due_to_setup_problem
+fi
+
+#
+# do we have jq available?
+#
+
+if type jq >/dev/null 2>&1 ; then
+    debug "jq is available. Good."
+else
+    error "This script uses jq, but it does not seem to be installed"
+    abort_due_to_setup_problem
+fi
+
+#
+# is jq available?
+#
+
+if command -v jq >/dev/null ; then
+    debug "jq is available. Good."
+else
+    error "This script needs \"jq\" in order to work, and it is not available"
     abort_due_to_setup_problem
 fi
 
@@ -1681,7 +1698,7 @@ if [ "$PR_PHASE" ] ; then
         [ "$original_pr"    ] && desc="${desc}\nbackport of $(number_to_url "github" "${original_pr}")"
         [ "$original_issue" ] && desc="${desc}\nparent tracker: $(number_to_url "redmine" "${original_issue}")"
     fi
-    desc="${desc}\n\nthis backport was staged using ceph-backport.sh version ${SCRIPT_VERSION}\nfind the latest version at ${github_endpoint}/blob/master/src/script/ceph-backport.sh"
+    desc="${desc}\n\nthis backport was staged using ceph-backport.sh version ${SCRIPT_VERSION}\nfind the latest version at ${github_endpoint}/blob/main/src/script/ceph-backport.sh"
     
     debug "Generating backport PR title"
     if [ "$original_pr" ] ; then

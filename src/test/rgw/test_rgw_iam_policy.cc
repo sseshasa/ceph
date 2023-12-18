@@ -23,9 +23,12 @@
 #include "common/code_environment.h"
 #include "common/ceph_context.h"
 #include "global/global_init.h"
-#include "rgw/rgw_auth.h"
-#include "rgw/rgw_iam_policy.h"
-#include "rgw/rgw_op.h"
+#include "rgw_auth.h"
+#include "rgw_auth_registry.h"
+#include "rgw_iam_policy.h"
+#include "rgw_op.h"
+#include "rgw_process_env.h"
+#include "rgw_sal_rados.h"
 
 
 using std::string;
@@ -55,6 +58,7 @@ using rgw::IAM::s3GetBucketNotification;
 using rgw::IAM::s3GetBucketPolicy;
 using rgw::IAM::s3GetBucketPolicyStatus;
 using rgw::IAM::s3GetBucketPublicAccessBlock;
+using rgw::IAM::s3GetBucketEncryption;
 using rgw::IAM::s3GetBucketRequestPayment;
 using rgw::IAM::s3GetBucketTagging;
 using rgw::IAM::s3GetBucketVersioning;
@@ -71,7 +75,6 @@ using rgw::IAM::s3GetObjectVersionTorrent;
 using rgw::IAM::s3GetPublicAccessBlock;
 using rgw::IAM::s3GetReplicationConfiguration;
 using rgw::IAM::s3ListAllMyBuckets;
-using rgw::IAM::s3ListBucket;
 using rgw::IAM::s3ListBucket;
 using rgw::IAM::s3ListBucketMultipartUploads;
 using rgw::IAM::s3ListBucketVersions;
@@ -91,6 +94,7 @@ using rgw::IAM::iamCreateRole;
 using rgw::IAM::iamDeleteRole;
 using rgw::IAM::iamAll;
 using rgw::IAM::stsAll;
+using rgw::IAM::snsAll;
 using rgw::IAM::allCount;
 
 class FakeIdentity : public Identity {
@@ -118,12 +122,12 @@ public:
     return 0;
   }
 
-  uint32_t get_identity_type() const override {
+  string get_acct_name() const override {
     abort();
     return 0;
   }
 
-  string get_acct_name() const override {
+  string get_subuser() const override {
     abort();
     return 0;
   }
@@ -137,6 +141,10 @@ public:
       return true;
     }
     return ids.find(id) != ids.end() || ids.find(Principal::wildcard()) != ids.end();
+  }
+
+  uint32_t get_identity_type() const override {
+    return TYPE_RGW;
   }
 };
 
@@ -161,7 +169,8 @@ TEST_F(PolicyTest, Parse1) {
   boost::optional<Policy> p;
 
   ASSERT_NO_THROW(p = Policy(cct.get(), arbitrary_tenant,
-			     bufferlist::static_from_string(example1)));
+			     bufferlist::static_from_string(example1),
+			     true));
   ASSERT_TRUE(p);
 
   EXPECT_EQ(p->text, example1);
@@ -190,22 +199,22 @@ TEST_F(PolicyTest, Parse1) {
 
 TEST_F(PolicyTest, Eval1) {
   auto p  = Policy(cct.get(), arbitrary_tenant,
-		   bufferlist::static_from_string(example1));
+		   bufferlist::static_from_string(example1), true);
   Environment e;
 
-  EXPECT_EQ(p.eval(e, none, s3ListBucket,
-		   ARN(Partition::aws, Service::s3,
-		       "", arbitrary_tenant, "example_bucket")),
+  ARN arn1(Partition::aws, Service::s3,
+		       "", arbitrary_tenant, "example_bucket");
+  EXPECT_EQ(p.eval(e, none, s3ListBucket, arn1),
 	    Effect::Allow);
 
-  EXPECT_EQ(p.eval(e, none, s3PutBucketAcl,
-		   ARN(Partition::aws, Service::s3,
-		       "", arbitrary_tenant, "example_bucket")),
+  ARN arn2(Partition::aws, Service::s3,
+		       "", arbitrary_tenant, "example_bucket");
+  EXPECT_EQ(p.eval(e, none, s3PutBucketAcl, arn2),
 	    Effect::Pass);
 
-  EXPECT_EQ(p.eval(e, none, s3ListBucket,
-		   ARN(Partition::aws, Service::s3,
-		       "", arbitrary_tenant, "erroneous_bucket")),
+  ARN arn3(Partition::aws, Service::s3,
+		       "", arbitrary_tenant, "erroneous_bucket");
+  EXPECT_EQ(p.eval(e, none, s3ListBucket, arn3),
 	    Effect::Pass);
 
 }
@@ -214,7 +223,8 @@ TEST_F(PolicyTest, Parse2) {
   boost::optional<Policy> p;
 
   ASSERT_NO_THROW(p = Policy(cct.get(), arbitrary_tenant,
-			     bufferlist::static_from_string(example2)));
+			     bufferlist::static_from_string(example2),
+			     true));
   ASSERT_TRUE(p);
 
   EXPECT_EQ(p->text, example2);
@@ -256,7 +266,7 @@ TEST_F(PolicyTest, Parse2) {
 
 TEST_F(PolicyTest, Eval2) {
   auto p  = Policy(cct.get(), arbitrary_tenant,
-		   bufferlist::static_from_string(example2));
+		   bufferlist::static_from_string(example2), true);
   Environment e;
 
   auto trueacct = FakeIdentity(
@@ -265,31 +275,29 @@ TEST_F(PolicyTest, Eval2) {
   auto notacct = FakeIdentity(
     Principal::tenant("some-other-account"));
   for (auto i = 0ULL; i < s3Count; ++i) {
-    EXPECT_EQ(p.eval(e, trueacct, i,
-		     ARN(Partition::aws, Service::s3,
-			 "", arbitrary_tenant, "mybucket")),
+    ARN arn1(Partition::aws, Service::s3,
+			 "", arbitrary_tenant, "mybucket");
+    EXPECT_EQ(p.eval(e, trueacct, i, arn1),
 	      Effect::Allow);
-    EXPECT_EQ(p.eval(e, trueacct, i,
-		     ARN(Partition::aws, Service::s3,
-			 "", arbitrary_tenant, "mybucket/myobject")),
+    ARN arn2(Partition::aws, Service::s3,
+			 "", arbitrary_tenant, "mybucket/myobject");
+    EXPECT_EQ(p.eval(e, trueacct, i, arn2),
 	      Effect::Allow);
-
-    EXPECT_EQ(p.eval(e, notacct, i,
-		     ARN(Partition::aws, Service::s3,
-			 "", arbitrary_tenant, "mybucket")),
+    ARN arn3(Partition::aws, Service::s3,
+			 "", arbitrary_tenant, "mybucket");
+    EXPECT_EQ(p.eval(e, notacct, i, arn3),
 	      Effect::Pass);
-    EXPECT_EQ(p.eval(e, notacct, i,
-		     ARN(Partition::aws, Service::s3,
-			 "", arbitrary_tenant, "mybucket/myobject")),
+    ARN arn4(Partition::aws, Service::s3,
+			 "", arbitrary_tenant, "mybucket/myobject");
+    EXPECT_EQ(p.eval(e, notacct, i, arn4),
 	      Effect::Pass);
-
-    EXPECT_EQ(p.eval(e, trueacct, i,
-		     ARN(Partition::aws, Service::s3,
-			 "", arbitrary_tenant, "notyourbucket")),
+    ARN arn5(Partition::aws, Service::s3,
+			 "", arbitrary_tenant, "notyourbucket");
+    EXPECT_EQ(p.eval(e, trueacct, i, arn5),
 	      Effect::Pass);
-    EXPECT_EQ(p.eval(e, trueacct, i,
-		     ARN(Partition::aws, Service::s3,
-			 "", arbitrary_tenant, "notyourbucket/notyourobject")),
+    ARN arn6(Partition::aws, Service::s3,
+			 "", arbitrary_tenant, "notyourbucket/notyourobject");
+    EXPECT_EQ(p.eval(e, trueacct, i, arn6),
 	      Effect::Pass);
 
   }
@@ -299,7 +307,7 @@ TEST_F(PolicyTest, Parse3) {
   boost::optional<Policy> p;
 
   ASSERT_NO_THROW(p = Policy(cct.get(), arbitrary_tenant,
-			     bufferlist::static_from_string(example3)));
+			     bufferlist::static_from_string(example3), true));
   ASSERT_TRUE(p);
 
   EXPECT_EQ(p->text, example3);
@@ -381,6 +389,7 @@ TEST_F(PolicyTest, Parse3) {
   act2[s3GetBucketPolicyStatus] = 1;
   act2[s3GetBucketPublicAccessBlock] = 1;
   act2[s3GetPublicAccessBlock] = 1;
+  act2[s3GetBucketEncryption] = 1;
 
   EXPECT_EQ(p->statements[2].action, act2);
   EXPECT_EQ(p->statements[2].notaction, None);
@@ -412,7 +421,7 @@ TEST_F(PolicyTest, Parse3) {
 
 TEST_F(PolicyTest, Eval3) {
   auto p  = Policy(cct.get(), arbitrary_tenant,
-		   bufferlist::static_from_string(example3));
+		   bufferlist::static_from_string(example3), true);
   Environment em;
   Environment tr = { { "aws:MultiFactorAuthPresent", "true" } };
   Environment fa = { { "aws:MultiFactorAuthPresent", "false" } };
@@ -450,15 +459,16 @@ TEST_F(PolicyTest, Eval3) {
   s3allow[s3GetBucketPolicyStatus] = 1;
   s3allow[s3GetBucketPublicAccessBlock] = 1;
   s3allow[s3GetPublicAccessBlock] = 1;
+  s3allow[s3GetBucketEncryption] = 1;
 
-  EXPECT_EQ(p.eval(em, none, s3PutBucketPolicy,
-		   ARN(Partition::aws, Service::s3,
-		       "", arbitrary_tenant, "mybucket")),
+  ARN arn1(Partition::aws, Service::s3,
+		       "", arbitrary_tenant, "mybucket");
+  EXPECT_EQ(p.eval(em, none, s3PutBucketPolicy, arn1),
 	    Effect::Allow);
 
-  EXPECT_EQ(p.eval(em, none, s3PutBucketPolicy,
-		   ARN(Partition::aws, Service::s3,
-		       "", arbitrary_tenant, "mybucket")),
+  ARN arn2(Partition::aws, Service::s3,
+		       "", arbitrary_tenant, "mybucket");
+  EXPECT_EQ(p.eval(em, none, s3PutBucketPolicy, arn2),
 	    Effect::Allow);
 
 
@@ -466,57 +476,54 @@ TEST_F(PolicyTest, Eval3) {
     if ((op == s3ListAllMyBuckets) || (op == s3PutBucketPolicy)) {
       continue;
     }
-    EXPECT_EQ(p.eval(em, none, op,
-		     ARN(Partition::aws, Service::s3,
-			 "", arbitrary_tenant, "confidential-data")),
+    ARN arn3(Partition::aws, Service::s3,
+			 "", arbitrary_tenant, "confidential-data");
+    EXPECT_EQ(p.eval(em, none, op, arn3),
 	      Effect::Pass);
-    EXPECT_EQ(p.eval(tr, none, op,
-		     ARN(Partition::aws, Service::s3,
-			 "", arbitrary_tenant, "confidential-data")),
+    ARN arn4(Partition::aws, Service::s3,
+			 "", arbitrary_tenant, "confidential-data");
+    EXPECT_EQ(p.eval(tr, none, op, arn4),
 	      s3allow[op] ? Effect::Allow : Effect::Pass);
-    EXPECT_EQ(p.eval(fa, none, op,
-		     ARN(Partition::aws, Service::s3,
-			 "", arbitrary_tenant, "confidential-data")),
+    ARN arn5(Partition::aws, Service::s3,
+			 "", arbitrary_tenant, "confidential-data");
+    EXPECT_EQ(p.eval(fa, none, op, arn5),
 	      Effect::Pass);
-
-    EXPECT_EQ(p.eval(em, none, op,
-		     ARN(Partition::aws, Service::s3,
-			 "", arbitrary_tenant, "confidential-data/moo")),
+    ARN arn6(Partition::aws, Service::s3,
+			 "", arbitrary_tenant, "confidential-data/moo");
+    EXPECT_EQ(p.eval(em, none, op, arn6),
 	      Effect::Pass);
-    EXPECT_EQ(p.eval(tr, none, op,
-		     ARN(Partition::aws, Service::s3,
-			 "", arbitrary_tenant, "confidential-data/moo")),
+    ARN arn7(Partition::aws, Service::s3,
+			 "", arbitrary_tenant, "confidential-data/moo");
+    EXPECT_EQ(p.eval(tr, none, op, arn7),
 	      s3allow[op] ? Effect::Allow : Effect::Pass);
-    EXPECT_EQ(p.eval(fa, none, op,
-		     ARN(Partition::aws, Service::s3,
-			 "", arbitrary_tenant, "confidential-data/moo")),
+    ARN arn8(Partition::aws, Service::s3,
+			 "", arbitrary_tenant, "confidential-data/moo");
+    EXPECT_EQ(p.eval(fa, none, op, arn8),
 	      Effect::Pass);
-
-    EXPECT_EQ(p.eval(em, none, op,
-		     ARN(Partition::aws, Service::s3,
-			 "", arbitrary_tenant, "really-confidential-data")),
+    ARN arn9(Partition::aws, Service::s3,
+			 "", arbitrary_tenant, "really-confidential-data");
+    EXPECT_EQ(p.eval(em, none, op, arn9),
 	      Effect::Pass);
-    EXPECT_EQ(p.eval(tr, none, op,
-		     ARN(Partition::aws, Service::s3,
-			 "", arbitrary_tenant, "really-confidential-data")),
+    ARN arn10(Partition::aws, Service::s3,
+			 "", arbitrary_tenant, "really-confidential-data");
+    EXPECT_EQ(p.eval(tr, none, op, arn10),
 	      Effect::Pass);
-    EXPECT_EQ(p.eval(fa, none, op,
-		     ARN(Partition::aws, Service::s3,
-			 "", arbitrary_tenant, "really-confidential-data")),
+    ARN arn11(Partition::aws, Service::s3,
+			 "", arbitrary_tenant, "really-confidential-data");
+    EXPECT_EQ(p.eval(fa, none, op, arn11),
 	      Effect::Pass);
-
-    EXPECT_EQ(p.eval(em, none, op,
-		     ARN(Partition::aws, Service::s3,
+    ARN arn12(Partition::aws, Service::s3,
 			 "", arbitrary_tenant,
-			 "really-confidential-data/moo")), Effect::Pass);
-    EXPECT_EQ(p.eval(tr, none, op,
-		     ARN(Partition::aws, Service::s3,
+			 "really-confidential-data/moo");
+    EXPECT_EQ(p.eval(em, none, op, arn12), Effect::Pass);
+    ARN arn13(Partition::aws, Service::s3,
 			 "", arbitrary_tenant,
-			 "really-confidential-data/moo")), Effect::Pass);
-    EXPECT_EQ(p.eval(fa, none, op,
-		     ARN(Partition::aws, Service::s3,
+			 "really-confidential-data/moo");
+    EXPECT_EQ(p.eval(tr, none, op, arn13), Effect::Pass);
+    ARN arn14(Partition::aws, Service::s3,
 			 "", arbitrary_tenant,
-			 "really-confidential-data/moo")), Effect::Pass);
+			 "really-confidential-data/moo");
+    EXPECT_EQ(p.eval(fa, none, op, arn14), Effect::Pass);
 
   }
 }
@@ -525,7 +532,7 @@ TEST_F(PolicyTest, Parse4) {
   boost::optional<Policy> p;
 
   ASSERT_NO_THROW(p = Policy(cct.get(), arbitrary_tenant,
-			     bufferlist::static_from_string(example4)));
+			     bufferlist::static_from_string(example4), true));
   ASSERT_TRUE(p);
 
   EXPECT_EQ(p->text, example4);
@@ -554,17 +561,17 @@ TEST_F(PolicyTest, Parse4) {
 
 TEST_F(PolicyTest, Eval4) {
   auto p  = Policy(cct.get(), arbitrary_tenant,
-		   bufferlist::static_from_string(example4));
+		   bufferlist::static_from_string(example4), true);
   Environment e;
 
-  EXPECT_EQ(p.eval(e, none, iamCreateRole,
-		   ARN(Partition::aws, Service::iam,
-		       "", arbitrary_tenant, "role/example_role")),
+  ARN arn1(Partition::aws, Service::iam,
+		       "", arbitrary_tenant, "role/example_role");
+  EXPECT_EQ(p.eval(e, none, iamCreateRole, arn1),
 	    Effect::Allow);
 
-  EXPECT_EQ(p.eval(e, none, iamDeleteRole,
-		   ARN(Partition::aws, Service::iam,
-		       "", arbitrary_tenant, "role/example_role")),
+  ARN arn2(Partition::aws, Service::iam,
+		       "", arbitrary_tenant, "role/example_role");
+  EXPECT_EQ(p.eval(e, none, iamDeleteRole, arn2),
 	    Effect::Pass);
 }
 
@@ -572,7 +579,7 @@ TEST_F(PolicyTest, Parse5) {
   boost::optional<Policy> p;
 
   ASSERT_NO_THROW(p = Policy(cct.get(), arbitrary_tenant,
-			     bufferlist::static_from_string(example5)));
+			     bufferlist::static_from_string(example5), true));
   ASSERT_TRUE(p);
   EXPECT_EQ(p->text, example5);
   EXPECT_EQ(p->version, Version::v2012_10_17);
@@ -601,22 +608,22 @@ TEST_F(PolicyTest, Parse5) {
 
 TEST_F(PolicyTest, Eval5) {
   auto p  = Policy(cct.get(), arbitrary_tenant,
-		   bufferlist::static_from_string(example5));
+		   bufferlist::static_from_string(example5), true);
   Environment e;
 
-  EXPECT_EQ(p.eval(e, none, iamCreateRole,
-		   ARN(Partition::aws, Service::iam,
-		       "", arbitrary_tenant, "role/example_role")),
+  ARN arn1(Partition::aws, Service::iam,
+		       "", arbitrary_tenant, "role/example_role");
+  EXPECT_EQ(p.eval(e, none, iamCreateRole, arn1),
 	    Effect::Allow);
 
-  EXPECT_EQ(p.eval(e, none, s3ListBucket,
-		   ARN(Partition::aws, Service::iam,
-		       "", arbitrary_tenant, "role/example_role")),
+  ARN arn2(Partition::aws, Service::iam,
+		       "", arbitrary_tenant, "role/example_role");
+  EXPECT_EQ(p.eval(e, none, s3ListBucket, arn2),
 	    Effect::Pass);
 
-  EXPECT_EQ(p.eval(e, none, iamCreateRole,
-		   ARN(Partition::aws, Service::iam,
-		       "", "", "role/example_role")),
+  ARN arn3(Partition::aws, Service::iam,
+		       "", "", "role/example_role");
+  EXPECT_EQ(p.eval(e, none, iamCreateRole, arn3),
 	    Effect::Pass);
 }
 
@@ -624,7 +631,7 @@ TEST_F(PolicyTest, Parse6) {
   boost::optional<Policy> p;
 
   ASSERT_NO_THROW(p = Policy(cct.get(), arbitrary_tenant,
-			     bufferlist::static_from_string(example6)));
+			     bufferlist::static_from_string(example6), true));
   ASSERT_TRUE(p);
   EXPECT_EQ(p->text, example6);
   EXPECT_EQ(p->version, Version::v2012_10_17);
@@ -636,7 +643,7 @@ TEST_F(PolicyTest, Parse6) {
   EXPECT_TRUE(p->statements[0].noprinc.empty());
   EXPECT_EQ(p->statements[0].effect, Effect::Allow);
   Action_t act;
-  for (auto i = 0U; i <= stsAll; i++)
+  for (auto i = 0U; i <= snsAll; i++)
     act[i] = 1;
   EXPECT_EQ(p->statements[0].action, act);
   EXPECT_EQ(p->statements[0].notaction, None);
@@ -653,17 +660,17 @@ TEST_F(PolicyTest, Parse6) {
 
 TEST_F(PolicyTest, Eval6) {
   auto p  = Policy(cct.get(), arbitrary_tenant,
-		   bufferlist::static_from_string(example6));
+		   bufferlist::static_from_string(example6), true);
   Environment e;
 
-  EXPECT_EQ(p.eval(e, none, iamCreateRole,
-		   ARN(Partition::aws, Service::iam,
-		       "", arbitrary_tenant, "user/A")),
+  ARN arn1(Partition::aws, Service::iam,
+		       "", arbitrary_tenant, "user/A");
+  EXPECT_EQ(p.eval(e, none, iamCreateRole, arn1),
 	    Effect::Allow);
 
-  EXPECT_EQ(p.eval(e, none, s3ListBucket,
-		   ARN(Partition::aws, Service::iam,
-		       "", arbitrary_tenant, "user/A")),
+  ARN arn2(Partition::aws, Service::iam,
+		       "", arbitrary_tenant, "user/A");
+  EXPECT_EQ(p.eval(e, none, s3ListBucket, arn2),
 	    Effect::Allow);
 }
 
@@ -671,7 +678,7 @@ TEST_F(PolicyTest, Parse7) {
   boost::optional<Policy> p;
 
   ASSERT_NO_THROW(p = Policy(cct.get(), arbitrary_tenant,
-			     bufferlist::static_from_string(example7)));
+			     bufferlist::static_from_string(example7), true));
   ASSERT_TRUE(p);
 
   EXPECT_EQ(p->text, example7);
@@ -703,7 +710,7 @@ TEST_F(PolicyTest, Parse7) {
 
 TEST_F(PolicyTest, Eval7) {
   auto p  = Policy(cct.get(), arbitrary_tenant,
-		   bufferlist::static_from_string(example7));
+		   bufferlist::static_from_string(example7), true);
   Environment e;
 
   auto subacct = FakeIdentity(
@@ -713,19 +720,19 @@ TEST_F(PolicyTest, Eval7) {
   auto sub2acct = FakeIdentity(
     Principal::user(std::move(""), "A:sub2A"));
 
-  EXPECT_EQ(p.eval(e, subacct, s3ListBucket,
-		   ARN(Partition::aws, Service::s3,
-		       "", arbitrary_tenant, "mybucket/*")),
+  ARN arn1(Partition::aws, Service::s3,
+		       "", arbitrary_tenant, "mybucket/*");
+  EXPECT_EQ(p.eval(e, subacct, s3ListBucket, arn1),
 	    Effect::Allow);
   
-  EXPECT_EQ(p.eval(e, parentacct, s3ListBucket,
-		   ARN(Partition::aws, Service::s3,
-		       "", arbitrary_tenant, "mybucket/*")),
+  ARN arn2(Partition::aws, Service::s3,
+		       "", arbitrary_tenant, "mybucket/*");
+  EXPECT_EQ(p.eval(e, parentacct, s3ListBucket, arn2),
 	    Effect::Pass);
-  
-  EXPECT_EQ(p.eval(e, sub2acct, s3ListBucket,
-		   ARN(Partition::aws, Service::s3,
-		       "", arbitrary_tenant, "mybucket/*")),
+
+  ARN arn3(Partition::aws, Service::s3,
+		       "", arbitrary_tenant, "mybucket/*");
+  EXPECT_EQ(p.eval(e, sub2acct, s3ListBucket, arn3),
 	    Effect::Pass);
 }
 
@@ -845,11 +852,11 @@ protected:
   // 192.168.1.0/24
   const rgw::IAM::MaskedIP allowedIPv4Range = { false, rgw::IAM::Address("11000000101010000000000100000000"), 24 };
   // 192.168.1.1/32
-  const rgw::IAM::MaskedIP blacklistedIPv4 = { false, rgw::IAM::Address("11000000101010000000000100000001"), 32 };
+  const rgw::IAM::MaskedIP blocklistedIPv4 = { false, rgw::IAM::Address("11000000101010000000000100000001"), 32 };
   // 2001:db8:85a3:0:0:8a2e:370:7334/128
   const rgw::IAM::MaskedIP allowedIPv6 = { true, rgw::IAM::Address("00100000000000010000110110111000100001011010001100000000000000000000000000000000100010100010111000000011011100000111001100110100"), 128 };
   // ::1
-  const rgw::IAM::MaskedIP blacklistedIPv6 = { true, rgw::IAM::Address(1), 128 };
+  const rgw::IAM::MaskedIP blocklistedIPv6 = { true, rgw::IAM::Address(1), 128 };
   // 2001:db8:85a3:0:0:8a2e:370:7330/124
   const rgw::IAM::MaskedIP allowedIPv6Range = { true, rgw::IAM::Address("00100000000000010000110110111000100001011010001100000000000000000000000000000000100010100010111000000011011100000111001100110000"), 124 };
 public:
@@ -861,11 +868,11 @@ const string IPPolicyTest::arbitrary_tenant = "arbitrary_tenant";
 
 TEST_F(IPPolicyTest, MaskedIPOperations) {
   EXPECT_EQ(stringify(allowedIPv4Range), "192.168.1.0/24");
-  EXPECT_EQ(stringify(blacklistedIPv4), "192.168.1.1/32");
+  EXPECT_EQ(stringify(blocklistedIPv4), "192.168.1.1/32");
   EXPECT_EQ(stringify(allowedIPv6), "2001:db8:85a3:0:0:8a2e:370:7334/128");
   EXPECT_EQ(stringify(allowedIPv6Range), "2001:db8:85a3:0:0:8a2e:370:7330/124");
-  EXPECT_EQ(stringify(blacklistedIPv6), "0:0:0:0:0:0:0:1/128");
-  EXPECT_EQ(allowedIPv4Range, blacklistedIPv4);
+  EXPECT_EQ(stringify(blocklistedIPv6), "0:0:0:0:0:0:0:1/128");
+  EXPECT_EQ(allowedIPv4Range, blocklistedIPv4);
   EXPECT_EQ(allowedIPv6Range, allowedIPv6);
 }
 
@@ -878,7 +885,7 @@ TEST_F(IPPolicyTest, asNetworkIPv4Range) {
 TEST_F(IPPolicyTest, asNetworkIPv4) {
   auto actualIPv4 = rgw::IAM::Condition::as_network("192.168.1.1");
   ASSERT_TRUE(actualIPv4.is_initialized());
-  EXPECT_EQ(*actualIPv4, blacklistedIPv4);
+  EXPECT_EQ(*actualIPv4, blocklistedIPv4);
 }
 
 TEST_F(IPPolicyTest, asNetworkIPv6Range) {
@@ -902,13 +909,15 @@ TEST_F(IPPolicyTest, asNetworkInvalid) {
 }
 
 TEST_F(IPPolicyTest, IPEnvironment) {
+  RGWProcessEnv penv;
   // Unfortunately RGWCivetWeb is too tightly tied to civetweb to test RGWCivetWeb::init_env.
   RGWEnv rgw_env;
-  rgw::sal::RGWRadosStore store;
-  rgw::sal::RGWRadosUser user(&store);
+  rgw::sal::RadosStore store;
+  std::unique_ptr<rgw::sal::User> user = store.get_user(rgw_user());
   rgw_env.set("REMOTE_ADDR", "192.168.1.1");
   rgw_env.set("HTTP_HOST", "1.2.3.4");
-  req_state rgw_req_state(cct.get(), &rgw_env, &user, 0);
+  req_state rgw_req_state(cct.get(), penv, &rgw_env, 0);
+  rgw_req_state.set_user(user);
   rgw_build_iam_environment(&store, &rgw_req_state);
   auto ip = rgw_req_state.env.find("aws:SourceIp");
   ASSERT_NE(ip, rgw_req_state.env.end());
@@ -947,8 +956,9 @@ TEST_F(IPPolicyTest, IPEnvironment) {
 TEST_F(IPPolicyTest, ParseIPAddress) {
   boost::optional<Policy> p;
 
-  ASSERT_NO_THROW(p = Policy(cct.get(), arbitrary_tenant,
-			     bufferlist::static_from_string(ip_address_full_example)));
+  ASSERT_NO_THROW(
+    p = Policy(cct.get(), arbitrary_tenant,
+	       bufferlist::static_from_string(ip_address_full_example), true));
   ASSERT_TRUE(p);
 
   EXPECT_EQ(p->text, ip_address_full_example);
@@ -1004,110 +1014,112 @@ TEST_F(IPPolicyTest, ParseIPAddress) {
 }
 
 TEST_F(IPPolicyTest, EvalIPAddress) {
-  auto allowp  = Policy(cct.get(), arbitrary_tenant,
-			bufferlist::static_from_string(ip_address_allow_example));
-  auto denyp  = Policy(cct.get(), arbitrary_tenant,
-		       bufferlist::static_from_string(ip_address_deny_example));
-  auto fullp  = Policy(cct.get(), arbitrary_tenant,
-		   bufferlist::static_from_string(ip_address_full_example));
+  auto allowp =
+    Policy(cct.get(), arbitrary_tenant,
+	   bufferlist::static_from_string(ip_address_allow_example), true);
+  auto denyp =
+    Policy(cct.get(), arbitrary_tenant,
+	   bufferlist::static_from_string(ip_address_deny_example), true);
+  auto fullp =
+    Policy(cct.get(), arbitrary_tenant,
+	   bufferlist::static_from_string(ip_address_full_example), true);
   Environment e;
-  Environment allowedIP, blacklistedIP, allowedIPv6, blacklistedIPv6;
-  allowedIP["aws:SourceIp"] = "192.168.1.2";
-  allowedIPv6["aws:SourceIp"] = "::1";
-  blacklistedIP["aws:SourceIp"] = "192.168.1.1";
-  blacklistedIPv6["aws:SourceIp"] = "2001:0db8:85a3:0000:0000:8a2e:0370:7334";
+  Environment allowedIP, blocklistedIP, allowedIPv6, blocklistedIPv6;
+  allowedIP.emplace("aws:SourceIp","192.168.1.2");
+  allowedIPv6.emplace("aws:SourceIp", "::1");
+  blocklistedIP.emplace("aws:SourceIp", "192.168.1.1");
+  blocklistedIPv6.emplace("aws:SourceIp", "2001:0db8:85a3:0000:0000:8a2e:0370:7334");
 
   auto trueacct = FakeIdentity(
     Principal::tenant("ACCOUNT-ID-WITHOUT-HYPHENS"));
   // Without an IP address in the environment then evaluation will always pass
-  EXPECT_EQ(allowp.eval(e, trueacct, s3ListBucket,
-			ARN(Partition::aws, Service::s3,
-			    "", arbitrary_tenant, "example_bucket")),
+  ARN arn1(Partition::aws, Service::s3,
+			    "", arbitrary_tenant, "example_bucket");
+  EXPECT_EQ(allowp.eval(e, trueacct, s3ListBucket, arn1),
 	    Effect::Pass);
-  EXPECT_EQ(fullp.eval(e, trueacct, s3ListBucket,
-		       ARN(Partition::aws, Service::s3,
-			   "", arbitrary_tenant, "example_bucket/myobject")),
+  ARN arn2(Partition::aws, Service::s3,
+      "", arbitrary_tenant, "example_bucket/myobject");
+  EXPECT_EQ(fullp.eval(e, trueacct, s3ListBucket, arn2),
 	    Effect::Pass);
 
-  EXPECT_EQ(allowp.eval(allowedIP, trueacct, s3ListBucket,
-			ARN(Partition::aws, Service::s3,
-			    "", arbitrary_tenant, "example_bucket")),
+  ARN arn3(Partition::aws, Service::s3,
+			    "", arbitrary_tenant, "example_bucket");
+  EXPECT_EQ(allowp.eval(allowedIP, trueacct, s3ListBucket, arn3),
 	    Effect::Allow);
-  EXPECT_EQ(allowp.eval(blacklistedIPv6, trueacct, s3ListBucket,
-			ARN(Partition::aws, Service::s3,
-			    "", arbitrary_tenant, "example_bucket")),
+  ARN arn4(Partition::aws, Service::s3,
+			    "", arbitrary_tenant, "example_bucket");
+  EXPECT_EQ(allowp.eval(blocklistedIPv6, trueacct, s3ListBucket, arn4),
 	    Effect::Pass);
 
-
-  EXPECT_EQ(denyp.eval(allowedIP, trueacct, s3ListBucket,
-		       ARN(Partition::aws, Service::s3,
-			   "", arbitrary_tenant, "example_bucket")),
+  ARN arn5(Partition::aws, Service::s3,
+			   "", arbitrary_tenant, "example_bucket");
+  EXPECT_EQ(denyp.eval(allowedIP, trueacct, s3ListBucket, arn5),
 	    Effect::Deny);
-  EXPECT_EQ(denyp.eval(allowedIP, trueacct, s3ListBucket,
-		       ARN(Partition::aws, Service::s3,
-			   "", arbitrary_tenant, "example_bucket/myobject")),
-	    Effect::Deny);
-
-  EXPECT_EQ(denyp.eval(blacklistedIP, trueacct, s3ListBucket,
-		       ARN(Partition::aws, Service::s3,
-			   "", arbitrary_tenant, "example_bucket")),
-	    Effect::Pass);
-  EXPECT_EQ(denyp.eval(blacklistedIP, trueacct, s3ListBucket,
-		       ARN(Partition::aws, Service::s3,
-			   "", arbitrary_tenant, "example_bucket/myobject")),
-	    Effect::Pass);
-
-  EXPECT_EQ(denyp.eval(blacklistedIPv6, trueacct, s3ListBucket,
-		       ARN(Partition::aws, Service::s3,
-			   "", arbitrary_tenant, "example_bucket")),
-	    Effect::Pass);
-  EXPECT_EQ(denyp.eval(blacklistedIPv6, trueacct, s3ListBucket,
-		       ARN(Partition::aws, Service::s3,
-			   "", arbitrary_tenant, "example_bucket/myobject")),
-	    Effect::Pass);
-  EXPECT_EQ(denyp.eval(allowedIPv6, trueacct, s3ListBucket,
-		       ARN(Partition::aws, Service::s3,
-			   "", arbitrary_tenant, "example_bucket")),
-	    Effect::Deny);
-  EXPECT_EQ(denyp.eval(allowedIPv6, trueacct, s3ListBucket,
-		       ARN(Partition::aws, Service::s3,
-			   "", arbitrary_tenant, "example_bucket/myobject")),
+  ARN arn6(Partition::aws, Service::s3,
+			   "", arbitrary_tenant, "example_bucket/myobject");
+  EXPECT_EQ(denyp.eval(allowedIP, trueacct, s3ListBucket, arn6),
 	    Effect::Deny);
 
-  EXPECT_EQ(fullp.eval(allowedIP, trueacct, s3ListBucket,
-		       ARN(Partition::aws, Service::s3,
-			   "", arbitrary_tenant, "example_bucket")),
-	    Effect::Allow);
-  EXPECT_EQ(fullp.eval(allowedIP, trueacct, s3ListBucket,
-		       ARN(Partition::aws, Service::s3,
-			   "", arbitrary_tenant, "example_bucket/myobject")),
-	    Effect::Allow);
-
-  EXPECT_EQ(fullp.eval(blacklistedIP, trueacct, s3ListBucket,
-		       ARN(Partition::aws, Service::s3,
-			   "", arbitrary_tenant, "example_bucket")),
+  ARN arn7(Partition::aws, Service::s3,
+			   "", arbitrary_tenant, "example_bucket");
+  EXPECT_EQ(denyp.eval(blocklistedIP, trueacct, s3ListBucket, arn7),
 	    Effect::Pass);
-  EXPECT_EQ(fullp.eval(blacklistedIP, trueacct, s3ListBucket,
-		       ARN(Partition::aws, Service::s3,
-			   "", arbitrary_tenant, "example_bucket/myobject")),
+  ARN arn8(Partition::aws, Service::s3,
+			   "", arbitrary_tenant, "example_bucket/myobject");
+  EXPECT_EQ(denyp.eval(blocklistedIP, trueacct, s3ListBucket, arn8),
 	    Effect::Pass);
 
-  EXPECT_EQ(fullp.eval(allowedIPv6, trueacct, s3ListBucket,
-		       ARN(Partition::aws, Service::s3,
-			   "", arbitrary_tenant, "example_bucket")),
+  ARN arn9(Partition::aws, Service::s3,
+			   "", arbitrary_tenant, "example_bucket");
+  EXPECT_EQ(denyp.eval(blocklistedIPv6, trueacct, s3ListBucket, arn9),
+	    Effect::Pass);
+  ARN arn10(Partition::aws, Service::s3,
+			   "", arbitrary_tenant, "example_bucket/myobject");
+  EXPECT_EQ(denyp.eval(blocklistedIPv6, trueacct, s3ListBucket, arn10),
+	    Effect::Pass);
+  ARN arn11(Partition::aws, Service::s3,
+			   "", arbitrary_tenant, "example_bucket");
+  EXPECT_EQ(denyp.eval(allowedIPv6, trueacct, s3ListBucket, arn11),
+	    Effect::Deny);
+  ARN arn12(Partition::aws, Service::s3,
+			   "", arbitrary_tenant, "example_bucket/myobject");
+  EXPECT_EQ(denyp.eval(allowedIPv6, trueacct, s3ListBucket, arn12),
+	    Effect::Deny);
+
+  ARN arn13(Partition::aws, Service::s3,
+			   "", arbitrary_tenant, "example_bucket");
+  EXPECT_EQ(fullp.eval(allowedIP, trueacct, s3ListBucket, arn13),
 	    Effect::Allow);
-  EXPECT_EQ(fullp.eval(allowedIPv6, trueacct, s3ListBucket,
-		       ARN(Partition::aws, Service::s3,
-			   "", arbitrary_tenant, "example_bucket/myobject")),
+  ARN arn14(Partition::aws, Service::s3,
+      "", arbitrary_tenant, "example_bucket/myobject");
+  EXPECT_EQ(fullp.eval(allowedIP, trueacct, s3ListBucket, arn14),
 	    Effect::Allow);
 
-  EXPECT_EQ(fullp.eval(blacklistedIPv6, trueacct, s3ListBucket,
-		       ARN(Partition::aws, Service::s3,
-			   "", arbitrary_tenant, "example_bucket")),
+  ARN arn15(Partition::aws, Service::s3,
+			   "", arbitrary_tenant, "example_bucket");
+  EXPECT_EQ(fullp.eval(blocklistedIP, trueacct, s3ListBucket, arn15),
 	    Effect::Pass);
-  EXPECT_EQ(fullp.eval(blacklistedIPv6, trueacct, s3ListBucket,
-		       ARN(Partition::aws, Service::s3,
-			   "", arbitrary_tenant, "example_bucket/myobject")),
+  ARN arn16(Partition::aws, Service::s3,
+			   "", arbitrary_tenant, "example_bucket/myobject");
+  EXPECT_EQ(fullp.eval(blocklistedIP, trueacct, s3ListBucket, arn16),
+	    Effect::Pass);
+
+  ARN arn17(Partition::aws, Service::s3,
+			   "", arbitrary_tenant, "example_bucket");
+  EXPECT_EQ(fullp.eval(allowedIPv6, trueacct, s3ListBucket, arn17),
+	    Effect::Allow);
+  ARN arn18(Partition::aws, Service::s3,
+			   "", arbitrary_tenant, "example_bucket/myobject");
+  EXPECT_EQ(fullp.eval(allowedIPv6, trueacct, s3ListBucket, arn18),
+	    Effect::Allow);
+
+  ARN arn19(Partition::aws, Service::s3,
+			   "", arbitrary_tenant, "example_bucket");
+  EXPECT_EQ(fullp.eval(blocklistedIPv6, trueacct, s3ListBucket, arn19),
+	    Effect::Pass);
+  ARN arn20(Partition::aws, Service::s3,
+			   "", arbitrary_tenant, "example_bucket/myobject");
+  EXPECT_EQ(fullp.eval(blocklistedIPv6, trueacct, s3ListBucket, arn20),
 	    Effect::Pass);
 }
 

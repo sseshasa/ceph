@@ -20,7 +20,7 @@
 #include "include/ceph_features.h"
 
 
-class MClientReconnect : public SafeMessage {
+class MClientReconnect final : public SafeMessage {
 private:
   static constexpr int HEAD_VERSION = 5;
   static constexpr int COMPAT_VERSION = 4;
@@ -33,7 +33,7 @@ public:
 private:
   MClientReconnect() :
     SafeMessage{CEPH_MSG_CLIENT_RECONNECT, HEAD_VERSION, COMPAT_VERSION} {}
-  ~MClientReconnect() override {}
+  ~MClientReconnect() final {}
 
   size_t cap_size = 0;
   size_t realm_size = 0;
@@ -170,6 +170,8 @@ public:
 private:
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 };
 
 

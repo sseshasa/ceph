@@ -1,7 +1,8 @@
 import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 
-import { configureTestBed, i18nProviders } from '../../../testing/unit-test-helper';
+import { CdTableFetchDataContext } from '~/app/shared/models/cd-table-fetch-data-context';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { ImageSpec } from '../models/image-spec';
 import { RbdConfigurationService } from '../services/rbd-configuration.service';
 import { RbdService } from './rbd.service';
@@ -11,13 +12,13 @@ describe('RbdService', () => {
   let httpTesting: HttpTestingController;
 
   configureTestBed({
-    providers: [RbdService, RbdConfigurationService, i18nProviders],
+    providers: [RbdService, RbdConfigurationService],
     imports: [HttpClientTestingModule]
   });
 
   beforeEach(() => {
-    service = TestBed.get(RbdService);
-    httpTesting = TestBed.get(HttpTestingController);
+    service = TestBed.inject(RbdService);
+    httpTesting = TestBed.inject(HttpTestingController);
   });
 
   afterEach(() => {
@@ -55,8 +56,12 @@ describe('RbdService', () => {
   });
 
   it('should call list', () => {
-    service.list().subscribe();
-    const req = httpTesting.expectOne('api/block/image');
+    /* tslint:disable:no-empty */
+    const context = new CdTableFetchDataContext(() => {});
+    service.list(context.toParams()).subscribe();
+    const req = httpTesting.expectOne((req) => {
+      return 'api/block/image?offset=0&limit=-1&search=&sort=+name' && req.method === 'GET';
+    });
     expect(req.request.method).toBe('GET');
   });
 
@@ -80,11 +85,20 @@ describe('RbdService', () => {
     expect(req.request.method).toBe('GET');
   });
 
+  it('should call cloneFormatVersion', () => {
+    service.cloneFormatVersion().subscribe();
+    const req = httpTesting.expectOne('api/block/image/clone_format_version');
+    expect(req.request.method).toBe('GET');
+  });
+
   it('should call createSnapshot', () => {
-    service.createSnapshot(new ImageSpec('poolName', null, 'rbdName'), 'snapshotName').subscribe();
+    service
+      .createSnapshot(new ImageSpec('poolName', null, 'rbdName'), 'snapshotName', false)
+      .subscribe();
     const req = httpTesting.expectOne('api/block/image/poolName%2FrbdName/snap');
     expect(req.request.body).toEqual({
-      snapshot_name: 'snapshotName'
+      snapshot_name: 'snapshotName',
+      mirrorImageSnapshot: false
     });
     expect(req.request.method).toBe('POST');
   });

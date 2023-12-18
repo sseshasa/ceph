@@ -32,10 +32,11 @@ extern "C"{
 #include "common/ceph_argparse.h"
 #include "common/Finisher.h"
 #include "global/global_init.h"
-#include "rgw/rgw_common.h"
-#include "rgw/rgw_mdlog.h"
-#include "rgw/rgw_bucket.h"
-#include "rgw/rgw_rados.h"
+#include "rgw_common.h"
+#include "rgw_datalog.h"
+#include "rgw_mdlog.h"
+#include "rgw_bucket.h"
+#include "rgw_rados.h"
 #include "include/utime.h"
 #include "include/object.h"
 #include <gtest/gtest.h>
@@ -488,7 +489,7 @@ static int put_bucket_obj(const char *obj_name, char *data, unsigned len) {
   g_test->send_request(string("PUT"), req,
                        read_bucket_object, (void *)data, (size_t)len);
   if (g_test->get_resp_code() != 200U) {
-    cout << "Errror sending object to the bucket, http_code " << g_test->get_resp_code();
+    cout << "Error sending object to the bucket, http_code " << g_test->get_resp_code();
     return -1;
   }
   return 0;
@@ -499,7 +500,7 @@ static int read_bucket_obj(const char *obj_name) {
   req.append(obj_name);
   g_test->send_request(string("GET"), req);
   if (g_test->get_resp_code() != 200U) {
-    cout << "Errror sending object to the bucket, http_code " << g_test->get_resp_code();
+    cout << "Error sending object to the bucket, http_code " << g_test->get_resp_code();
     return -1;
   }
   return 0;
@@ -510,7 +511,7 @@ static int delete_obj(const char *obj_name) {
   req.append(obj_name);
   g_test->send_request(string("DELETE"), req);
   if (g_test->get_resp_code() != 204U) {
-    cout << "Errror deleting object from bucket, http_code " << g_test->get_resp_code();
+    cout << "Error deleting object from bucket, http_code " << g_test->get_resp_code();
     return -1;
   }
   return 0;
@@ -1559,8 +1560,7 @@ TEST(TestRGWAdmin, bilog_trim) {
 }
 
 int main(int argc, char *argv[]){
-  vector<const char*> args;
-  argv_to_vec(argc, (const char **)argv, args);
+  auto args = argv_to_vec(argc, argv);
 
   auto cct = global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT,
 			 CODE_ENVIRONMENT_UTILITY,

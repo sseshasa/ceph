@@ -9,14 +9,14 @@
 Synopsis
 ========
 
-| **ceph-kvstore-tool** <leveldb|rocksdb|bluestore-kv> <store path> *command* [args...]
+| **ceph-kvstore-tool** <rocksdb|bluestore-kv> <store path> *command* [args...]
 
 
 Description
 ===========
 
 :program:`ceph-kvstore-tool` is a kvstore manipulation tool. It allows users to manipulate
-leveldb/rocksdb's data (like OSD's omap) offline.
+RocksDB's data (like OSD's omap) offline.
 
 Commands
 ========
@@ -85,11 +85,14 @@ which are as follows:
     Format and information content may vary between releases. For RocksDB information includes
     compactions stats, performance counters, memory usage and internal RocksDB stats. 
 
+:command:`histogram`
+    Presents key-value sizes distribution statistics from the underlying KV database.
+
 Availability
 ============
 
 **ceph-kvstore-tool** is part of Ceph, a massively scalable, open-source, distributed storage system. Please refer to
-the Ceph documentation at http://ceph.com/docs for more information.
+the Ceph documentation at https://docs.ceph.com for more information.
 
 
 See also

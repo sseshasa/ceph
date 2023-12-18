@@ -9,17 +9,11 @@ clients can be more manageable, especially while upgrading CephFS.
 Prerequisites
 =============
 
-Complete General Prerequisites
-------------------------------
 Go through the prerequisites required by both, kernel as well as FUSE mounts,
 in `Mount CephFS: Prerequisites`_ page.
 
-``fuse.conf`` option
---------------------
-
-#. If you are mounting Ceph with FUSE not as superuser/root user/system admin
-   you would need to add the option ``user_allow_other`` to ``/etc/fuse.conf``
-   (under no section in the conf).
+.. note:: Mounting CephFS using FUSE requires superuser privileges to trim dentries
+   by issuing a remount of itself.
 
 Synopsis
 ========
@@ -34,7 +28,7 @@ To FUSE-mount the Ceph file system, use the ``ceph-fuse`` command::
     mkdir /mnt/mycephfs
     ceph-fuse --id foo /mnt/mycephfs
 
-Option ``-id`` passes the name of the CephX user whose keyring we intend to
+Option ``--id`` passes the name of the CephX user whose keyring we intend to
 use for mounting CephFS. In the above command, it's ``foo``. You can also use
 ``-n`` instead, although ``--id`` is evidently easier::
 
@@ -59,7 +53,8 @@ If you have more than one FS on your Ceph cluster, use the option
 
     ceph-fuse --id foo --client_fs mycephfs2 /mnt/mycephfs2
 
-You may also add a ``client_fs`` setting to your ``ceph.conf``
+You may also add a ``client_fs`` setting to your ``ceph.conf``. Alternatively, the option
+``--client_mds_namespace`` is supported for backward compatibility.
 
 Unmounting CephFS
 =================

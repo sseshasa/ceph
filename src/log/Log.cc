@@ -6,22 +6,31 @@
 #include "common/errno.h"
 #include "common/safe_io.h"
 #include "common/Graylog.h"
+#include "common/Journald.h"
 #include "common/valgrind.h"
 
 #include "include/ceph_assert.h"
 #include "include/compat.h"
 #include "include/on_exit.h"
+#include "include/uuid.h"
 
 #include "Entry.h"
 #include "LogClock.h"
 #include "SubsystemMap.h"
 
+#include <boost/container/vector.hpp>
+
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <syslog.h>
 
+#include <algorithm>
 #include <iostream>
 #include <set>
+
+#include <fmt/format.h>
+#include <fmt/ostream.h>
 
 #define MAX_LOG_BUF 65536
 
@@ -44,6 +53,7 @@ Log::Log(const SubsystemMap *s)
     m_recent(DEFAULT_MAX_RECENT)
 {
   m_log_buf.reserve(MAX_LOG_BUF);
+  _configure_stderr();
 }
 
 Log::~Log()
@@ -53,8 +63,44 @@ Log::~Log()
   }
 
   ceph_assert(!is_started());
-  if (m_fd >= 0)
+  if (m_fd >= 0) {
     VOID_TEMP_FAILURE_RETRY(::close(m_fd));
+    m_fd = -1;
+  }
+}
+
+void Log::_configure_stderr()
+{
+#ifndef _WIN32
+  struct stat info;
+  if (int rc = fstat(m_fd_stderr, &info); rc == -1) {
+    std::cerr << "failed to stat stderr: " << cpp_strerror(errno) << std::endl;
+    return;
+  }
+
+  if (S_ISFIFO(info.st_mode)) {
+    /* Set O_NONBLOCK on FIFO stderr file. We want to ensure atomic debug log
+     * writes so they do not get partially read by e.g. buggy container
+     * runtimes. See also IEEE Std 1003.1-2017 and Log::_log_stderr below.
+     *
+     * This isn't required on Windows.
+     */
+    int flags = fcntl(m_fd_stderr, F_GETFL);
+    if (flags == -1) {
+      std::cerr << "failed to get fcntl flags for stderr: " << cpp_strerror(errno) << std::endl;
+      return;
+    }
+    if (!(flags & O_NONBLOCK)) {
+      flags |= O_NONBLOCK;
+      flags = fcntl(m_fd_stderr, F_SETFL, flags);
+      if (flags == -1) {
+        std::cerr << "failed to set fcntl flags for stderr: " << cpp_strerror(errno) << std::endl;
+        return;
+      }
+    }
+    do_stderr_poll = true;
+  }
+#endif // !_WIN32
 }
 
 
@@ -62,9 +108,9 @@ Log::~Log()
 void Log::set_coarse_timestamps(bool coarse) {
   std::scoped_lock lock(m_flush_mutex);
   if (coarse)
-    clock.coarsen();
+    Entry::clock().coarsen();
   else
-    clock.refine();
+    Entry::clock().refine();
 }
 
 void Log::set_flush_on_exit()
@@ -89,7 +135,7 @@ void Log::set_max_new(std::size_t n)
 void Log::set_max_recent(std::size_t n)
 {
   std::scoped_lock lock(m_flush_mutex);
-  m_max_recent = n;
+  m_recent.set_capacity(n);
 }
 
 void Log::set_log_file(std::string_view fn)
@@ -111,8 +157,10 @@ void Log::reopen_log_file()
     return;
   }
   m_flush_mutex_holder = pthread_self();
-  if (m_fd >= 0)
+  if (m_fd >= 0) {
     VOID_TEMP_FAILURE_RETRY(::close(m_fd));
+    m_fd = -1;
+  }
   if (m_log_file.length()) {
     m_fd = ::open(m_log_file.c_str(), O_CREAT|O_WRONLY|O_APPEND|O_CLOEXEC, 0644);
     if (m_fd >= 0 && (m_uid || m_gid)) {
@@ -122,8 +170,6 @@ void Log::reopen_log_file()
 	     << std::endl;
       }
     }
-  } else {
-    m_fd = -1;
   }
   m_flush_mutex_holder = 0;
 }
@@ -162,11 +208,15 @@ void Log::set_graylog_level(int log, int crash)
   m_graylog_crash = crash;
 }
 
-void Log::start_graylog()
+void Log::start_graylog(const std::string& host,
+			const uuid_d& fsid)
 {
   std::scoped_lock lock(m_flush_mutex);
-  if (! m_graylog.get())
+  if (! m_graylog.get()) {
     m_graylog = std::make_shared<Graylog>(m_subs, "dlog");
+    m_graylog->set_hostname(host);
+    m_graylog->set_fsid(fsid);
+  }
 }
 
 
@@ -174,6 +224,27 @@ void Log::stop_graylog()
 {
   std::scoped_lock lock(m_flush_mutex);
   m_graylog.reset();
+}
+
+void Log::set_journald_level(int log, int crash)
+{
+  std::scoped_lock lock(m_flush_mutex);
+  m_journald_log = log;
+  m_journald_crash = crash;
+}
+
+void Log::start_journald_logger()
+{
+  std::scoped_lock lock(m_flush_mutex);
+  if (!m_journald) {
+    m_journald = std::make_unique<JournaldLogger>(m_subs);
+  }
+}
+
+void Log::stop_journald_logger()
+{
+  std::scoped_lock lock(m_flush_mutex);
+  m_journald.reset();
 }
 
 void Log::submit_entry(Entry&& e)
@@ -228,6 +299,69 @@ void Log::_log_safe_write(std::string_view sv)
   }
 }
 
+void Log::set_stderr_fd(int fd)
+{
+  m_fd_stderr = fd;
+  _configure_stderr();
+}
+
+void Log::_log_stderr(std::string_view strv)
+{
+  if (do_stderr_poll) {
+    auto& prefix = m_log_stderr_prefix;
+    size_t const len = prefix.size() + strv.size();
+    boost::container::small_vector<char, PIPE_BUF> buf;
+    buf.resize(len+1, '\0');
+    memcpy(buf.data(), prefix.c_str(), prefix.size());
+    memcpy(buf.data()+prefix.size(), strv.data(), strv.size());
+
+    char const* const start = buf.data();
+    char const* current = start;
+    while ((size_t)(current-start) < len) {
+      auto chunk = std::min<ssize_t>(PIPE_BUF, len-(ssize_t)(current-start));
+      while (1) {
+        ssize_t rc = write(m_fd_stderr, current, chunk);
+        if (rc == chunk) {
+          current += chunk;
+          break;
+        } else if (rc > 0) {
+          /* According to IEEE Std 1003.1-2017, this cannot happen:
+           *
+           * Write requests to a pipe or FIFO shall be handled in the same way as a regular file with the following exceptions:
+           * ...
+           *   If the O_NONBLOCK flag is set ...
+           *   ...
+           *     A write request for {PIPE_BUF} or fewer bytes shall have the
+           *     following effect: if there is sufficient space available in
+           *     the pipe, write() shall transfer all the data and return the
+           *     number of bytes requested. Otherwise, write() shall transfer
+           *     no data and return -1 with errno set to [EAGAIN].
+           *
+           * In any case, handle misbehavior gracefully by incrementing current.
+           */
+          current += rc;
+          break;
+        } else if (rc == -1) {
+          if (errno == EAGAIN) {
+            struct pollfd pfd[1];
+            pfd[0].fd = m_fd_stderr;
+            pfd[0].events = POLLOUT;
+            poll(pfd, 1, -1);
+            /* ignore errors / success, just retry the write */
+          } else if (errno == EINTR) {
+            continue;
+          } else {
+            /* some other kind of error, no point logging if stderr writes fail */
+            return;
+          }
+        }
+      }
+    }
+  } else {
+    fmt::print(std::cerr, "{}{}", m_log_stderr_prefix, strv);
+  }
+}
+
 void Log::_flush_logbuf()
 {
   if (m_log_buf.size()) {
@@ -258,6 +392,7 @@ void Log::_flush(EntryVector& t, bool crash)
     bool do_syslog = m_syslog_crash >= prio && should_log;
     bool do_stderr = m_stderr_crash >= prio && should_log;
     bool do_graylog2 = m_graylog_crash >= prio && should_log;
+    bool do_journald = m_journald_crash >= prio && should_log;
 
     if (do_fd || do_syslog || do_stderr) {
       const std::size_t cur = m_log_buf.size();
@@ -282,12 +417,12 @@ void Log::_flush(EntryVector& t, bool crash)
         syslog(LOG_USER|LOG_INFO, "%s", pos);
       }
 
-      if (do_stderr) {
-        std::cerr << m_log_stderr_prefix << std::string_view(pos, used) << std::endl;
-      }
-
       /* now add newline */
       pos[used++] = '\n';
+
+      if (do_stderr) {
+        _log_stderr(std::string_view(pos, used));
+      }
 
       if (do_fd) {
         m_log_buf.resize(cur + used);
@@ -304,6 +439,10 @@ void Log::_flush(EntryVector& t, bool crash)
       m_graylog->log_entry(e);
     }
 
+    if (do_journald && m_journald) {
+      m_journald->log_entry(e);
+    }
+
     m_recent.push_back(std::move(e));
   }
   t.clear();
@@ -311,24 +450,30 @@ void Log::_flush(EntryVector& t, bool crash)
   _flush_logbuf();
 }
 
-void Log::_log_message(const char *s, bool crash)
+void Log::_log_message(std::string_view s, bool crash)
 {
   if (m_fd >= 0) {
-    size_t len = strlen(s);
-    std::string b;
-    b.reserve(len + 1);
-    b.append(s, len);
-    b += '\n';
-    int r = safe_write(m_fd, b.c_str(), b.size());
+    std::string b = fmt::format("{}\n", s);
+    int r = safe_write(m_fd, b.data(), b.size());
     if (r < 0)
       std::cerr << "problem writing to " << m_log_file << ": " << cpp_strerror(r) << std::endl;
   }
   if ((crash ? m_syslog_crash : m_syslog_log) >= 0) {
-    syslog(LOG_USER|LOG_INFO, "%s", s);
+    syslog(LOG_USER|LOG_INFO, "%.*s", static_cast<int>(s.size()), s.data());
   }
 
   if ((crash ? m_stderr_crash : m_stderr_log) >= 0) {
     std::cerr << s << std::endl;
+  }
+}
+
+template<typename T>
+static uint64_t tid_to_int(T tid)
+{
+  if constexpr (std::is_pointer_v<T>) {
+    return reinterpret_cast<std::uintptr_t>(tid);
+  } else {
+    return tid;
   }
 }
 
@@ -359,32 +504,30 @@ void Log::dump_recent()
     _flush(t, true);
   }
 
-  char buf[4096];
   _log_message("--- logging levels ---", true);
   for (const auto& p : m_subs->m_subsys) {
-    snprintf(buf, sizeof(buf), "  %2d/%2d %s", p.log_level, p.gather_level, p.name);
-    _log_message(buf, true);
+    _log_message(fmt::format("  {:2d}/{:2d} {}",
+			     p.log_level, p.gather_level, p.name), true);
   }
-  sprintf(buf, "  %2d/%2d (syslog threshold)", m_syslog_log, m_syslog_crash);
-  _log_message(buf, true);
-  sprintf(buf, "  %2d/%2d (stderr threshold)", m_stderr_log, m_stderr_crash);
-  _log_message(buf, true);
+  _log_message(fmt::format("  {:2d}/{:2d} (syslog threshold)",
+			   m_syslog_log, m_syslog_crash), true);
+  _log_message(fmt::format("  {:2d}/{:2d} (stderr threshold)",
+			   m_stderr_log, m_stderr_crash), true);
 
   _log_message("--- pthread ID / name mapping for recent threads ---", true);
   for (const auto pthread_id : recent_pthread_ids)
   {
     char pthread_name[16] = {0}; //limited by 16B include terminating null byte.
     ceph_pthread_getname(pthread_id, pthread_name, sizeof(pthread_name));
-    snprintf(buf, sizeof(buf), "  %lx / %s", pthread_id, pthread_name);
-    _log_message(buf, true);
+    // we want the ID to be printed in the same format as we use for a log entry.
+    // The reason is easier grepping.
+    _log_message(fmt::format("  {:x} / {}",
+			     tid_to_int(pthread_id), pthread_name), true);
   }
 
-  sprintf(buf, "  max_recent %9zu", m_max_recent);
-  _log_message(buf, true);
-  sprintf(buf, "  max_new    %9zu", m_max_new);
-  _log_message(buf, true);
-  sprintf(buf, "  log_file %s", m_log_file.c_str());
-  _log_message(buf, true);
+  _log_message(fmt::format("  max_recent {:9}", m_recent.capacity()), true);
+  _log_message(fmt::format("  max_new    {:9}", m_max_new), true);
+  _log_message(fmt::format("  log_file {}", m_log_file), true);
 
   _log_message("--- end dump of recent events ---", true);
 

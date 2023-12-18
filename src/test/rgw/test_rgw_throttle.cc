@@ -12,51 +12,23 @@
  *
  */
 
-#include "rgw/rgw_aio_throttle.h"
+#include "rgw_aio_throttle.h"
 
 #include <optional>
 #include <thread>
+#include <boost/asio/basic_waitable_timer.hpp>
+#include <boost/asio/error.hpp>
+#include <boost/asio/executor_work_guard.hpp>
+#include <boost/asio/io_context.hpp>
 #include "include/scope_guard.h"
 
-#ifdef HAVE_BOOST_CONTEXT
 #include <spawn/spawn.hpp>
-#endif
 #include <gtest/gtest.h>
 
-struct RadosEnv : public ::testing::Environment {
- public:
-  static constexpr auto poolname = "ceph_test_rgw_throttle";
-
-  static std::optional<RGWSI_RADOS> rados;
-
-  void SetUp() override {
-    rados.emplace(g_ceph_context);
-    ASSERT_EQ(0, rados->start());
-    int r = rados->pool({poolname}).create();
-    if (r == -EEXIST)
-      r = 0;
-    ASSERT_EQ(0, r);
-  }
-  void TearDown() override {
-    rados->shutdown();
-    rados.reset();
-  }
-};
-std::optional<RGWSI_RADOS> RadosEnv::rados;
-
-auto *const rados_env = ::testing::AddGlobalTestEnvironment(new RadosEnv);
-
-// test fixture for global setup/teardown
-class RadosFixture : public ::testing::Test {
- protected:
-  RGWSI_RADOS::Obj make_obj(const std::string& oid) {
-    auto obj = RadosEnv::rados->obj({{RadosEnv::poolname}, oid});
-    ceph_assert_always(0 == obj.open());
-    return obj;
-  }
-};
-
-using Aio_Throttle = RadosFixture;
+static rgw_raw_obj make_obj(const std::string& oid)
+{
+  return {{"testpool"}, oid};
+}
 
 namespace rgw {
 
@@ -89,7 +61,7 @@ auto wait_for(boost::asio::io_context& context, ceph::timespan duration) {
   };
 }
 
-TEST_F(Aio_Throttle, NoThrottleUpToMax)
+TEST(Aio_Throttle, NoThrottleUpToMax)
 {
   BlockingAioThrottle throttle(4);
   auto obj = make_obj(__PRETTY_FUNCTION__);
@@ -117,7 +89,7 @@ TEST_F(Aio_Throttle, NoThrottleUpToMax)
   }
 }
 
-TEST_F(Aio_Throttle, CostOverWindow)
+TEST(Aio_Throttle, CostOverWindow)
 {
   BlockingAioThrottle throttle(4);
   auto obj = make_obj(__PRETTY_FUNCTION__);
@@ -128,7 +100,7 @@ TEST_F(Aio_Throttle, CostOverWindow)
   EXPECT_EQ(-EDEADLK, c.front().result);
 }
 
-TEST_F(Aio_Throttle, ThrottleOverMax)
+TEST(Aio_Throttle, ThrottleOverMax)
 {
   constexpr uint64_t window = 4;
   BlockingAioThrottle throttle(window);
@@ -166,23 +138,23 @@ TEST_F(Aio_Throttle, ThrottleOverMax)
   EXPECT_EQ(window, max_outstanding);
 }
 
-#ifdef HAVE_BOOST_CONTEXT
-TEST_F(Aio_Throttle, YieldCostOverWindow)
+TEST(Aio_Throttle, YieldCostOverWindow)
 {
   auto obj = make_obj(__PRETTY_FUNCTION__);
 
   boost::asio::io_context context;
   spawn::spawn(context,
-    [&] (spawn::yield_context yield) {
+    [&] (yield_context yield) {
       YieldingAioThrottle throttle(4, context, yield);
       scoped_completion op;
       auto c = throttle.get(obj, wait_on(op), 8, 0);
       ASSERT_EQ(1u, c.size());
       EXPECT_EQ(-EDEADLK, c.front().result);
     });
+  context.run();
 }
 
-TEST_F(Aio_Throttle, YieldingThrottleOverMax)
+TEST(Aio_Throttle, YieldingThrottleOverMax)
 {
   constexpr uint64_t window = 4;
 
@@ -195,7 +167,7 @@ TEST_F(Aio_Throttle, YieldingThrottleOverMax)
 
   boost::asio::io_context context;
   spawn::spawn(context,
-    [&] (spawn::yield_context yield) {
+    [&] (yield_context yield) {
       YieldingAioThrottle throttle(window, context, yield);
       for (uint64_t i = 0; i < total; i++) {
         using namespace std::chrono_literals;
@@ -216,6 +188,5 @@ TEST_F(Aio_Throttle, YieldingThrottleOverMax)
   EXPECT_EQ(0u, outstanding);
   EXPECT_EQ(window, max_outstanding);
 }
-#endif // HAVE_BOOST_CONTEXT
 
 } // namespace rgw

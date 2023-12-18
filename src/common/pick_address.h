@@ -20,6 +20,7 @@ class entity_addrvec_t;
 #define CEPH_PICK_ADDRESS_IPV6        0x20
 #define CEPH_PICK_ADDRESS_PREFER_IPV4 0x40
 #define CEPH_PICK_ADDRESS_DEFAULT_MON_PORTS  0x80
+#define CEPH_PICK_ADDRESS_PUBLIC_BIND 0x100
 
 #ifndef WITH_SEASTAR
 /*
@@ -68,6 +69,20 @@ std::string pick_iface(CephContext *cct, const struct sockaddr_storage &network)
  */
 bool have_local_addr(CephContext *cct, const std::list<entity_addr_t>& ls, entity_addr_t *match);
 
+/**
+ * filter the addresses in @c ifa with specified interfaces, networks and IPv
+ *
+ * @param cct
+ * @param ifa a list of network interface addresses to be filtered
+ * @param ipv bitmask of CEPH_PICK_ADDRESS_IPV4 and CEPH_PICK_ADDRESS_IPV6.
+ *        it is used to filter the @c networks
+ * @param networks a comma separated list of networks as the allow list. only
+ *        the addresses in the specified networks are allowed. all addresses
+ *        are accepted if it is empty.
+ * @param interfaces a comma separated list of interfaces for the allow list.
+ *        all addresses are accepted if it is empty
+ * @param exclude_lo_iface filter out network interface named "lo"
+ */
 const struct sockaddr *find_ip_in_subnet_list(
   CephContext *cct,
   const struct ifaddrs *ifa,
@@ -79,5 +94,10 @@ const struct sockaddr *find_ip_in_subnet_list(
 int get_iface_numa_node(
   const std::string& iface,
   int *node);
+
+bool is_addr_in_subnet(
+  CephContext *cct,
+  const std::string &networks,
+  const std::string &addr);
 
 #endif

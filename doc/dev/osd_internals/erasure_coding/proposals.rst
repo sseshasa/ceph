@@ -124,7 +124,7 @@ Partial Application Peering/Recovery modifications
 --------------------------------------------------
 
 Some writes will be small enough to not require updating all of the
-shards holding data blocks.  For write amplification minization
+shards holding data blocks.  For write amplification minimization
 reasons, it would be best to avoid writing to those shards at all,
 and delay even sending the log entries until the next write which
 actually hits that shard.
@@ -193,7 +193,7 @@ RADOS Client Acknowledgement Generation Optimization
 ====================================================
 
 Now that the recovery scheme is understood, we can discuss the
-generation of of the RADOS operation acknowledgement (ACK) by the
+generation of the RADOS operation acknowledgement (ACK) by the
 primary ("sufficient" from above). It is NOT required that the primary
 wait for all shards to complete their respective prepare
 operations. Using our example where the RADOS operations writes only

@@ -2,15 +2,17 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { FormsModule } from '@angular/forms';
 import { RouterTestingModule } from '@angular/router/testing';
 
+import { NgbDropdownModule, NgbTooltipModule } from '@ng-bootstrap/ng-bootstrap';
 import { NgxDatatableModule } from '@swimlane/ngx-datatable';
-import { BsDropdownModule } from 'ngx-bootstrap/dropdown';
+import { NgxPipeFunctionModule } from 'ngx-pipe-function';
 
-import { configureTestBed } from '../../../../testing/unit-test-helper';
-import { ComponentsModule } from '../../components/components.module';
-import { CellTemplate } from '../../enum/cell-template.enum';
-import { CdTableColumn } from '../../models/cd-table-column';
-import { CdDatePipe } from '../../pipes/cd-date.pipe';
-import { PipesModule } from '../../pipes/pipes.module';
+import { ComponentsModule } from '~/app/shared/components/components.module';
+import { CellTemplate } from '~/app/shared/enum/cell-template.enum';
+import { CdTableColumn } from '~/app/shared/models/cd-table-column';
+import { CdDatePipe } from '~/app/shared/pipes/cd-date.pipe';
+import { PipesModule } from '~/app/shared/pipes/pipes.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
+import { TablePaginationComponent } from '../table-pagination/table-pagination.component';
 import { TableComponent } from '../table/table.component';
 import { TableKeyValueComponent } from './table-key-value.component';
 
@@ -19,14 +21,16 @@ describe('TableKeyValueComponent', () => {
   let fixture: ComponentFixture<TableKeyValueComponent>;
 
   configureTestBed({
-    declarations: [TableComponent, TableKeyValueComponent],
+    declarations: [TableComponent, TableKeyValueComponent, TablePaginationComponent],
     imports: [
       FormsModule,
       NgxDatatableModule,
       ComponentsModule,
       RouterTestingModule,
-      BsDropdownModule.forRoot(),
-      PipesModule
+      NgbDropdownModule,
+      PipesModule,
+      NgbTooltipModule,
+      NgxPipeFunctionModule
     ]
   });
 
@@ -166,7 +170,7 @@ describe('TableKeyValueComponent', () => {
     let datePipe: CdDatePipe;
 
     beforeEach(() => {
-      datePipe = TestBed.get(CdDatePipe);
+      datePipe = TestBed.inject(CdDatePipe);
       spyOn(datePipe, 'transform').and.callThrough();
     });
 

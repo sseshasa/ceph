@@ -20,7 +20,6 @@ namespace librbd { struct ImageCtx; }
 namespace librbd { namespace journal { struct MirrorPeerClientMeta; } }
 
 struct Context;
-struct ContextWQ;
 
 namespace rbd {
 namespace mirror {
@@ -140,7 +139,7 @@ private:
 
   void finalize_journal_state_builder(cls::journal::ClientState client_state,
                                       const MirrorPeerClientMeta& client_meta);
-  void finalize_snapshot_state_builder(int r);
+  void finalize_snapshot_state_builder();
 
   void finish(int r);
 };

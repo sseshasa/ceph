@@ -15,10 +15,14 @@
 #ifndef CEPH_LOGENTRY_H
 #define CEPH_LOGENTRY_H
 
+#include <fmt/format.h>
+
 #include "include/utime.h"
+#include "msg/msg_fmt.h"
 #include "msg/msg_types.h"
 #include "common/entity_name.h"
 #include "ostream_temp.h"
+#include "LRUSet.h"
 
 namespace ceph {
   class Formatter;
@@ -75,7 +79,22 @@ public:
   friend bool operator==(const LogEntryKey& l, const LogEntryKey& r) {
     return l.rank == r.rank && l.stamp == r.stamp && l.seq == r.seq;
   }
+
+  void encode(bufferlist& bl) const {
+    using ceph::encode;
+    encode(rank, bl);
+    encode(stamp, bl);
+    encode(seq, bl);
+  }
+  void decode(bufferlist::const_iterator &p) {
+    using ceph::decode;
+    decode(rank, p);
+    decode(stamp, p);
+    decode(seq, p);
+  }
 };
+WRITE_CLASS_ENCODER(LogEntryKey)
+
 
 namespace std {
 template<> struct hash<LogEntryKey> {
@@ -99,7 +118,7 @@ struct LogEntry {
 
   LogEntryKey key() const { return LogEntryKey(rank, stamp, seq); }
 
-  void log_to_syslog(std::string level, std::string facility);
+  void log_to_syslog(std::string level, std::string facility) const;
 
   void encode(ceph::buffer::list& bl, uint64_t features) const;
   void decode(ceph::buffer::list::const_iterator& bl);
@@ -111,16 +130,22 @@ WRITE_CLASS_ENCODER_FEATURES(LogEntry)
 
 struct LogSummary {
   version_t version;
+
+  // ---- pre-quincy ----
   // channel -> [(seq#, entry), ...]
   std::map<std::string,std::list<std::pair<uint64_t,LogEntry>>> tail_by_channel;
   uint64_t seq = 0;
   ceph::unordered_set<LogEntryKey> keys;
 
+  // ---- quincy+ ----
+  LRUSet<LogEntryKey> recent_keys;
+  std::map<std::string, std::pair<uint64_t,uint64_t>> channel_info; // channel -> [begin, end)
+
   LogSummary() : version(0) {}
 
-  void build_ordered_tail(std::list<LogEntry> *tail) const;
+  void build_ordered_tail_legacy(std::list<LogEntry> *tail) const;
 
-  void add(const LogEntry& e) {
+  void add_legacy(const LogEntry& e) {
     keys.insert(e.key());
     tail_by_channel[e.channel].push_back(std::make_pair(++seq, e));
   }
@@ -131,9 +156,10 @@ struct LogSummary {
 	i.second.pop_front();
       }
     }
+    recent_keys.prune(max);
   }
   bool contains(const LogEntryKey& k) const {
-    return keys.count(k);
+    return keys.count(k) || recent_keys.contains(k);
   }
 
   void encode(ceph::buffer::list& bl, uint64_t features) const;
@@ -167,5 +193,20 @@ inline std::ostream& operator<<(std::ostream& out, const LogEntry& e)
 	     << e.seq << " : "
              << e.channel << " " << e.prio << " " << e.msg;
 }
+
+template <> struct fmt::formatter<EntityName> : fmt::formatter<std::string_view> {
+  template <typename FormatContext>
+  auto format(const EntityName& e, FormatContext& ctx) {
+    return formatter<std::string_view>::format(e.to_str(), ctx);
+  }
+};
+
+template <> struct fmt::formatter<LogEntry> : fmt::formatter<std::string_view> {
+  template <typename FormatContext>
+  auto format(const LogEntry& e, FormatContext& ctx) {
+    return fmt::format_to(ctx.out(), "{} {} ({}) {} : {} {} {}",
+			  e.stamp, e.name, e.rank, e.seq, e.channel, e.prio, e.msg);
+  }
+};
 
 #endif

@@ -39,6 +39,7 @@
 #include "mon/MonClient.h"
 #include "msg/Dispatcher.h"
 #include "msg/Messenger.h"
+#include "common/async/context_pool.h"
 #include "common/Timer.h"
 #include "common/ceph_argparse.h"
 #include "global/global_init.h"
@@ -56,7 +57,6 @@
 
 #include "messages/MOSDBoot.h"
 #include "messages/MOSDAlive.h"
-#include "messages/MOSDPGCreate.h"
 #include "messages/MOSDPGRemove.h"
 #include "messages/MOSDMap.h"
 #include "messages/MPGStats.h"
@@ -82,6 +82,7 @@ class TestStub : public Dispatcher
 {
  protected:
   MessengerRef messenger;
+  ceph::async::io_context_pool poolctx;
   MonClient monc;
 
   ceph::mutex lock;
@@ -163,6 +164,7 @@ class TestStub : public Dispatcher
     monc.shutdown();
     timer.shutdown();
     messenger->shutdown();
+    poolctx.finish();
     return 0;
   }
 
@@ -177,7 +179,7 @@ class TestStub : public Dispatcher
 
   TestStub(CephContext *cct, string who)
     : Dispatcher(cct),
-      monc(cct),
+      monc(cct, poolctx),
       lock(ceph::make_mutex(who.append("::lock"))),
       timer(cct, lock),
       do_shutdown(false),
@@ -244,6 +246,7 @@ class ClientStub : public TestStub
 
   int init() override {
     int err;
+    poolctx.start(1);
     err = monc.build_initial_monmap();
     if (err < 0) {
       derr << "ClientStub::" << __func__ << " ERROR: build initial monmap: "
@@ -259,7 +262,7 @@ class ClientStub : public TestStub
     dout(10) << "ClientStub::" << __func__ << " starting messenger at "
 	    << messenger->get_myaddrs() << dendl;
 
-    objecter.reset(new Objecter(cct, messenger.get(), &monc, NULL, 0, 0));
+    objecter.reset(new Objecter(cct, messenger.get(), &monc, poolctx));
     ceph_assert(objecter.get() != NULL);
     objecter->set_balanced_budget();
 
@@ -358,7 +361,7 @@ class OSDStub : public TestStub
     ss << "client-osd" << whoami;
     std::string public_msgr_type = cct->_conf->ms_public_type.empty() ? cct->_conf.get_val<std::string>("ms_type") : cct->_conf->ms_public_type;
     messenger.reset(Messenger::create(cct, public_msgr_type, entity_name_t::OSD(whoami),
-				      ss.str().c_str(), getpid(), 0));
+				      ss.str().c_str(), getpid()));
 
     Throttle throttler(g_ceph_context, "osd_client_bytes",
 	g_conf()->osd_client_message_size_cap);
@@ -739,33 +742,6 @@ class OSDStub : public TestStub
     }
   }
 
-  void handle_pg_create(MOSDPGCreate *m) {
-    ceph_assert(m != NULL);
-    if (m->epoch < osdmap.get_epoch()) {
-      std::cout << __func__ << " epoch " << m->epoch << " < "
-	       << osdmap.get_epoch() << "; dropping" << std::endl;
-      m->put();
-      return;
-    }
-
-    for (map<pg_t,pg_create_t>::iterator it = m->mkpg.begin();
-	 it != m->mkpg.end(); ++it) {
-      pg_create_t &c = it->second;
-      std::cout << __func__ << " pg " << it->first
-	      << " created " << c.created
-	      << " parent " << c.parent << std::endl;
-      if (pgs.count(it->first)) {
-	std::cout << __func__ << " pg " << it->first
-		 << " exists; skipping" << std::endl;
-	continue;
-      }
-
-      pg_t pgid = it->first;
-      add_pg(pgid, c.created, c.parent);
-    }
-    send_pg_stats();
-  }
-
   void handle_osd_map(MOSDMap *m) {
     dout(1) << __func__ << dendl;
     if (m->fsid != monc.get_fsid()) {
@@ -794,8 +770,10 @@ class OSDStub : public TestStub
     if (first > osdmap.get_epoch() + 1) {
       dout(5) << __func__
 	      << osdmap.get_epoch() + 1 << ".." << (first-1) << dendl;
-      if ((m->oldest_map < first && osdmap.get_epoch() == 0) ||
-	  m->oldest_map <= osdmap.get_epoch()) {
+      if ((m->cluster_osdmap_trim_lower_bound <
+           first && osdmap.get_epoch() == 0) ||
+	  m->cluster_osdmap_trim_lower_bound <=
+          osdmap.get_epoch()) {
 	monc.sub_want("osdmap", osdmap.get_epoch()+1,
 		       CEPH_SUBSCRIBE_ONETIME);
 	monc.renew_subs();
@@ -868,9 +846,6 @@ class OSDStub : public TestStub
     dout(1) << __func__ << " " << *m << dendl;
 
     switch (m->get_type()) {
-    case MSG_OSD_PG_CREATE:
-      handle_pg_create((MOSDPGCreate*)m);
-      break;
     case CEPH_MSG_OSD_MAP:
       handle_osd_map((MOSDMap*)m);
       break;
@@ -986,11 +961,10 @@ int get_id_interval(int &first, int &last, string &str)
 
 int main(int argc, const char *argv[])
 {
-  vector<const char*> args;
   our_name = argv[0];
-  argv_to_vec(argc, argv, args);
+  auto args = argv_to_vec(argc, argv);
 
-  auto cct = global_init(NULL, args,
+  auto cct = global_init(nullptr, args,
 			 CEPH_ENTITY_TYPE_OSD, CODE_ENVIRONMENT_UTILITY,
 			 CINIT_FLAG_NO_DEFAULT_CONFIG_FILE);
 

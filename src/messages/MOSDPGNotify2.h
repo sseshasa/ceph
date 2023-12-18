@@ -6,7 +6,7 @@
 #include "messages/MOSDPeeringOp.h"
 #include "osd/PGPeeringEvent.h"
 
-class MOSDPGNotify2 : public MOSDPeeringOp {
+class MOSDPGNotify2 final : public MOSDPeeringOp {
 private:
   static constexpr int HEAD_VERSION = 1;
   static constexpr int COMPAT_VERSION = 1;
@@ -33,7 +33,12 @@ public:
 	spgid,
 	pg_shard_t(get_source().num(), notify.from),
 	notify,
-	get_connection()->get_features()),
+#ifdef WITH_SEASTAR
+	features
+#else
+	get_connection()->get_features()
+#endif
+      ),
       true,
       new PGCreateInfo(
 	spgid,
@@ -57,7 +62,7 @@ public:
   }
 
 private:
-  ~MOSDPGNotify2() override {}
+  ~MOSDPGNotify2() final {}
 
 public:
   std::string_view get_type_name() const override {

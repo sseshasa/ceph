@@ -7,13 +7,14 @@ roles:
 tasks:
 - install:
 - ceph:
-    log-whitelist:
+    log-ignorelist:
       - overall HEALTH_
       - \(MGR_DOWN\)
       - \(PG_
       - \(OSD_
       - \(OBJECT_
       - \(OSDMAP_FLAGS\)
+      - \(POOL_APP_NOT_ENABLED\)
 - exec:
     mon.a:
       - ceph restful create-key admin

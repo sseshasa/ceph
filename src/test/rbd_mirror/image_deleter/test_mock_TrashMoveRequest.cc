@@ -9,6 +9,7 @@
 #include "librbd/TrashWatcher.h"
 #include "librbd/journal/ResetRequest.h"
 #include "librbd/mirror/GetInfoRequest.h"
+#include "librbd/mirror/ImageRemoveRequest.h"
 #include "librbd/trash/MoveRequest.h"
 #include "tools/rbd_mirror/Threads.h"
 #include "tools/rbd_mirror/image_deleter/TrashMoveRequest.h"
@@ -74,7 +75,8 @@ struct ResetRequest<MockTestImageCtx> {
                               const std::string &image_id,
                               const std::string &client_id,
                               const std::string &mirror_uuid,
-                              ContextWQ *op_work_queue, Context *on_finish) {
+                              ContextWQ *op_work_queue,
+                              Context *on_finish) {
     ceph_assert(s_instance != nullptr);
     EXPECT_EQ(librbd::Journal<>::LOCAL_MIRROR_UUID, mirror_uuid);
     s_instance->on_finish = on_finish;
@@ -103,7 +105,7 @@ struct GetInfoRequest<librbd::MockTestImageCtx> {
   Context *on_finish = nullptr;
 
   static GetInfoRequest* create(librados::IoCtx& io_ctx,
-                                ContextWQ* context_wq,
+                                librbd::asio::ContextWQ* context_wq,
                                 const std::string& image_id,
                                 cls::rbd::MirrorImage *mirror_image,
                                 PromotionState *promotion_state,
@@ -129,6 +131,37 @@ struct GetInfoRequest<librbd::MockTestImageCtx> {
 };
 
 GetInfoRequest<librbd::MockTestImageCtx>* GetInfoRequest<librbd::MockTestImageCtx>::s_instance = nullptr;
+
+template<>
+struct ImageRemoveRequest<librbd::MockTestImageCtx> {
+  static ImageRemoveRequest* s_instance;
+  std::string global_image_id;
+  std::string image_id;
+  Context* on_finish;
+
+  static ImageRemoveRequest *create(librados::IoCtx& io_ctx,
+                                    const std::string& global_image_id,
+                                    const std::string& image_id,
+                                    Context* on_finish) {
+    ceph_assert(s_instance != nullptr);
+    s_instance->global_image_id = global_image_id;
+    s_instance->image_id = image_id;
+    s_instance->on_finish = on_finish;
+    return s_instance;
+  }
+
+  ImageRemoveRequest() {
+    ceph_assert(s_instance == nullptr);
+    s_instance = this;
+  }
+  ~ImageRemoveRequest() {
+    s_instance = nullptr;
+  }
+
+  MOCK_METHOD0(send, void());
+};
+
+ImageRemoveRequest<librbd::MockTestImageCtx>* ImageRemoveRequest<librbd::MockTestImageCtx>::s_instance = nullptr;
 
 } // namespace mirror
 namespace trash {
@@ -184,6 +217,7 @@ public:
   typedef TrashMoveRequest<librbd::MockTestImageCtx> MockTrashMoveRequest;
   typedef librbd::journal::ResetRequest<librbd::MockTestImageCtx> MockJournalResetRequest;
   typedef librbd::mirror::GetInfoRequest<librbd::MockTestImageCtx> MockGetMirrorInfoRequest;
+  typedef librbd::mirror::ImageRemoveRequest<librbd::MockTestImageCtx> MockImageRemoveRequest;
   typedef librbd::trash::MoveRequest<librbd::MockTestImageCtx> MockLibrbdTrashMoveRequest;
   typedef librbd::TrashWatcher<librbd::MockTestImageCtx> MockTrashWatcher;
 
@@ -200,7 +234,8 @@ public:
     encode(image_id, bl);
 
     EXPECT_CALL(get_mock_io_ctx(m_local_io_ctx),
-                exec(RBD_MIRRORING, _, StrEq("rbd"), StrEq("mirror_image_get_image_id"), _, _, _))
+                exec(RBD_MIRRORING, _, StrEq("rbd"),
+                     StrEq("mirror_image_get_image_id"), _, _, _, _))
       .WillOnce(DoAll(WithArg<5>(Invoke([bl](bufferlist *out_bl) {
                                           *out_bl = bl;
                                         })),
@@ -258,10 +293,6 @@ public:
                 }));
   }
 
-  void expect_destroy(librbd::MockTestImageCtx& mock_image_ctx) {
-    EXPECT_CALL(mock_image_ctx, destroy());
-  }
-
   void expect_mirror_image_set(const std::string& image_id,
                                const cls::rbd::MirrorImage& mirror_image,
                                int r) {
@@ -271,15 +302,16 @@ public:
 
     EXPECT_CALL(get_mock_io_ctx(m_local_io_ctx),
                 exec(RBD_MIRRORING, _, StrEq("rbd"),
-                     StrEq("mirror_image_set"), ContentsEqual(bl), _, _))
+                     StrEq("mirror_image_set"), ContentsEqual(bl), _, _, _))
       .WillOnce(Return(r));
   }
 
-  void expect_mirror_image_remove(librados::IoCtx &ioctx, int r) {
-    EXPECT_CALL(get_mock_io_ctx(ioctx),
-                exec(StrEq("rbd_mirroring"), _, StrEq("rbd"), StrEq("mirror_image_remove"),
-                     _, _, _))
-      .WillOnce(Return(r));
+  void expect_mirror_image_remove_request(
+      MockImageRemoveRequest& mock_image_remove_request, int r) {
+    EXPECT_CALL(mock_image_remove_request, send())
+      .WillOnce(Invoke([this, &mock_image_remove_request, r]() {
+                  m_threads->work_queue->queue(mock_image_remove_request.on_finish, r);
+                }));
   }
 
   void expect_journal_reset(MockJournalResetRequest& mock_journal_reset_request,
@@ -357,10 +389,10 @@ TEST_F(TestMockImageDeleterTrashMoveRequest, SuccessJournal) {
   MockLibrbdTrashMoveRequest mock_librbd_trash_move_request;
   expect_trash_move(mock_librbd_trash_move_request, m_image_name, "image id",
                     {}, 0);
-  expect_mirror_image_remove(m_local_io_ctx, 0);
+  MockImageRemoveRequest mock_image_remove_request;
+  expect_mirror_image_remove_request(mock_image_remove_request, 0);
 
   expect_close(mock_image_ctx, 0);
-  expect_destroy(mock_image_ctx);
 
   MockTrashWatcher mock_trash_watcher;
   expect_notify_image_added(mock_trash_watcher, "image id");
@@ -399,10 +431,10 @@ TEST_F(TestMockImageDeleterTrashMoveRequest, SuccessSnapshot) {
   MockLibrbdTrashMoveRequest mock_librbd_trash_move_request;
   expect_trash_move(mock_librbd_trash_move_request, m_image_name, "image id",
                     {}, 0);
-  expect_mirror_image_remove(m_local_io_ctx, 0);
+  MockImageRemoveRequest mock_image_remove_request;
+  expect_mirror_image_remove_request(mock_image_remove_request, 0);
 
   expect_close(mock_image_ctx, 0);
-  expect_destroy(mock_image_ctx);
 
   MockTrashWatcher mock_trash_watcher;
   expect_notify_image_added(mock_trash_watcher, "image id");
@@ -579,7 +611,6 @@ TEST_F(TestMockImageDeleterTrashMoveRequest, OpenImageError) {
 
   expect_set_journal_policy(mock_image_ctx);
   expect_open(mock_image_ctx, -EINVAL);
-  expect_destroy(mock_image_ctx);
 
   C_SaferCond ctx;
   auto req = MockTrashMoveRequest::create(m_local_io_ctx, "global image id",
@@ -618,7 +649,6 @@ TEST_F(TestMockImageDeleterTrashMoveRequest, ResetJournalError) {
   expect_journal_reset(mock_journal_reset_request, -EINVAL);
 
   expect_close(mock_image_ctx, 0);
-  expect_destroy(mock_image_ctx);
 
   C_SaferCond ctx;
   auto req = MockTrashMoveRequest::create(m_local_io_ctx, "global image id",
@@ -660,7 +690,6 @@ TEST_F(TestMockImageDeleterTrashMoveRequest, AcquireLockError) {
   expect_acquire_lock(mock_image_ctx, -EINVAL);
 
   expect_close(mock_image_ctx, 0);
-  expect_destroy(mock_image_ctx);
 
   C_SaferCond ctx;
   auto req = MockTrashMoveRequest::create(m_local_io_ctx, "global image id",
@@ -706,7 +735,6 @@ TEST_F(TestMockImageDeleterTrashMoveRequest, TrashMoveError) {
                     {}, -EINVAL);
 
   expect_close(mock_image_ctx, 0);
-  expect_destroy(mock_image_ctx);
 
   C_SaferCond ctx;
   auto req = MockTrashMoveRequest::create(m_local_io_ctx, "global image id",
@@ -750,10 +778,10 @@ TEST_F(TestMockImageDeleterTrashMoveRequest, RemoveMirrorImageError) {
   MockLibrbdTrashMoveRequest mock_librbd_trash_move_request;
   expect_trash_move(mock_librbd_trash_move_request, m_image_name, "image id",
                     {}, 0);
-  expect_mirror_image_remove(m_local_io_ctx, -EINVAL);
+  MockImageRemoveRequest mock_image_remove_request;
+  expect_mirror_image_remove_request(mock_image_remove_request, -EINVAL);
 
   expect_close(mock_image_ctx, 0);
-  expect_destroy(mock_image_ctx);
 
   MockTrashWatcher mock_trash_watcher;
   expect_notify_image_added(mock_trash_watcher, "image id");
@@ -800,10 +828,10 @@ TEST_F(TestMockImageDeleterTrashMoveRequest, CloseImageError) {
   MockLibrbdTrashMoveRequest mock_librbd_trash_move_request;
   expect_trash_move(mock_librbd_trash_move_request, m_image_name, "image id",
                     {}, 0);
-  expect_mirror_image_remove(m_local_io_ctx, 0);
+  MockImageRemoveRequest mock_image_remove_request;
+  expect_mirror_image_remove_request(mock_image_remove_request, 0);
 
   expect_close(mock_image_ctx, -EINVAL);
-  expect_destroy(mock_image_ctx);
 
   MockTrashWatcher mock_trash_watcher;
   expect_notify_image_added(mock_trash_watcher, "image id");
@@ -852,9 +880,9 @@ TEST_F(TestMockImageDeleterTrashMoveRequest, DelayedDelation) {
   expect_trash_move(mock_librbd_trash_move_request, m_image_name, "image id",
                     600, 0);
 
-  expect_mirror_image_remove(m_local_io_ctx, 0);
+  MockImageRemoveRequest mock_image_remove_request;
+  expect_mirror_image_remove_request(mock_image_remove_request, 0);
   expect_close(mock_image_ctx, 0);
-  expect_destroy(mock_image_ctx);
 
   MockTrashWatcher mock_trash_watcher;
   expect_notify_image_added(mock_trash_watcher, "image id");

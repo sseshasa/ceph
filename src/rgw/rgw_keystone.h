@@ -1,24 +1,24 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef CEPH_RGW_KEYSTONE_H
-#define CEPH_RGW_KEYSTONE_H
+#pragma once
 
+#include <atomic>
+#include <string_view>
 #include <type_traits>
+#include <utility>
 
 #include <boost/optional.hpp>
-#include <boost/utility/string_ref.hpp>
 
 #include "rgw_common.h"
 #include "rgw_http_client.h"
 #include "common/ceph_mutex.h"
 #include "global/global_init.h"
 
-#include <atomic>
 
-bool rgw_is_pki_token(const string& token);
-void rgw_get_token_id(const string& token, string& token_id);
-static inline std::string rgw_get_token_id(const string& token)
+bool rgw_is_pki_token(const std::string& token);
+void rgw_get_token_id(const std::string& token, std::string& token_id);
+static inline std::string rgw_get_token_id(const std::string& token)
 {
   std::string token_id;
   rgw_get_token_id(token, token_id);
@@ -45,11 +45,11 @@ public:
   virtual ApiVersion get_api_version() const noexcept = 0;
 
   virtual std::string get_admin_token() const noexcept = 0;
-  virtual boost::string_ref get_admin_user() const noexcept = 0;
+  virtual std::string_view get_admin_user() const noexcept = 0;
   virtual std::string get_admin_password() const noexcept = 0;
-  virtual boost::string_ref get_admin_tenant() const noexcept = 0;
-  virtual boost::string_ref get_admin_project() const noexcept = 0;
-  virtual boost::string_ref get_admin_domain() const noexcept = 0;
+  virtual std::string_view get_admin_tenant() const noexcept = 0;
+  virtual std::string_view get_admin_project() const noexcept = 0;
+  virtual std::string_view get_admin_domain() const noexcept = 0;
 };
 
 class CephCtxConfig : public Config {
@@ -70,21 +70,21 @@ public:
 
   std::string get_admin_token() const noexcept override;
 
-  boost::string_ref get_admin_user() const noexcept override {
+  std::string_view get_admin_user() const noexcept override {
     return g_ceph_context->_conf->rgw_keystone_admin_user;
   }
 
   std::string get_admin_password() const noexcept override;
 
-  boost::string_ref get_admin_tenant() const noexcept override {
+  std::string_view get_admin_tenant() const noexcept override {
     return g_ceph_context->_conf->rgw_keystone_admin_tenant;
   }
 
-  boost::string_ref get_admin_project() const noexcept override {
+  std::string_view get_admin_project() const noexcept override {
     return g_ceph_context->_conf->rgw_keystone_admin_project;
   }
 
-  boost::string_ref get_admin_domain() const noexcept override {
+  std::string_view get_admin_domain() const noexcept override {
     return g_ceph_context->_conf->rgw_keystone_admin_domain;
   }
 };
@@ -98,8 +98,8 @@ public:
   class RGWKeystoneHTTPTransceiver : public RGWHTTPTransceiver {
   public:
     RGWKeystoneHTTPTransceiver(CephContext * const cct,
-                               const string& method,
-                               const string& url,
+                               const std::string& method,
+                               const std::string& url,
                                bufferlist * const token_body_bl)
       : RGWHTTPTransceiver(cct, method, url, token_body_bl,
                            cct->_conf->rgw_keystone_verify_ssl,
@@ -119,14 +119,17 @@ public:
   typedef RGWKeystoneHTTPTransceiver RGWValidateKeystoneToken;
   typedef RGWKeystoneHTTPTransceiver RGWGetKeystoneAdminToken;
 
-  static int get_admin_token(CephContext* const cct,
+  static int get_admin_token(const DoutPrefixProvider *dpp,
                              TokenCache& token_cache,
                              const Config& config,
+                             optional_yield y,
                              std::string& token);
-  static int issue_admin_token_request(CephContext* const cct,
+  static int issue_admin_token_request(const DoutPrefixProvider *dpp,
                                        const Config& config,
+                                       optional_yield y,
                                        TokenEnvelope& token);
-  static int get_keystone_barbican_token(CephContext * const cct,
+  static int get_keystone_barbican_token(const DoutPrefixProvider *dpp,
+                                         optional_yield y,
                                          std::string& token);
 };
 
@@ -135,22 +138,22 @@ class TokenEnvelope {
 public:
   class Domain {
   public:
-    string id;
-    string name;
+    std::string id;
+    std::string name;
     void decode_json(JSONObj *obj);
   };
   class Project {
   public:
     Domain domain;
-    string id;
-    string name;
+    std::string id;
+    std::string name;
     void decode_json(JSONObj *obj);
   };
 
   class Token {
   public:
     Token() : expires(0) { }
-    string id;
+    std::string id;
     time_t expires;
     Project tenant_v2;
     void decode_json(JSONObj *obj);
@@ -158,24 +161,33 @@ public:
 
   class Role {
   public:
-    string id;
-    string name;
+    Role() : is_admin(false), is_reader(false) { }
+    Role(const Role &r) {
+      id = r.id;
+      name = r.name;
+      is_admin = r.is_admin;
+      is_reader = r.is_reader;
+    }
+    std::string id;
+    std::string name;
+    bool is_admin;
+    bool is_reader;
     void decode_json(JSONObj *obj);
   };
 
   class User {
   public:
-    string id;
-    string name;
+    std::string id;
+    std::string name;
     Domain domain;
-    list<Role> roles_v2;
+    std::list<Role> roles_v2;
     void decode_json(JSONObj *obj);
   };
 
   Token token;
   Project project;
   User user;
-  list<Role> roles;
+  std::list<Role> roles;
 
   void decode_v3(JSONObj* obj);
   void decode_v2(JSONObj* obj);
@@ -184,6 +196,7 @@ public:
   /* We really need the default ctor because of the internals of TokenCache. */
   TokenEnvelope() = default;
 
+  void set_expires(time_t expires) { token.expires = expires; }
   time_t get_expires() const { return token.expires; }
   const std::string& get_domain_id() const {return project.domain.id;};
   const std::string& get_domain_name() const {return project.domain.name;};
@@ -191,22 +204,24 @@ public:
   const std::string& get_project_name() const {return project.name;};
   const std::string& get_user_id() const {return user.id;};
   const std::string& get_user_name() const {return user.name;};
-  bool has_role(const string& r) const;
+  bool has_role(const std::string& r) const;
   bool expired() const {
     const uint64_t now = ceph_clock_now().sec();
-    return now >= static_cast<uint64_t>(get_expires());
+    return std::cmp_greater_equal(now, get_expires());
   }
-  int parse(CephContext* cct,
+  int parse(const DoutPrefixProvider *dpp,
             const std::string& token_str,
             ceph::buffer::list& bl /* in */,
             ApiVersion version);
+  void update_roles(const std::vector<std::string> & admin,
+                    const std::vector<std::string> & reader);
 };
 
 
 class TokenCache {
   struct token_entry {
     TokenEnvelope token;
-    list<string>::iterator lru_iter;
+    std::list<std::string>::iterator lru_iter;
   };
 
   std::atomic<bool> down_flag = { false };
@@ -215,7 +230,9 @@ class TokenCache {
   std::string admin_token_id;
   std::string barbican_token_id;
   std::map<std::string, token_entry> tokens;
+  std::map<std::string, token_entry> service_tokens;
   std::list<std::string> tokens_lru;
+  std::list<std::string> service_tokens_lru;
 
   ceph::mutex lock = ceph::make_mutex("rgw::keystone::TokenCache");
 
@@ -245,6 +262,7 @@ public:
   }
 
   bool find(const std::string& token_id, TokenEnvelope& token);
+  bool find_service(const std::string& token_id, TokenEnvelope& token);
   boost::optional<TokenEnvelope> find(const std::string& token_id) {
     TokenEnvelope token_envlp;
     if (find(token_id, token_envlp)) {
@@ -252,17 +270,26 @@ public:
     }
     return boost::none;
   }
+  boost::optional<TokenEnvelope> find_service(const std::string& token_id) {
+    TokenEnvelope token_envlp;
+    if (find_service(token_id, token_envlp)) {
+      return token_envlp;
+    }
+    return boost::none;
+  }
   bool find_admin(TokenEnvelope& token);
   bool find_barbican(TokenEnvelope& token);
   void add(const std::string& token_id, const TokenEnvelope& token);
+  void add_service(const std::string& token_id, const TokenEnvelope& token);
   void add_admin(const TokenEnvelope& token);
   void add_barbican(const TokenEnvelope& token);
-  void invalidate(const std::string& token_id);
+  void invalidate(const DoutPrefixProvider *dpp, const std::string& token_id);
   bool going_down() const;
 private:
-  void add_locked(const std::string& token_id, const TokenEnvelope& token);
-  bool find_locked(const std::string& token_id, TokenEnvelope& token);
-
+  void add_locked(const std::string& token_id, const TokenEnvelope& token,
+                  std::map<std::string, token_entry>& tokens, std::list<std::string>& tokens_lru);
+  bool find_locked(const std::string& token_id, TokenEnvelope& token,
+                   std::map<std::string, token_entry>& tokens, std::list<std::string>& tokens_lru);
 };
 
 
@@ -315,5 +342,3 @@ public:
 
 }; /* namespace keystone */
 }; /* namespace rgw */
-
-#endif

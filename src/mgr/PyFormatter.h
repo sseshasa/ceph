@@ -87,6 +87,7 @@ public:
     stack.pop();
   }
   void dump_bool(std::string_view name, bool b) override;
+  void dump_null(std::string_view name) override;
   void dump_unsigned(std::string_view name, uint64_t u) override;
   void dump_int(std::string_view name, int64_t u) override;
   void dump_float(std::string_view name, double d) override;
@@ -139,6 +140,24 @@ private:
 
   std::list<std::shared_ptr<PendingStream> > pending_streams;
 
+};
+
+class PyJSONFormatter : public JSONFormatter {
+public:
+  PyObject *get();
+  PyJSONFormatter (const PyJSONFormatter&) = default;
+  PyJSONFormatter(bool pretty=false, bool is_array=false) : JSONFormatter(pretty) {
+    if(is_array) {
+      open_array_section("");
+    } else {
+      open_object_section("");
+    }
+}
+
+private:
+  using json_formatter = JSONFormatter;
+  template <class T> void add_value(std::string_view name, T val);
+  void add_value(std::string_view name, std::string_view val, bool quoted);
 };
 
 #endif

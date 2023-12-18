@@ -5,11 +5,11 @@
 #include "SetHeadRequest.h"
 #include "SnapshotCreateRequest.h"
 #include "common/errno.h"
-#include "common/WorkQueue.h"
 #include "librbd/ExclusiveLock.h"
 #include "librbd/ObjectMap.h"
 #include "librbd/Operations.h"
 #include "librbd/Utils.h"
+#include "librbd/asio/ContextWQ.h"
 #include "osdc/Striper.h"
 
 #define dout_subsys ceph_subsys_rbd
@@ -48,7 +48,8 @@ SnapshotCopyRequest<I>::SnapshotCopyRequest(I *src_image_ctx,
                                             librados::snap_t src_snap_id_start,
                                             librados::snap_t src_snap_id_end,
                                             librados::snap_t dst_snap_id_start,
-                                            bool flatten, ContextWQ *work_queue,
+                                            bool flatten,
+                                            asio::ContextWQ *work_queue,
                                             SnapSeqs *snap_seqs,
                                             Context *on_finish)
   : RefCountedObject(dst_image_ctx->cct), m_src_image_ctx(src_image_ctx),
@@ -75,6 +76,15 @@ SnapshotCopyRequest<I>::SnapshotCopyRequest(I *src_image_ctx,
     m_src_snap_ids.erase(m_src_snap_ids.upper_bound(m_src_snap_id_end),
                          m_src_snap_ids.end());
   }
+
+  ldout(m_cct, 20) << "src_image_id=" << m_src_image_ctx->id
+                   << ", dst_image_id=" << m_dst_image_ctx->id
+                   << ", src_snap_id_start=" << m_src_snap_id_start
+                   << ", src_snap_id_end=" << m_src_snap_id_end
+                   << ", dst_snap_id_start=" << m_dst_snap_id_start
+                   << ", src_snap_ids=" << m_src_snap_ids
+                   << ", dst_snap_ids=" << m_dst_snap_ids
+		   << dendl;
 }
 
 template <typename I>
@@ -256,8 +266,7 @@ void SnapshotCopyRequest<I>::send_snap_remove() {
       return;
     }
 
-    if (boost::get<cls::rbd::UserSnapshotNamespace>(&snap_namespace) ==
-          nullptr) {
+    if (!std::holds_alternative<cls::rbd::UserSnapshotNamespace>(snap_namespace)) {
       continue;
     }
 
@@ -346,8 +355,7 @@ void SnapshotCopyRequest<I>::send_snap_create() {
 
     if (m_snap_seqs.find(src_snap_id) == m_snap_seqs.end()) {
       // the source snapshot is not in our mapping table, ...
-      if (boost::get<cls::rbd::UserSnapshotNamespace>(&snap_namespace) !=
-            nullptr) {
+      if (std::holds_alternative<cls::rbd::UserSnapshotNamespace>(snap_namespace)) {
         // ... create it since it's a user snapshot
         break;
       } else if (src_snap_id == m_src_snap_id_end) {

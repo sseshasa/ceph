@@ -4,11 +4,7 @@
 
 .. graphviz::
 
-  /*
-   * Rough outline of object store module dependencies
-   */
-
-  digraph object_store {
+   digraph object_store {
     size="7,7";
     node [color=lightblue2, style=filled, fontname="Serif"];
 
@@ -56,15 +52,11 @@
     "PrimaryLogPG" -> "ObjectStore"
     "PrimaryLogPG" -> "OSDMap"
 
-    "ObjectStore" -> "FileStore"
     "ObjectStore" -> "BlueStore"
 
     "BlueStore" -> "rocksdb"
-
-    "FileStore" -> "xfs"
-    "FileStore" -> "btrfs"
-    "FileStore" -> "ext4"
   }
 
 
 .. todo:: write more here
+

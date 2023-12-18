@@ -3,8 +3,8 @@
 
 #pragma once
 
-#include "rgw/rgw_service.h"
-#include "rgw/rgw_sync_module.h"
+#include "rgw_service.h"
+#include "rgw_sync_module.h"
 
 class RGWSI_Zone;
 
@@ -28,7 +28,7 @@ public:
   }
 
   void init(RGWSI_Zone *zone_svc);
-  int do_start() override;
+  int do_start(optional_yield, const DoutPrefixProvider *dpp) override;
 
   RGWSyncModuleInstanceRef& get_sync_module() { return sync_module; }
 };

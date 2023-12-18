@@ -86,7 +86,8 @@ The zone placement configuration can be queried with:
                       }
                   },
                   "data_extra_pool": "default.rgw.buckets.non-ec",
-                  "index_type": 0
+                  "index_type": 0,
+                  "inline_data": true
               }
           }
       ],
@@ -122,6 +123,18 @@ Then provide the zone placement info for that target:
         --data-pool default.rgw.temporary.data \
         --index-pool default.rgw.temporary.index \
         --data-extra-pool default.rgw.temporary.non-ec
+
+.. note:: With default placement target settings, RGW stores an object's first data chunk in the RADOS "head" object along
+          with xattr metadata. The `--placement-inline-data=false` flag may be passed with the `zone placement add` or
+          `zone placement modify` commands to change this behavior for new objects stored on the target.
+          When data is stored inline (default), it may provide an advantage for read/write workloads since the first chunk of
+          an object's data can be retrieved/stored in a single librados call along with object metadata. On the other hand, a
+          target that does not store data inline can provide a performance benefit for RGW client delete requests when
+          the BlueStore DB is located on faster storage than bucket data since it eliminates the need to access
+          slower devices synchronously while processing the client request. In that case, data associated with the deleted
+          objects is removed asynchronously in the background by garbage collection.                                          
+
+.. _adding_a_storage_class:
 
 Adding a Storage Class
 ----------------------
@@ -239,8 +252,8 @@ name in an HTTP header with the request. The S3 protocol uses the
 ``X-Amz-Storage-Class`` header, while the Swift protocol uses the
 ``X-Object-Storage-Class`` header.
 
-When using AWS S3 SDKs such as python boto3, it is important that the non-default
-storage class will be called as one on of the AWS S3 allowed storage classes, or else the SDK
+When using AWS S3 SDKs such as ``boto3``, it is important that non-default
+storage class names match those provided by AWS S3, or else the SDK
 will drop the request and raise an exception.
 
 S3 Object Lifecycle Management can then be used to move object data between

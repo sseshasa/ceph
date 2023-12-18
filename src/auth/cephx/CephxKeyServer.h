@@ -21,15 +21,16 @@
 #include "include/common_fwd.h"
 
 struct KeyServerData {
-  version_t version;
+  version_t version{0};
 
   /* for each entity */
   std::map<EntityName, EntityAuth> secrets;
-  KeyRing *extra_secrets;
+  KeyRing *extra_secrets = nullptr;
 
   /* for each service type */
-  version_t rotating_ver;
+  version_t rotating_ver{0};
   std::map<uint32_t, RotatingSecrets> rotating_secrets;
+  KeyServerData() {}
 
   explicit KeyServerData(KeyRing *extra)
     : version(0),
@@ -70,7 +71,17 @@ struct KeyServerData {
     decode(rotating_ver, iter);
     decode(rotating_secrets, iter);
   }
-
+  void dump(ceph::Formatter *f) const {
+    f->dump_unsigned("version", version);
+    f->dump_unsigned("rotating_version", rotating_ver);
+    encode_json("secrets", secrets, f);
+    encode_json("rotating_secrets", rotating_secrets, f);
+  }
+  static void generate_test_instances(std::list<KeyServerData*>& ls) {
+    ls.push_back(new KeyServerData);
+    ls.push_back(new KeyServerData);
+    ls.back()->version = 1;
+  }
   bool contains(const EntityName& name) const {
     return (secrets.find(name) != secrets.end());
   }
@@ -94,9 +105,8 @@ struct KeyServerData {
   }
 
   bool get_service_secret(CephContext *cct, uint32_t service_id,
-			  ExpiringCryptoKey& secret, uint64_t& secret_id) const;
-  bool get_service_secret(CephContext *cct, uint32_t service_id,
-			  CryptoKey& secret, uint64_t& secret_id) const;
+			  CryptoKey& secret, uint64_t& secret_id,
+			  double& ttl) const;
   bool get_service_secret(CephContext *cct, uint32_t service_id,
 			  uint64_t secret_id, CryptoKey& secret) const;
   bool get_auth(const EntityName& name, EntityAuth& auth) const;
@@ -160,8 +170,21 @@ struct KeyServerData {
 	decode(auth, bl);
       }
     }
+    void dump(ceph::Formatter *f) const {
+      f->dump_unsigned("op", op);
+      f->dump_object("name", name);
+      f->dump_object("auth", auth);
+    }
+    static void generate_test_instances(std::list<Incremental*>& ls) {
+      ls.push_back(new Incremental);
+      ls.back()->op = AUTH_INC_DEL;
+      ls.push_back(new Incremental);
+      ls.back()->op = AUTH_INC_ADD;
+      ls.push_back(new Incremental);
+      ls.back()->op = AUTH_INC_SET_ROTATING;
+    }
   };
-
+  
   void apply_incremental(Incremental& inc) {
     switch (inc.op) {
     case AUTH_INC_ADD:
@@ -189,44 +212,52 @@ WRITE_CLASS_ENCODER(KeyServerData)
 WRITE_CLASS_ENCODER(KeyServerData::Incremental)
 
 
-
-
 class KeyServer : public KeyStore {
   CephContext *cct;
   KeyServerData data;
+  std::map<EntityName, CryptoKey> used_pending_keys;
   mutable ceph::mutex lock;
 
-  int _rotate_secret(uint32_t service_id);
-  bool _check_rotating_secrets();
+  int _rotate_secret(uint32_t service_id, KeyServerData &pending_data);
   void _dump_rotating_secrets();
   int _build_session_auth_info(uint32_t service_id, 
 			       const AuthTicket& parent_ticket,
-			       CephXSessionAuthInfo& info);
+			       CephXSessionAuthInfo& info,
+			       double ttl);
   bool _get_service_caps(const EntityName& name, uint32_t service_id,
 	AuthCapsInfo& caps) const;
 public:
+  KeyServer() : lock{ceph::make_mutex("KeyServer::lock")} {}
   KeyServer(CephContext *cct_, KeyRing *extra_secrets);
+  KeyServer& operator=(const KeyServer&) = delete;
   bool generate_secret(CryptoKey& secret);
 
   bool get_secret(const EntityName& name, CryptoKey& secret) const override;
   bool get_auth(const EntityName& name, EntityAuth& auth) const;
   bool get_caps(const EntityName& name, const std::string& type, AuthCapsInfo& caps) const;
   bool get_active_rotating_secret(const EntityName& name, CryptoKey& secret) const;
+
+  void note_used_pending_key(const EntityName& name, const CryptoKey& key);
+  void clear_used_pending_keys();
+  std::map<EntityName,CryptoKey> get_used_pending_keys();
+
   int start_server();
   void rotate_timeout(double timeout);
 
+  void dump();
+  
   int build_session_auth_info(uint32_t service_id,
 			      const AuthTicket& parent_ticket,
 			      CephXSessionAuthInfo& info);
   int build_session_auth_info(uint32_t service_id,
 			      const AuthTicket& parent_ticket,
-			      CephXSessionAuthInfo& info,
-			      CryptoKey& service_secret,
-			      uint64_t secret_id);
+			      const CryptoKey& service_secret,
+			      uint64_t secret_id,
+			      CephXSessionAuthInfo& info);
 
   /* get current secret for specific service type */
-  bool get_service_secret(uint32_t service_id, CryptoKey& service_key, 
-			  uint64_t& secret_id) const;
+  bool get_service_secret(uint32_t service_id, CryptoKey& secret,
+			  uint64_t& secret_id, double& ttl) const;
   bool get_service_secret(uint32_t service_id, uint64_t secret_id,
 			  CryptoKey& secret) const override;
 
@@ -241,6 +272,8 @@ public:
     using ceph::decode;
     decode(data, bl);
   }
+  void dump(ceph::Formatter *f) const;
+  static void generate_test_instances(std::list<KeyServer*>& ls);
   bool contains(const EntityName& name) const;
   int encode_secrets(ceph::Formatter *f, std::stringstream *ds) const;
   void encode_formatted(std::string label, ceph::Formatter *f, ceph::buffer::list &bl);
@@ -297,7 +330,7 @@ public:
     }
   }
 
-  bool updated_rotating(ceph::buffer::list& rotating_bl, version_t& rotating_ver);
+  bool prepare_rotating_update(ceph::buffer::list& rotating_bl);
 
   bool get_rotating_encrypted(const EntityName& name, ceph::buffer::list& enc_bl) const;
 

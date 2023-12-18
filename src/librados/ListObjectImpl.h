@@ -11,11 +11,11 @@
  * Foundation.  See file COPYING.
  *
  */
-#include <string>
 
 #ifndef CEPH_LIBRADOS_LISTOBJECTIMPL_H
 #define CEPH_LIBRADOS_LISTOBJECTIMPL_H
 
+#include <string>
 #include <include/rados/librados.hpp>
 
 namespace librados {
@@ -28,12 +28,12 @@ struct ListObjectImpl {
   ListObjectImpl(std::string n, std::string o, std::string l):
       nspace(n), oid(o), locator(l) {}
 
+  auto operator<=>(const ListObjectImpl&) const = default;
+
   const std::string& get_nspace() const { return nspace; }
   const std::string& get_oid() const { return oid; }
   const std::string& get_locator() const { return locator; }
 };
-WRITE_EQ_OPERATORS_3(ListObjectImpl, nspace, oid, locator)
-WRITE_CMP_OPERATORS_3(ListObjectImpl, nspace, oid, locator)
 inline std::ostream& operator<<(std::ostream& out, const struct ListObjectImpl& lop) {
   out << (lop.nspace.size() ? lop.nspace + "/" : "") << lop.oid
       << (lop.locator.size() ? "@" + lop.locator : "");

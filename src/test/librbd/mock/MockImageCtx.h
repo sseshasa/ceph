@@ -12,10 +12,10 @@
 #include "test/librbd/mock/MockJournal.h"
 #include "test/librbd/mock/MockObjectMap.h"
 #include "test/librbd/mock/MockOperations.h"
+#include "test/librbd/mock/MockPluginRegistry.h"
 #include "test/librbd/mock/MockReadahead.h"
-#include "test/librbd/mock/io/MockImageRequestWQ.h"
+#include "test/librbd/mock/io/MockImageDispatcher.h"
 #include "test/librbd/mock/io/MockObjectDispatcher.h"
-#include "common/RWLock.h"
 #include "common/WorkQueue.h"
 #include "common/zipkin_trace.h"
 #include "librbd/ImageCtx.h"
@@ -26,9 +26,13 @@ class MockSafeTimer;
 
 namespace librbd {
 
-namespace cache { class MockImageCache; }
 namespace operation {
 template <typename> class ResizeRequest;
+}
+
+
+namespace crypto {
+  class MockEncryptionFormat;
 }
 
 struct MockImageCtx {
@@ -40,95 +44,11 @@ struct MockImageCtx {
     ceph_assert(s_instance != nullptr);
     return s_instance;
   }
-  MOCK_METHOD0(destroy, void());
 
-  MockImageCtx(librbd::ImageCtx &image_ctx)
-    : image_ctx(&image_ctx),
-      cct(image_ctx.cct),
-      perfcounter(image_ctx.perfcounter),
-      snap_namespace(image_ctx.snap_namespace),
-      snap_name(image_ctx.snap_name),
-      snap_id(image_ctx.snap_id),
-      snap_exists(image_ctx.snap_exists),
-      snapc(image_ctx.snapc),
-      snaps(image_ctx.snaps),
-      snap_info(image_ctx.snap_info),
-      snap_ids(image_ctx.snap_ids),
-      old_format(image_ctx.old_format),
-      read_only(image_ctx.read_only),
-      read_only_flags(image_ctx.read_only_flags),
-      read_only_mask(image_ctx.read_only_mask),
-      clone_copy_on_read(image_ctx.clone_copy_on_read),
-      lockers(image_ctx.lockers),
-      exclusive_locked(image_ctx.exclusive_locked),
-      lock_tag(image_ctx.lock_tag),
-      owner_lock(image_ctx.owner_lock),
-      image_lock(image_ctx.image_lock),
-      timestamp_lock(image_ctx.timestamp_lock),
-      async_ops_lock(image_ctx.async_ops_lock),
-      copyup_list_lock(image_ctx.copyup_list_lock),
-      order(image_ctx.order),
-      size(image_ctx.size),
-      features(image_ctx.features),
-      flags(image_ctx.flags),
-      op_features(image_ctx.op_features),
-      operations_disabled(image_ctx.operations_disabled),
-      stripe_unit(image_ctx.stripe_unit),
-      stripe_count(image_ctx.stripe_count),
-      object_prefix(image_ctx.object_prefix),
-      header_oid(image_ctx.header_oid),
-      id(image_ctx.id),
-      name(image_ctx.name),
-      parent_md(image_ctx.parent_md),
-      format_string(image_ctx.format_string),
-      group_spec(image_ctx.group_spec),
-      layout(image_ctx.layout),
-      io_work_queue(new io::MockImageRequestWQ()),
-      io_object_dispatcher(new io::MockObjectDispatcher()),
-      op_work_queue(new MockContextWQ()),
-      readahead_max_bytes(image_ctx.readahead_max_bytes),
-      event_socket(image_ctx.event_socket),
-      parent(NULL), operations(new MockOperations()),
-      state(new MockImageState()),
-      image_watcher(NULL), object_map(NULL),
-      exclusive_lock(NULL), journal(NULL),
-      trace_endpoint(image_ctx.trace_endpoint),
-      sparse_read_threshold_bytes(image_ctx.sparse_read_threshold_bytes),
-      discard_granularity_bytes(image_ctx.discard_granularity_bytes),
-      mirroring_replay_delay(image_ctx.mirroring_replay_delay),
-      non_blocking_aio(image_ctx.non_blocking_aio),
-      blkin_trace_all(image_ctx.blkin_trace_all),
-      enable_alloc_hint(image_ctx.enable_alloc_hint),
-      alloc_hint_flags(image_ctx.alloc_hint_flags),
-      read_flags(image_ctx.read_flags),
-      ignore_migrating(image_ctx.ignore_migrating),
-      enable_sparse_copyup(image_ctx.enable_sparse_copyup),
-      mtime_update_interval(image_ctx.mtime_update_interval),
-      atime_update_interval(image_ctx.atime_update_interval),
-      cache(image_ctx.cache),
-      config(image_ctx.config)
-  {
-    md_ctx.dup(image_ctx.md_ctx);
-    data_ctx.dup(image_ctx.data_ctx);
+  MockImageCtx(librbd::ImageCtx &image_ctx);
+  virtual ~MockImageCtx();
 
-    if (image_ctx.image_watcher != NULL) {
-      image_watcher = new MockImageWatcher();
-    }
-  }
-
-  ~MockImageCtx() {
-    wait_for_async_requests();
-    image_ctx->md_ctx.aio_flush();
-    image_ctx->data_ctx.aio_flush();
-    image_ctx->op_work_queue->drain();
-    delete state;
-    delete operations;
-    delete image_watcher;
-    delete op_work_queue;
-    delete io_work_queue;
-    delete io_object_dispatcher;
-  }
-
+  void wait_for_async_ops();
   void wait_for_async_requests() {
     async_ops_lock.lock();
     if (async_requests.empty()) {
@@ -149,6 +69,7 @@ struct MockImageCtx {
   MOCK_CONST_METHOD0(get_object_size, uint64_t());
   MOCK_CONST_METHOD0(get_current_size, uint64_t());
   MOCK_CONST_METHOD1(get_image_size, uint64_t(librados::snap_t));
+  MOCK_CONST_METHOD1(get_area_size, uint64_t(io::ImageArea));
   MOCK_CONST_METHOD1(get_object_count, uint64_t(librados::snap_t));
   MOCK_CONST_METHOD1(get_read_flags, int(librados::snap_t));
   MOCK_CONST_METHOD2(get_flags, int(librados::snap_t in_snap_id,
@@ -164,9 +85,12 @@ struct MockImageCtx {
                                           cls::rbd::ParentImageSpec *pspec));
   MOCK_CONST_METHOD1(get_parent_info, const ParentImageInfo*(librados::snap_t));
   MOCK_CONST_METHOD2(get_parent_overlap, int(librados::snap_t in_snap_id,
-                                             uint64_t *overlap));
-  MOCK_CONST_METHOD2(prune_parent_extents, uint64_t(vector<pair<uint64_t,uint64_t> >& ,
-                                                    uint64_t));
+                                             uint64_t *raw_overlap));
+  MOCK_CONST_METHOD2(reduce_parent_overlap,
+                     std::pair<uint64_t, io::ImageArea>(uint64_t, bool));
+  MOCK_CONST_METHOD4(prune_parent_extents,
+                     uint64_t(std::vector<std::pair<uint64_t, uint64_t>>&,
+                              io::ImageArea, uint64_t, bool));
 
   MOCK_CONST_METHOD2(is_snap_protected, int(librados::snap_t in_snap_id,
                                             bool *is_protected));
@@ -208,6 +132,7 @@ struct MockImageCtx {
   MOCK_METHOD1(notify_update, void(Context *));
 
   MOCK_CONST_METHOD0(get_exclusive_lock_policy, exclusive_lock::Policy*());
+  MOCK_METHOD1(set_exclusive_lock_policy, void(exclusive_lock::Policy*));
   MOCK_CONST_METHOD0(get_journal_policy, journal::Policy*());
   MOCK_METHOD1(set_journal_policy, void(journal::Policy*));
 
@@ -216,6 +141,11 @@ struct MockImageCtx {
 
   MOCK_CONST_METHOD0(get_stripe_count, uint64_t());
   MOCK_CONST_METHOD0(get_stripe_period, uint64_t());
+
+  MOCK_METHOD0(rebuild_data_io_context, void());
+  IOContext get_data_io_context();
+  IOContext duplicate_data_io_context();
+  uint64_t get_data_offset() const;
 
   static void set_timer_instance(MockSafeTimer *timer, ceph::mutex *timer_lock);
   static void get_timer_instance(CephContext *cct, MockSafeTimer **timer,
@@ -246,6 +176,9 @@ struct MockImageCtx {
            rados::cls::lock::locker_info_t> lockers;
   bool exclusive_locked;
   std::string lock_tag;
+
+  std::shared_ptr<AsioEngine> asio_engine;
+  neorados::RADOS& rados_api;
 
   librados::IoCtx md_ctx;
   librados::IoCtx data_ctx;
@@ -281,17 +214,18 @@ struct MockImageCtx {
 
   std::map<uint64_t, io::CopyupRequest<MockImageCtx>*> copyup_list;
 
-  io::MockImageRequestWQ *io_work_queue;
+  io::MockImageDispatcher *io_image_dispatcher;
   io::MockObjectDispatcher *io_object_dispatcher;
   MockContextWQ *op_work_queue;
 
-  cache::MockImageCache *image_cache = nullptr;
+  MockPluginRegistry* plugin_registry;
 
   MockReadahead readahead;
   uint64_t readahead_max_bytes;
 
   EventSocket &event_socket;
 
+  MockImageCtx *child = nullptr;
   MockImageCtx *parent;
   MockOperations *operations;
   MockImageState *state;
@@ -302,6 +236,8 @@ struct MockImageCtx {
   MockJournal *journal;
 
   ZTracer::Endpoint trace_endpoint;
+
+  std::unique_ptr<crypto::MockEncryptionFormat> encryption_format;
 
   uint64_t sparse_read_threshold_bytes;
   uint32_t discard_granularity_bytes;
@@ -318,6 +254,7 @@ struct MockImageCtx {
   bool cache;
 
   ConfigProxy config;
+  std::set<std::string> config_overrides;
 };
 
 } // namespace librbd

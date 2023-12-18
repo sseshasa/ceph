@@ -1,23 +1,97 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
 
 import time
+from typing import Any, Dict, Iterable, List, Optional, Union, cast
+
 import cherrypy
 
-from . import ApiController, RESTController, Endpoint, ReadPermission, Task, UiApiController
 from .. import mgr
 from ..security import Scope
 from ..services.ceph_service import CephService
-from ..services.rbd import RbdConfiguration
 from ..services.exception import handle_send_command_error
-from ..tools import str_to_bool, TaskManager
+from ..services.rbd import RbdConfiguration
+from ..tools import TaskManager, str_to_bool
+from . import APIDoc, APIRouter, Endpoint, EndpointDoc, ReadPermission, \
+    RESTController, Task, UIRouter
+
+POOL_SCHEMA = ([{
+    "pool": (int, "pool id"),
+    "pool_name": (str, "pool name"),
+    "flags": (int, ""),
+    "flags_names": (str, "flags name"),
+    "type": (str, "type of pool"),
+    "size": (int, "pool size"),
+    "min_size": (int, ""),
+    "crush_rule": (str, ""),
+    "object_hash": (int, ""),
+    "pg_autoscale_mode": (str, ""),
+    "pg_num": (int, ""),
+    "pg_placement_num": (int, ""),
+    "pg_placement_num_target": (int, ""),
+    "pg_num_target": (int, ""),
+    "pg_num_pending": (int, ""),
+    "last_pg_merge_meta": ({
+        "ready_epoch": (int, ""),
+        "last_epoch_started": (int, ""),
+        "last_epoch_clean": (int, ""),
+        "source_pgid": (str, ""),
+        "source_version": (str, ""),
+        "target_version": (str, ""),
+    }, ""),
+    "auid": (int, ""),
+    "snap_mode": (str, ""),
+    "snap_seq": (int, ""),
+    "snap_epoch": (int, ""),
+    "pool_snaps": ([str], ""),
+    "quota_max_bytes": (int, ""),
+    "quota_max_objects": (int, ""),
+    "tiers": ([str], ""),
+    "tier_of": (int, ""),
+    "read_tier": (int, ""),
+    "write_tier": (int, ""),
+    "cache_mode": (str, ""),
+    "target_max_bytes": (int, ""),
+    "target_max_objects": (int, ""),
+    "cache_target_dirty_ratio_micro": (int, ""),
+    "cache_target_dirty_high_ratio_micro": (int, ""),
+    "cache_target_full_ratio_micro": (int, ""),
+    "cache_min_flush_age": (int, ""),
+    "cache_min_evict_age": (int, ""),
+    "erasure_code_profile": (str, ""),
+    "hit_set_params": ({
+        "type": (str, "")
+    }, ""),
+    "hit_set_period": (int, ""),
+    "hit_set_count": (int, ""),
+    "use_gmt_hitset": (bool, ""),
+    "min_read_recency_for_promote": (int, ""),
+    "min_write_recency_for_promote": (int, ""),
+    "hit_set_grade_decay_rate": (int, ""),
+    "hit_set_search_last_n": (int, ""),
+    "grade_table": ([str], ""),
+    "stripe_width": (int, ""),
+    "expected_num_objects": (int, ""),
+    "fast_read": (bool, ""),
+    "options": ({
+        "pg_num_min": (int, ""),
+        "pg_num_max": (int, "")
+    }, ""),
+    "application_metadata": ([str], ""),
+    "create_time": (str, ""),
+    "last_change": (str, ""),
+    "last_force_op_resend": (str, ""),
+    "last_force_op_resend_prenautilus": (str, ""),
+    "last_force_op_resend_preluminous": (str, ""),
+    "removed_snaps": ([str], "")
+}])
 
 
 def pool_task(name, metadata, wait_for=2.0):
     return Task("pool/{}".format(name), metadata, wait_for)
 
 
-@ApiController('/pool', Scope.POOL)
+@APIRouter('/pool', Scope.POOL)
+@APIDoc("Get pool details by pool name", "Pool")
 class Pool(RESTController):
 
     @staticmethod
@@ -27,7 +101,7 @@ class Pool(RESTController):
 
         crush_rules = {r['rule_id']: r["rule_name"] for r in mgr.get('osd_map_crush')['rules']}
 
-        res = {}
+        res: Dict[Union[int, str], Union[str, List[Any]]] = {}
         for attr in attrs:
             if attr not in pool:
                 continue
@@ -56,20 +130,24 @@ class Pool(RESTController):
 
         return [cls._serialize_pool(pool, attrs) for pool in pools]
 
+    @EndpointDoc("Display Pool List",
+                 parameters={
+                     'attrs': (str, 'Pool Attributes'),
+                     'stats': (bool, 'Pool Stats')
+                 },
+                 responses={200: POOL_SCHEMA})
     def list(self, attrs=None, stats=False):
         return self._pool_list(attrs, stats)
 
     @classmethod
-    def _get(cls, pool_name, attrs=None, stats=False):
-        # type: (str, str, bool) -> dict
+    def _get(cls, pool_name: str, attrs: Optional[str] = None, stats: bool = False) -> dict:
         pools = cls._pool_list(attrs, stats)
         pool = [p for p in pools if p['pool_name'] == pool_name]
         if not pool:
             raise cherrypy.NotFound('No such pool')
         return pool[0]
 
-    def get(self, pool_name, attrs=None, stats=False):
-        # type: (str, str, bool) -> dict
+    def get(self, pool_name: str, attrs: Optional[str] = None, stats: bool = False) -> dict:
         pool = self._get(pool_name, attrs, stats)
         pool['configuration'] = RbdConfiguration(pool_name).list()
         return pool
@@ -101,7 +179,6 @@ class Pool(RESTController):
         self._wait_for_pgs(pool)
 
     def _set_pool_values(self, pool, application_metadata, flags, update_existing, kwargs):
-        update_name = False
         current_pool = self._get(pool)
         if update_existing and kwargs.get('compression_mode') == 'unset':
             self._prepare_compression_removal(current_pool.get('options'), kwargs)
@@ -109,29 +186,32 @@ class Pool(RESTController):
             CephService.send_command('mon', 'osd pool set', pool=pool, var='allow_ec_overwrites',
                                      val='true')
         if application_metadata is not None:
-            def set_app(what, app):
-                CephService.send_command('mon', 'osd pool application ' + what, pool=pool, app=app,
-                                         yes_i_really_mean_it=True)
+            def set_app(app_metadata, set_app_what):
+                for app in app_metadata:
+                    CephService.send_command('mon', 'osd pool application ' + set_app_what,
+                                             pool=pool, app=app, yes_i_really_mean_it=True)
+
             if update_existing:
                 original_app_metadata = set(
-                    current_pool.get('application_metadata'))
+                    cast(Iterable[Any], current_pool.get('application_metadata')))
             else:
                 original_app_metadata = set()
 
-            for app in original_app_metadata - set(application_metadata):
-                set_app('disable', app)
-            for app in set(application_metadata) - original_app_metadata:
-                set_app('enable', app)
-
-        def set_key(key, value):
-            CephService.send_command('mon', 'osd pool set', pool=pool, var=key, val=str(value))
+            set_app(original_app_metadata - set(application_metadata), 'disable')
+            set_app(set(application_metadata) - original_app_metadata, 'enable')
 
         quotas = {}
         quotas['max_objects'] = kwargs.pop('quota_max_objects', None)
         quotas['max_bytes'] = kwargs.pop('quota_max_bytes', None)
         self._set_quotas(pool, quotas)
+        self._set_pool_keys(pool, kwargs)
 
-        for key, value in kwargs.items():
+    def _set_pool_keys(self, pool, pool_items):
+        def set_key(key, value):
+            CephService.send_command('mon', 'osd pool set', pool=pool, var=key, val=str(value))
+
+        update_name = False
+        for key, value in pool_items.items():
             if key == 'pool':
                 update_name = True
                 destpool = value
@@ -206,7 +286,8 @@ class Pool(RESTController):
         return RbdConfiguration(pool_name).list()
 
 
-@UiApiController('/pool', Scope.POOL)
+@UIRouter('/pool', Scope.POOL)
+@APIDoc("Dashboard UI helper function; not part of the public API", "PoolUi")
 class PoolUi(Pool):
     @Endpoint()
     @ReadPermission
@@ -230,8 +311,8 @@ class PoolUi(Pool):
                     if o['name'] == conf_name][0]
 
         profiles = CephService.get_erasure_code_profiles()
-        used_rules = {}
-        used_profiles = {}
+        used_rules: Dict[str, List[str]] = {}
+        used_profiles: Dict[str, List[str]] = {}
         pool_names = []
         for p in self._pool_list():
             name = p['pool_name']
@@ -262,4 +343,11 @@ class PoolUi(Pool):
             "erasure_code_profiles": profiles,
             "used_rules": used_rules,
             "used_profiles": used_profiles,
+            'nodes': mgr.get('osd_map_tree')['nodes']
         }
+
+
+class RBDPool(Pool):
+    def create(self, pool='rbd-mirror'):  # pylint: disable=arguments-differ
+        super().create(pool, pg_num=1, pool_type='replicated',
+                       rule_name='replicated_rule', application_metadata=['rbd'])

@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 
-import { configureTestBed } from '../../../testing/unit-test-helper';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { PgCategory } from './pg-category.model';
 import { PgCategoryService } from './pg-category.service';
 
@@ -12,7 +12,7 @@ describe('PgCategoryService', () => {
   });
 
   beforeEach(() => {
-    service = TestBed.get(PgCategoryService);
+    service = TestBed.inject(PgCategoryService);
   });
 
   it('should be created', () => {
@@ -35,6 +35,7 @@ describe('PgCategoryService', () => {
 
     it(PgCategory.CATEGORY_WORKING, () => {
       testMethod('clean+scrubbing', PgCategory.CATEGORY_WORKING);
+      testMethod('active+clean+snaptrim_wait', PgCategory.CATEGORY_WORKING);
       testMethod(
         '  8 active+clean+scrubbing+deep, 255 active+clean  ',
         PgCategory.CATEGORY_WORKING

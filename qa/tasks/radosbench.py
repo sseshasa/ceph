@@ -7,7 +7,6 @@ import logging
 from teuthology.orchestra import run
 from teuthology import misc as teuthology
 
-import six
 
 log = logging.getLogger(__name__)
 
@@ -54,11 +53,12 @@ def task(ctx, config):
     runtype = config.get('type', 'write')
 
     create_pool = config.get('create_pool', True)
-    for role in config.get('clients', ['client.0']):
-        assert isinstance(role, six.string_types)
-        PREFIX = 'client.'
-        assert role.startswith(PREFIX)
-        id_ = role[len(PREFIX):]
+    for role in config.get(
+            'clients',
+            list(map(lambda x: 'client.' + x,
+                     teuthology.all_roles_of_type(ctx.cluster, 'client')))):
+        assert isinstance(role, str)
+        (_, id_) = role.split('.', 1)
         (remote,) = ctx.cluster.only(role).remotes.keys()
 
         if config.get('ec_pool', False):
@@ -83,15 +83,13 @@ def task(ctx, config):
             else:
                 pool = manager.create_pool_with_unique_name(erasure_code_profile_name=profile_name)
 
-        size = config.get('size', 65536)
         concurrency = config.get('concurrency', 16)
         osize = config.get('objectsize', 65536)
-        sizeargs = ['-b', str(size)]
-        if osize != 0 and osize != size:
-            # only use -O if this varies from size. kludgey workaround the
-            # fact that -O was -o in older releases.
-            sizeargs.extend(['-O', str(osize)])
-
+        if osize == 0:
+            objectsize = []
+        else:
+            objectsize = ['--object-size', str(osize)]
+        size = ['-b', str(config.get('size', 65536))]
         # If doing a reading run then populate data
         if runtype != "write":
             proc = remote.run(
@@ -102,9 +100,9 @@ def task(ctx, config):
                               '{tdir}/archive/coverage',
                               'rados',
                               '--no-log-to-stderr',
-                              '--name', role]
-                              + sizeargs +
-                              ['-t', str(concurrency)] +
+                              '--name', role] +
+                              ['-t', str(concurrency)]
+                              + size + objectsize +
                               ['-p' , pool,
                           'bench', str(60), "write", "--no-cleanup"
                           ]).format(tdir=testdir),
@@ -112,7 +110,8 @@ def task(ctx, config):
             logger=log.getChild('radosbench.{id}'.format(id=id_)),
             wait=True
             )
-            sizeargs = []
+            size = []
+            objectsize = []
 
         proc = remote.run(
             args=[
@@ -123,7 +122,7 @@ def task(ctx, config):
                           'rados',
 			  '--no-log-to-stderr',
                           '--name', role]
-                          + sizeargs +
+                          + size + objectsize +
                           ['-p' , pool,
                           'bench', str(config.get('time', 360)), runtype,
                           ] + write_to_omap + cleanup).format(tdir=testdir),

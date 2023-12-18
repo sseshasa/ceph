@@ -18,7 +18,7 @@
 
 #pragma once
 
-#include "rgw/rgw_service.h"
+#include "rgw_service.h"
 
 #include "svc_cls.h"
 #include "svc_meta_be.h"
@@ -29,7 +29,7 @@
 using RGWSI_MBOTP_Handler_Module  = RGWSI_MBSObj_Handler_Module;
 using RGWSI_MetaBackend_Handler_OTP  = RGWSI_MetaBackend_Handler_SObj;
 
-using otp_devices_list_t = list<rados::cls::otp::otp_info_t>;
+using otp_devices_list_t = std::list<rados::cls::otp::otp_info_t>;
 
 struct RGWSI_MBOTP_GetParams : public RGWSI_MetaBackend::GetParams {
   otp_devices_list_t *pdevices{nullptr};
@@ -48,8 +48,6 @@ class RGWSI_MetaBackend_OTP : public RGWSI_MetaBackend_SObj
 public:
   struct Context_OTP : public RGWSI_MetaBackend_SObj::Context_SObj {
     otp_devices_list_t devices;
-
-    Context_OTP(RGWSI_SysObj*_sysobj_svc) : RGWSI_MetaBackend_SObj::Context_SObj(_sysobj_svc, nullptr) {}
   };
 
   RGWSI_MetaBackend_OTP(CephContext *cct);
@@ -59,7 +57,7 @@ public:
     return MDBE_OTP;
   }
 
-  static string get_meta_key(const rgw_user& user);
+  static std::string get_meta_key(const rgw_user& user);
 
   void init(RGWSI_SysObj *_sysobj_svc,
             RGWSI_MDLog *_mdlog_svc,
@@ -74,12 +72,15 @@ public:
   int call_with_get_params(ceph::real_time *pmtime, std::function<int(RGWSI_MetaBackend::GetParams&)> cb) override;
 
   int get_entry(RGWSI_MetaBackend::Context *ctx,
-                const string& key,
+                const std::string& key,
                 RGWSI_MetaBackend::GetParams& _params,
                 RGWObjVersionTracker *objv_tracker,
-                optional_yield y);
-  int put_entry(RGWSI_MetaBackend::Context *ctx,
-                const string& key,
+                optional_yield y,
+                const DoutPrefixProvider *dpp,
+                bool get_raw_attrs=false);
+  int put_entry(const DoutPrefixProvider *dpp, 
+                RGWSI_MetaBackend::Context *ctx,
+                const std::string& key,
                 RGWSI_MetaBackend::PutParams& _params,
                 RGWObjVersionTracker *objv_tracker,
                 optional_yield y);

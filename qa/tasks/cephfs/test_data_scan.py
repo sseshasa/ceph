@@ -8,12 +8,13 @@ import logging
 import os
 import time
 import traceback
+import stat
 
-from io import BytesIO
+from io import BytesIO, StringIO
 from collections import namedtuple, defaultdict
 from textwrap import dedent
 
-from teuthology.orchestra.run import CommandFailedError
+from teuthology.exceptions import CommandFailedError
 from tasks.cephfs.cephfs_test_case import CephFSTestCase, for_teuthology
 
 log = logging.getLogger(__name__)
@@ -43,6 +44,24 @@ class Workload(object):
                 ValidationError(e, traceback.format_exc(3))
             )
 
+    def assert_not_equal(self, a, b):
+        try:
+            if a == b:
+                raise AssertionError("{0} == {1}".format(a, b))
+        except AssertionError as e:
+            self._errors.append(
+                ValidationError(e, traceback.format_exc(3))
+            )
+
+    def assert_true(self, a):
+        try:
+            if not a:
+                raise AssertionError("{0} is not true".format(a))
+        except AssertionError as e:
+            self._errors.append(
+                ValidationError(e, traceback.format_exc(3))
+            )
+
     def write(self):
         """
         Write the workload files to the mount
@@ -62,9 +81,8 @@ class Workload(object):
         default just wipe everything in the metadata pool
         """
         # Delete every object in the metadata pool
-        objects = self._filesystem.rados(["ls"]).split("\n")
-        for o in objects:
-            self._filesystem.rados(["rm", o])
+        pool = self._filesystem.get_metadata_pool_name()
+        self._filesystem.rados(["purge", pool, '--yes-i-really-really-mean-it'])
 
     def flush(self):
         """
@@ -72,6 +90,16 @@ class Workload(object):
         """
         self._filesystem.mds_asok(["flush", "journal"])
 
+    def scrub(self):
+        """
+        Called as a final step post recovery before verification. Right now, this
+        doesn't bother if errors are found in scrub - just that the MDS doesn't
+        crash and burn during scrub.
+        """
+        out_json = self._filesystem.run_scrub(["start", "/", "repair,recursive"])
+        self.assert_not_equal(out_json, None)
+        self.assert_equal(out_json["return_code"], 0)
+        self.assert_equal(self._filesystem.wait_until_scrub_complete(tag=out_json["scrub_tag"]), True)
 
 class SimpleWorkload(Workload):
     """
@@ -83,9 +111,33 @@ class SimpleWorkload(Workload):
         self._initial_state = self._mount.stat("subdir/sixmegs")
 
     def validate(self):
-        self._mount.run_shell(["ls", "subdir"])
-        st = self._mount.stat("subdir/sixmegs")
+        self._mount.run_shell(["sudo", "ls", "subdir"], omit_sudo=False)
+        st = self._mount.stat("subdir/sixmegs", sudo=True)
         self.assert_equal(st['st_size'], self._initial_state['st_size'])
+        return self._errors
+
+
+class SymlinkWorkload(Workload):
+    """
+    Symlink file, check that it gets recovered as symlink
+    """
+    def write(self):
+        self._mount.run_shell(["mkdir", "symdir"])
+        self._mount.write_n_mb("symdir/onemegs", 1)
+        self._mount.run_shell(["ln", "-s", "onemegs", "symdir/symlink_onemegs"])
+        self._mount.run_shell(["ln", "-s", "symdir/onemegs", "symlink1_onemegs"])
+
+    def validate(self):
+        self._mount.run_shell(["sudo", "ls", "symdir"], omit_sudo=False)
+        st = self._mount.lstat("symdir/symlink_onemegs")
+        self.assert_true(stat.S_ISLNK(st['st_mode']))
+        target = self._mount.readlink("symdir/symlink_onemegs")
+        self.assert_equal(target, "onemegs")
+
+        st = self._mount.lstat("symlink1_onemegs")
+        self.assert_true(stat.S_ISLNK(st['st_mode']))
+        target = self._mount.readlink("symlink1_onemegs")
+        self.assert_equal(target, "symdir/onemegs")
         return self._errors
 
 
@@ -105,8 +157,8 @@ class MovedFile(Workload):
         pass
 
     def validate(self):
-        self.assert_equal(self._mount.ls(), ["subdir_alpha"])
-        st = self._mount.stat("subdir_alpha/sixmegs")
+        self.assert_equal(self._mount.ls(sudo=True), ["subdir_alpha"])
+        st = self._mount.stat("subdir_alpha/sixmegs", sudo=True)
         self.assert_equal(st['st_size'], self._initial_state['st_size'])
         return self._errors
 
@@ -125,24 +177,29 @@ class BacktracelessFile(Workload):
         ino_name = "%x" % self._initial_state["st_ino"]
 
         # The inode should be linked into lost+found because we had no path for it
-        self.assert_equal(self._mount.ls(), ["lost+found"])
-        self.assert_equal(self._mount.ls("lost+found"), [ino_name])
-        st = self._mount.stat("lost+found/{ino_name}".format(ino_name=ino_name))
+        self.assert_equal(self._mount.ls(sudo=True), ["lost+found"])
+        self.assert_equal(self._mount.ls("lost+found", sudo=True), [ino_name])
+        st = self._mount.stat(f"lost+found/{ino_name}", sudo=True)
 
         # We might not have got the name or path, but we should still get the size
         self.assert_equal(st['st_size'], self._initial_state['st_size'])
+
+        # remove the entry from lost+found directory
+        self._mount.run_shell(["sudo", "rm", "-f", f'lost+found/{ino_name}'], omit_sudo=False)
+        self.assert_equal(self._mount.ls("lost+found", sudo=True), [])
 
         return self._errors
 
 
 class StripedStashedLayout(Workload):
-    def __init__(self, fs, m):
+    def __init__(self, fs, m, pool=None):
         super(StripedStashedLayout, self).__init__(fs, m)
 
         # Nice small stripes so we can quickly do our writes+validates
         self.sc = 4
         self.ss = 65536
         self.os = 262144
+        self.pool = pool and pool or self._filesystem.get_data_pool_name()
 
         self.interesting_sizes = [
             # Exactly stripe_count objects will exist
@@ -163,8 +220,7 @@ class StripedStashedLayout(Workload):
 
         self._mount.setfattr("./stripey", "ceph.dir.layout",
              "stripe_unit={ss} stripe_count={sc} object_size={os} pool={pool}".format(
-                 ss=self.ss, os=self.os, sc=self.sc,
-                 pool=self._filesystem.get_data_pool_name()
+                 ss=self.ss, os=self.os, sc=self.sc, pool=self.pool
              ))
 
         # Write files, then flush metadata so that its layout gets written into an xattr
@@ -201,7 +257,7 @@ class StripedStashedLayout(Workload):
         # The unflushed file should have been recovered into lost+found without
         # the correct layout: read back junk
         ino_name = "%x" % self._initial_state["unflushed_ino"]
-        self.assert_equal(self._mount.ls("lost+found"), [ino_name])
+        self.assert_equal(self._mount.ls("lost+found", sudo=True), [ino_name])
         try:
             self._mount.validate_test_pattern(os.path.join("lost+found", ino_name), 1024 * 512)
         except CommandFailedError:
@@ -260,8 +316,8 @@ class MovedDir(Workload):
         self.assert_equal(len(root_files), 1)
         self.assert_equal(root_files[0] in ["grandfather", "grandmother"], True)
         winner = root_files[0]
-        st_opf = self._mount.stat("{0}/parent/orig_pos_file".format(winner))
-        st_npf = self._mount.stat("{0}/parent/new_pos_file".format(winner))
+        st_opf = self._mount.stat(f"{winner}/parent/orig_pos_file", sudo=True)
+        st_npf = self._mount.stat(f"{winner}/parent/new_pos_file", sudo=True)
 
         self.assert_equal(st_opf['st_size'], self._initial_state[0]['st_size'])
         self.assert_equal(st_npf['st_size'], self._initial_state[1]['st_size'])
@@ -279,7 +335,8 @@ class MissingZerothObject(Workload):
         self._filesystem.rados(["rm", zeroth_id], pool=self._filesystem.get_data_pool_name())
 
     def validate(self):
-        st = self._mount.stat("lost+found/{0:x}".format(self._initial_state['st_ino']))
+        ino = self._initial_state['st_ino']
+        st = self._mount.stat(f"lost+found/{ino:x}", sudo=True)
         self.assert_equal(st['st_size'], self._initial_state['st_size'])
 
 
@@ -296,12 +353,11 @@ class NonDefaultLayout(Workload):
 
     def validate(self):
         # Check we got the layout reconstructed properly
-        object_size = int(self._mount.getfattr(
-            "./datafile", "ceph.file.layout.object_size"))
+        object_size = int(self._mount.getfattr("./datafile", "ceph.file.layout.object_size", sudo=True))
         self.assert_equal(object_size, 8388608)
 
         # Check we got the file size reconstructed properly
-        st = self._mount.stat("datafile")
+        st = self._mount.stat("datafile", sudo=True)
         self.assert_equal(st['st_size'], self._initial_state['st_size'])
 
 
@@ -328,8 +384,7 @@ class TestDataScan(CephFSTestCase):
         workload.flush()
 
         # Stop the MDS
-        self.fs.mds_stop()
-        self.fs.mds_fail()
+        self.fs.fail()
 
         # After recovery, we need the MDS to not be strict about stats (in production these options
         # are off by default, but in QA we need to explicitly disable them)
@@ -341,10 +396,9 @@ class TestDataScan(CephFSTestCase):
 
         # Reset the MDS map in case multiple ranks were in play: recovery procedure
         # only understands how to rebuild metadata under rank 0
-        self.fs.mon_manager.raw_cluster_cmd('fs', 'reset', self.fs.name,
-                '--yes-i-really-mean-it')
+        self.fs.reset()
 
-        self.fs.mds_restart()
+        self.fs.set_joinable() # redundant with reset
 
         def get_state(mds_id):
             info = self.mds_cluster.get_mds_info(mds_id)
@@ -369,11 +423,12 @@ class TestDataScan(CephFSTestCase):
 
         self.fs.journal_tool(["journal", "reset", "--force"], 0)
         self.fs.data_scan(["init"])
-        self.fs.data_scan(["scan_extents", self.fs.get_data_pool_name()], worker_count=workers)
-        self.fs.data_scan(["scan_inodes", self.fs.get_data_pool_name()], worker_count=workers)
+        self.fs.data_scan(["scan_extents"], worker_count=workers)
+        self.fs.data_scan(["scan_inodes"], worker_count=workers)
+        self.fs.data_scan(["scan_links"])
 
         # Mark the MDS repaired
-        self.fs.mon_manager.raw_cluster_cmd('mds', 'repaired', '0')
+        self.run_ceph_cmd('mds', 'repaired', '0')
 
         # Start the MDS
         self.fs.mds_restart()
@@ -382,6 +437,10 @@ class TestDataScan(CephFSTestCase):
 
         # Mount a client
         self.mount_a.mount_wait()
+
+        # run scrub as it is recommended post recovery for most
+        # (if not all) recovery mechanisms.
+        workload.scrub()
 
         # See that the files are present and correct
         errors = workload.validate()
@@ -396,6 +455,9 @@ class TestDataScan(CephFSTestCase):
 
     def test_rebuild_simple(self):
         self._rebuild_metadata(SimpleWorkload(self.fs, self.mount_a))
+
+    def test_rebuild_symlink(self):
+        self._rebuild_metadata(SymlinkWorkload(self.fs, self.mount_a))
 
     def test_rebuild_moved_file(self):
         self._rebuild_metadata(MovedFile(self.fs, self.mount_a))
@@ -416,9 +478,9 @@ class TestDataScan(CephFSTestCase):
         self._rebuild_metadata(StripedStashedLayout(self.fs, self.mount_a))
 
     def _dirfrag_keys(self, object_id):
-        keys_str = self.fs.rados(["listomapkeys", object_id])
+        keys_str = self.fs.radosmo(["listomapkeys", object_id], stdout=StringIO())
         if keys_str:
-            return keys_str.split("\n")
+            return keys_str.strip().split("\n")
         else:
             return []
 
@@ -459,8 +521,7 @@ class TestDataScan(CephFSTestCase):
         # Flush journal and stop MDS
         self.mount_a.umount_wait()
         self.fs.mds_asok(["flush", "journal"], mds_id)
-        self.fs.mds_stop()
-        self.fs.mds_fail()
+        self.fs.fail()
 
         # Pick a dentry and wipe out its key
         # Because I did a 1 bit split, I know one frag will be named <inode>.01000000
@@ -469,10 +530,10 @@ class TestDataScan(CephFSTestCase):
         victim_key = keys[7]  # arbitrary choice
         log.info("victim_key={0}".format(victim_key))
         victim_dentry = victim_key.split("_head")[0]
-        self.fs.rados(["rmomapkey", frag_obj_id, victim_key])
+        self.fs.radosm(["rmomapkey", frag_obj_id, victim_key])
 
         # Start filesystem back up, observe that the file appears to be gone in an `ls`
-        self.fs.mds_restart()
+        self.fs.set_joinable()
         self.fs.wait_for_daemons()
         self.mount_a.mount_wait()
         files = self.mount_a.run_shell(["ls", "subdir/"]).stdout.getvalue().strip().split("\n")
@@ -480,22 +541,23 @@ class TestDataScan(CephFSTestCase):
 
         # Stop the filesystem
         self.mount_a.umount_wait()
-        self.fs.mds_stop()
-        self.fs.mds_fail()
+        self.fs.fail()
 
         # Run data-scan, observe that it inserts our dentry back into the correct fragment
         # by checking the omap now has the dentry's key again
-        self.fs.data_scan(["scan_extents", self.fs.get_data_pool_name()])
-        self.fs.data_scan(["scan_inodes", self.fs.get_data_pool_name()])
+        self.fs.data_scan(["scan_extents"])
+        self.fs.data_scan(["scan_inodes"])
         self.fs.data_scan(["scan_links"])
         self.assertIn(victim_key, self._dirfrag_keys(frag_obj_id))
 
         # Start the filesystem and check that the dentry we deleted is now once again visible
         # and points to the correct file data.
-        self.fs.mds_restart()
+        self.fs.set_joinable()
         self.fs.wait_for_daemons()
         self.mount_a.mount_wait()
-        out = self.mount_a.run_shell(["cat", "subdir/{0}".format(victim_dentry)]).stdout.getvalue().strip()
+        self.mount_a.run_shell(["ls", "-l", "subdir/"]) # debugging
+        # Use sudo because cephfs-data-scan will reinsert the dentry with root ownership, it can't know the real owner.
+        out = self.mount_a.run_shell_payload(f"sudo cat subdir/{victim_dentry}", omit_sudo=False).stdout.getvalue().strip()
         self.assertEqual(out, victim_dentry)
 
         # Finally, close the loop by checking our injected dentry survives a merge
@@ -509,8 +571,10 @@ class TestDataScan(CephFSTestCase):
 
         # run scrub to update and make sure rstat.rbytes info in subdir inode and dirfrag
         # are matched
-        out_json = self.fs.rank_tell(["scrub", "start", "/subdir", "repair", "recursive"])
+        out_json = self.fs.run_scrub(["start", "/subdir", "repair,recursive"])
         self.assertNotEqual(out_json, None)
+        self.assertEqual(out_json["return_code"], 0)
+        self.assertEqual(self.fs.wait_until_scrub_complete(tag=out_json["scrub_tag"]), True)
 
         # Remove the whole 'sudbdir' directory
         self.mount_a.run_shell(["rm", "-rf", "subdir/"])
@@ -539,16 +603,16 @@ class TestDataScan(CephFSTestCase):
             file_path = "mydir/myfile_{0}".format(i)
             ino = self.mount_a.path_to_ino(file_path)
             obj = "{0:x}.{1:08x}".format(ino, 0)
-            pgid = json.loads(self.fs.mon_manager.raw_cluster_cmd(
+            pgid = json.loads(self.get_ceph_cmd_stdout(
                 "osd", "map", self.fs.get_data_pool_name(), obj,
                 "--format=json-pretty"
             ))['pgid']
             pgs_to_files[pgid].append(file_path)
             log.info("{0}: {1}".format(file_path, pgid))
 
-        pg_count = self.fs.pgs_per_fs_pool
+        pg_count = self.fs.get_pool_pg_num(self.fs.get_data_pool_name())
         for pg_n in range(0, pg_count):
-            pg_str = "{0}.{1}".format(self.fs.get_data_pool_id(), pg_n)
+            pg_str = "{0}.{1:x}".format(self.fs.get_data_pool_id(), pg_n)
             out = self.fs.data_scan(["pg_files", "mydir", pg_str])
             lines = [l for l in out.split("\n") if l]
             log.info("{0}: {1}".format(pg_str, lines))
@@ -577,23 +641,21 @@ class TestDataScan(CephFSTestCase):
         # introduce duplicated primary link
         file1_key = "file1_head"
         self.assertIn(file1_key, dirfrag1_keys)
-        file1_omap_data = self.fs.rados(["getomapval", dirfrag1_oid, file1_key, '-'],
-                                        stdout_data=BytesIO())
-        self.fs.rados(["setomapval", dirfrag2_oid, file1_key], stdin_data=file1_omap_data)
+        file1_omap_data = self.fs.radosmo(["getomapval", dirfrag1_oid, file1_key, '-'])
+        self.fs.radosm(["setomapval", dirfrag2_oid, file1_key], stdin=BytesIO(file1_omap_data))
         self.assertIn(file1_key, self._dirfrag_keys(dirfrag2_oid))
 
         # remove a remote link, make inode link count incorrect
         link1_key = 'link1_head'
         self.assertIn(link1_key, dirfrag1_keys)
-        self.fs.rados(["rmomapkey", dirfrag1_oid, link1_key])
+        self.fs.radosm(["rmomapkey", dirfrag1_oid, link1_key])
 
         # increase good primary link's version
         self.mount_a.run_shell(["touch", "testdir1/file1"])
         self.mount_a.umount_wait()
 
         self.fs.mds_asok(["flush", "journal"], mds_id)
-        self.fs.mds_stop()
-        self.fs.mds_fail()
+        self.fs.fail()
 
         # repair linkage errors
         self.fs.data_scan(["scan_links"])
@@ -601,7 +663,7 @@ class TestDataScan(CephFSTestCase):
         # primary link in testdir2 was deleted?
         self.assertNotIn(file1_key, self._dirfrag_keys(dirfrag2_oid))
 
-        self.fs.mds_restart()
+        self.fs.set_joinable()
         self.fs.wait_for_daemons()
 
         self.mount_a.mount_wait()
@@ -609,6 +671,11 @@ class TestDataScan(CephFSTestCase):
         # link count was adjusted?
         file1_nlink = self.mount_a.path_to_nlink("testdir1/file1")
         self.assertEqual(file1_nlink, 2)
+
+        out_json = self.fs.run_scrub(["start", "/testdir1", "repair,recursive"])
+        self.assertNotEqual(out_json, None)
+        self.assertEqual(out_json["return_code"], 0)
+        self.assertEqual(self.fs.wait_until_scrub_complete(tag=out_json["scrub_tag"]), True)
 
     def test_rebuild_inotable(self):
         """
@@ -640,10 +707,10 @@ class TestDataScan(CephFSTestCase):
 
         self.fs.mds_asok(["flush", "journal"], mds0_id)
         self.fs.mds_asok(["flush", "journal"], mds1_id)
-        self.mds_cluster.mds_stop()
+        self.fs.fail()
 
-        self.fs.rados(["rm", "mds0_inotable"])
-        self.fs.rados(["rm", "mds1_inotable"])
+        self.fs.radosm(["rm", "mds0_inotable"])
+        self.fs.radosm(["rm", "mds1_inotable"])
 
         self.fs.data_scan(["scan_links", "--filesystem", self.fs.name])
 
@@ -654,6 +721,14 @@ class TestDataScan(CephFSTestCase):
         mds1_inotable = json.loads(self.fs.table_tool([self.fs.name + ":1", "show", "inode"]))
         self.assertGreaterEqual(
             mds1_inotable['1']['data']['inotable']['free'][0]['start'], file_ino)
+
+        self.fs.set_joinable()
+        self.fs.wait_for_daemons()
+
+        out_json = self.fs.run_scrub(["start", "/dir1", "repair,recursive"])
+        self.assertNotEqual(out_json, None)
+        self.assertEqual(out_json["return_code"], 0)
+        self.assertEqual(self.fs.wait_until_scrub_complete(tag=out_json["scrub_tag"]), True)
 
     def test_rebuild_snaptable(self):
         """
@@ -679,7 +754,7 @@ class TestDataScan(CephFSTestCase):
         for item in old_snaptable['snapserver']['snaps']:
             del item['stamp']
 
-        self.fs.rados(["rm", "mds_snaptable"])
+        self.fs.radosm(["rm", "mds_snaptable"])
         self.fs.data_scan(["scan_links", "--filesystem", self.fs.name])
 
         new_snaptable = json.loads(self.fs.table_tool([self.fs.name + ":0", "show", "snap"]))
@@ -689,3 +764,33 @@ class TestDataScan(CephFSTestCase):
             new_snaptable['snapserver']['last_snap'], old_snaptable['snapserver']['last_snap'])
         self.assertEqual(
             new_snaptable['snapserver']['snaps'], old_snaptable['snapserver']['snaps'])
+
+        out_json = self.fs.run_scrub(["start", "/dir1", "repair,recursive"])
+        self.assertNotEqual(out_json, None)
+        self.assertEqual(out_json["return_code"], 0)
+        self.assertEqual(self.fs.wait_until_scrub_complete(tag=out_json["scrub_tag"]), True)
+
+    def _prepare_extra_data_pool(self, set_root_layout=True):
+        extra_data_pool_name = self.fs.get_data_pool_name() + '_extra'
+        self.fs.add_data_pool(extra_data_pool_name)
+        if set_root_layout:
+            self.mount_a.setfattr(".", "ceph.dir.layout.pool",
+                                  extra_data_pool_name)
+        return extra_data_pool_name
+
+    def test_extra_data_pool_rebuild_simple(self):
+        self._prepare_extra_data_pool()
+        self._rebuild_metadata(SimpleWorkload(self.fs, self.mount_a))
+
+    def test_extra_data_pool_rebuild_few_files(self):
+        self._prepare_extra_data_pool()
+        self._rebuild_metadata(ManyFilesWorkload(self.fs, self.mount_a, 5), workers=1)
+
+    @for_teuthology
+    def test_extra_data_pool_rebuild_many_files_many_workers(self):
+        self._prepare_extra_data_pool()
+        self._rebuild_metadata(ManyFilesWorkload(self.fs, self.mount_a, 25), workers=7)
+
+    def test_extra_data_pool_stashed_layout(self):
+        pool_name = self._prepare_extra_data_pool(False)
+        self._rebuild_metadata(StripedStashedLayout(self.fs, self.mount_a, pool_name))

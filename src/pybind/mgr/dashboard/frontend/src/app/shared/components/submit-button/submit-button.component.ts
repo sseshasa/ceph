@@ -1,8 +1,9 @@
 import { Component, ElementRef, EventEmitter, Input, OnInit, Output } from '@angular/core';
-import { AbstractControl, FormGroup, FormGroupDirective, NgForm } from '@angular/forms';
-import { Icons } from '../../../shared/enum/icons.enum';
+import { AbstractControl, UntypedFormGroup, FormGroupDirective, NgForm } from '@angular/forms';
 
-import * as _ from 'lodash';
+import _ from 'lodash';
+
+import { Icons } from '~/app/shared/enum/icons.enum';
 
 /**
  * This component will render a submit button with the given label.
@@ -29,7 +30,7 @@ import * as _ from 'lodash';
 })
 export class SubmitButtonComponent implements OnInit {
   @Input()
-  form: FormGroup | NgForm;
+  form: UntypedFormGroup | NgForm;
 
   @Input()
   type = 'submit';
@@ -41,6 +42,9 @@ export class SubmitButtonComponent implements OnInit {
   @Input()
   btnClass: string;
 
+  @Input()
+  ariaLabel: string;
+
   @Output()
   submitAction = new EventEmitter();
 
@@ -50,7 +54,7 @@ export class SubmitButtonComponent implements OnInit {
   constructor(private elRef: ElementRef) {}
 
   ngOnInit() {
-    this.form.statusChanges.subscribe(() => {
+    this.form?.statusChanges.subscribe(() => {
       if (_.has(this.form.errors, 'cdSubmitButton')) {
         this.loading = false;
         _.unset(this.form.errors, 'cdSubmitButton');
@@ -70,7 +74,7 @@ export class SubmitButtonComponent implements OnInit {
       (<FormGroupDirective>this.form).onSubmit($event);
     }
 
-    if (this.form.invalid) {
+    if (this.form?.invalid) {
       this.focusInvalid();
       return;
     }

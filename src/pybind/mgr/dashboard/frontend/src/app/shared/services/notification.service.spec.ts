@@ -1,10 +1,10 @@
+import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { fakeAsync, TestBed, tick } from '@angular/core/testing';
 
-import * as _ from 'lodash';
+import _ from 'lodash';
 import { ToastrService } from 'ngx-toastr';
 
-import { HttpClientTestingModule } from '@angular/common/http/testing';
-import { configureTestBed, i18nProviders } from '../../../testing/unit-test-helper';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { RbdService } from '../api/rbd.service';
 import { NotificationType } from '../enum/notification-type.enum';
 import { CdNotificationConfig } from '../models/cd-notification';
@@ -27,14 +27,13 @@ describe('NotificationService', () => {
       TaskMessageService,
       { provide: ToastrService, useValue: toastFakeService },
       { provide: CdDatePipe, useValue: { transform: (d: any) => d } },
-      i18nProviders,
       RbdService
     ],
     imports: [HttpClientTestingModule]
   });
 
   beforeEach(() => {
-    service = TestBed.get(NotificationService);
+    service = TestBed.inject(NotificationService);
     service.removeAll();
   });
 
@@ -233,7 +232,7 @@ describe('NotificationService', () => {
       spyOn(global, 'Date').and.returnValue(baseTime);
       spyOn(window, 'setTimeout').and.callFake((fn) => fn());
 
-      toastr = TestBed.get(ToastrService);
+      toastr = TestBed.inject(ToastrService);
       // spyOn needs to know the methods before spying and can't read the array for clarification
       ['error', 'info', 'success'].forEach((method: 'error' | 'info' | 'success') =>
         spyOn(toastr, method).and.stub()
@@ -244,7 +243,7 @@ describe('NotificationService', () => {
       service.show(NotificationType.info, 'Some info');
       expect(toastr.info).toHaveBeenCalledWith(
         `<small class="date">${time}</small>` +
-          '<i class="float-right custom-icon ceph-icon" title="Ceph"></i>',
+          '<i class="float-end custom-icon ceph-icon" title="Ceph"></i>',
         'Some info',
         undefined
       );
@@ -258,7 +257,7 @@ describe('NotificationService', () => {
       expect(toastr.error).toHaveBeenCalledWith(
         'Some operation failed<br>' +
           `<small class="date">${time}</small>` +
-          '<i class="float-right custom-icon ceph-icon" title="Ceph"></i>',
+          '<i class="float-end custom-icon ceph-icon" title="Ceph"></i>',
         'Some error',
         undefined
       );
@@ -277,7 +276,7 @@ describe('NotificationService', () => {
       expect(toastr.success).toHaveBeenCalledWith(
         'Some alert resolved<br>' +
           `<small class="date">${time}</small>` +
-          '<i class="float-right custom-icon prometheus-icon" title="Prometheus"></i>',
+          '<i class="float-end custom-icon prometheus-icon" title="Prometheus"></i>',
         'Alert resolved',
         undefined
       );

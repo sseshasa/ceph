@@ -6,12 +6,12 @@
 #include "OpenImageRequest.h"
 #include "common/debug.h"
 #include "common/errno.h"
-#include "common/WorkQueue.h"
 #include "cls/rbd/cls_rbd_client.h"
 #include "librbd/ImageCtx.h"
 #include "librbd/ImageState.h"
 #include "librbd/internal.h"
 #include "librbd/Utils.h"
+#include "librbd/asio/ContextWQ.h"
 #include "librbd/image/CreateRequest.h"
 #include "librbd/image/CloneRequest.h"
 #include "tools/rbd_mirror/PoolMetaCache.h"
@@ -404,8 +404,7 @@ template <typename I>
 void CreateImageRequest<I>::populate_image_options(
     librbd::ImageOptions* image_options) {
   image_options->set(RBD_IMAGE_OPTION_FEATURES,
-                     (m_remote_image_ctx->features &
-                        ~RBD_FEATURES_IMPLICIT_ENABLE));
+                     m_remote_image_ctx->features);
   image_options->set(RBD_IMAGE_OPTION_ORDER, m_remote_image_ctx->order);
   image_options->set(RBD_IMAGE_OPTION_STRIPE_UNIT,
                      m_remote_image_ctx->stripe_unit);

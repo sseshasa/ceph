@@ -16,7 +16,7 @@
 #include <boost/spirit/include/qi_uint.hpp>
 #include <boost/spirit/include/qi.hpp>
 #include <boost/fusion/include/std_pair.hpp>
-#include <boost/spirit/include/phoenix.hpp>
+#include <boost/phoenix.hpp>
 #include <boost/fusion/adapted/struct/adapt_struct.hpp>
 #include <boost/fusion/include/adapt_struct.hpp>
 #include <boost/algorithm/string/predicate.hpp>
@@ -31,6 +31,11 @@
 #include <regex>
 
 #include "include/ceph_assert.h"
+
+#define dout_subsys ceph_subsys_mon
+
+#undef dout_prefix
+#define dout_prefix *_dout << "MonCap "
 
 using std::list;
 using std::map;
@@ -139,7 +144,8 @@ BOOST_FUSION_ADAPT_STRUCT(MonCapGrant,
 			  (std::string, command)
 			  (kvmap, command_args)
 			  (mon_rwxa_t, allow)
-			  (std::string, network))
+			  (std::string, network)
+                          (std::string, fs_name))
 
 BOOST_FUSION_ADAPT_STRUCT(StringConstraint,
                           (StringConstraint::MatchType, match_type)
@@ -182,6 +188,14 @@ void MonCapGrant::expand_profile(const EntityName& name) const
     profile_grants.push_back(MonCapGrant("mon", MON_CAP_R));
     profile_grants.push_back(MonCapGrant("pg", MON_CAP_R | MON_CAP_W));
     profile_grants.push_back(MonCapGrant("log", MON_CAP_W));
+    StringConstraint constraint(StringConstraint::MATCH_TYPE_REGEX,
+                                string("osd_mclock_max_capacity_iops_(hdd|ssd)"));
+    profile_grants.push_back(MonCapGrant("config set", "name", constraint));
+    constraint = StringConstraint(StringConstraint::MATCH_TYPE_REGEX,
+                                  string("^(osd_max_backfills|") +
+                                  string("osd_recovery_max_active(.*)|") +
+                                  string("osd_mclock_scheduler_(.*))"));
+    profile_grants.push_back(MonCapGrant("config rm", "name", constraint));
   }
   if (profile == "mds") {
     profile_grants.push_back(MonCapGrant("mds", MON_CAP_ALL));
@@ -189,7 +203,8 @@ void MonCapGrant::expand_profile(const EntityName& name) const
     profile_grants.push_back(MonCapGrant("osd", MON_CAP_R));
     // This command grant is checked explicitly in MRemoveSnaps handling
     profile_grants.push_back(MonCapGrant("osd pool rmsnap"));
-    profile_grants.push_back(MonCapGrant("osd blacklist"));
+    profile_grants.push_back(MonCapGrant("osd blocklist"));
+    profile_grants.push_back(MonCapGrant("osd blacklist")); // for compat
     profile_grants.push_back(MonCapGrant("log", MON_CAP_W));
   }
   if (profile == "mgr") {
@@ -199,7 +214,7 @@ void MonCapGrant::expand_profile(const EntityName& name) const
     profile_grants.push_back(MonCapGrant("mds", MON_CAP_R | MON_CAP_W));
     profile_grants.push_back(MonCapGrant("fs", MON_CAP_R | MON_CAP_W));
     profile_grants.push_back(MonCapGrant("osd", MON_CAP_R | MON_CAP_W));
-    profile_grants.push_back(MonCapGrant("auth", MON_CAP_R | MON_CAP_X));
+    profile_grants.push_back(MonCapGrant("auth", MON_CAP_R | MON_CAP_W | MON_CAP_X));
     profile_grants.push_back(MonCapGrant("config-key", MON_CAP_R | MON_CAP_W));
     profile_grants.push_back(MonCapGrant("config", MON_CAP_R | MON_CAP_W));
     // cephadm orchestrator provisions new daemon keys and updates caps
@@ -208,6 +223,9 @@ void MonCapGrant::expand_profile(const EntityName& name) const
     profile_grants.push_back(MonCapGrant("auth rm"));
     // tell commands (this is a bit of a kludge)
     profile_grants.push_back(MonCapGrant("smart"));
+    // allow the Telemetry module to gather heap and mempool metrics
+    profile_grants.push_back(MonCapGrant("heap"));
+    profile_grants.push_back(MonCapGrant("dump_mempools"));
   }
   if (profile == "osd" || profile == "mds" || profile == "mon" ||
       profile == "mgr") {
@@ -288,12 +306,30 @@ void MonCapGrant::expand_profile(const EntityName& name) const
     profile_grants.push_back(MonCapGrant("osd", MON_CAP_R));
     profile_grants.push_back(MonCapGrant("pg", MON_CAP_R));
   }
+  if (profile == "simple-rados-client-with-blocklist") {
+    profile_grants.push_back(MonCapGrant("mon", MON_CAP_R));
+    profile_grants.push_back(MonCapGrant("osd", MON_CAP_R));
+    profile_grants.push_back(MonCapGrant("pg", MON_CAP_R));
+    profile_grants.push_back(MonCapGrant("osd blocklist"));
+    profile_grants.back().command_args["blocklistop"] = StringConstraint(
+      StringConstraint::MATCH_TYPE_EQUAL, "add");
+    profile_grants.back().command_args["addr"] = StringConstraint(
+      StringConstraint::MATCH_TYPE_REGEX, "^[^/]+/[0-9]+$");
+
+  }
   if (boost::starts_with(profile, "rbd")) {
     profile_grants.push_back(MonCapGrant("mon", MON_CAP_R));
     profile_grants.push_back(MonCapGrant("osd", MON_CAP_R));
     profile_grants.push_back(MonCapGrant("pg", MON_CAP_R));
 
-    // exclusive lock dead-client blacklisting (IP+nonce required)
+    // exclusive lock dead-client blocklisting (IP+nonce required)
+    profile_grants.push_back(MonCapGrant("osd blocklist"));
+    profile_grants.back().command_args["blocklistop"] = StringConstraint(
+      StringConstraint::MATCH_TYPE_EQUAL, "add");
+    profile_grants.back().command_args["addr"] = StringConstraint(
+      StringConstraint::MATCH_TYPE_REGEX, "^[^/]+/[0-9]+$");
+
+    // for compat,
     profile_grants.push_back(MonCapGrant("osd blacklist"));
     profile_grants.back().command_args["blacklistop"] = StringConstraint(
       StringConstraint::MATCH_TYPE_EQUAL, "add");
@@ -317,6 +353,16 @@ void MonCapGrant::expand_profile(const EntityName& name) const
   else if (profile == "crash") {
     // TODO: we could limit this to getting the monmap and mgrmap...
     profile_grants.push_back(MonCapGrant("mon", MON_CAP_R));
+  }
+  if (profile == "cephfs-mirror") {
+    profile_grants.push_back(MonCapGrant("mon", MON_CAP_R));
+    profile_grants.push_back(MonCapGrant("mds", MON_CAP_R));
+    profile_grants.push_back(MonCapGrant("osd", MON_CAP_R));
+    profile_grants.push_back(MonCapGrant("pg", MON_CAP_R));
+    StringConstraint constraint(StringConstraint::MATCH_TYPE_PREFIX,
+                                "cephfs/mirror/peer/");
+    profile_grants.push_back(MonCapGrant("config-key get", "key", constraint));
+
   }
   if (profile == "role-definer") {
     // grants ALL caps to the auth subsystem, read-only on the
@@ -531,6 +577,7 @@ struct MonCapParser : qi::grammar<Iterator, MonCap()>
     unquoted_word %= +char_("a-zA-Z0-9_./-");
     str %= quoted_string | unquoted_word;
     network_str %= +char_("/.:a-fA-F0-9][");
+    fs_name_str %= +char_("a-zA-Z0-9_.-");
 
     spaces = +(lit(' ') | lit('\n') | lit('\t'));
 
@@ -571,7 +618,8 @@ struct MonCapParser : qi::grammar<Iterator, MonCap()>
 			  >> qi::attr(string()) >> qi::attr(string()) >> qi::attr(string())
 			  >> qi::attr(map<string,StringConstraint>())
 			  >> rwxa
-			  >> -(spaces >> lit("network") >> spaces >> network_str);
+			  >> -(spaces >> lit("network") >> spaces >> network_str)
+			  >> -(spaces >> lit("fsname") >> (lit('=') | spaces) >> fs_name_str);
 
     // rwxa := * | [r][w][x]
     rwxa =
@@ -597,6 +645,7 @@ struct MonCapParser : qi::grammar<Iterator, MonCap()>
   qi::rule<Iterator, string()> quoted_string;
   qi::rule<Iterator, string()> unquoted_word;
   qi::rule<Iterator, string()> str, network_str;
+  qi::rule<Iterator, string()> fs_name_str;
 
   qi::rule<Iterator, StringConstraint()> str_match, str_prefix, str_regex;
   qi::rule<Iterator, pair<string, StringConstraint>()> kv_pair;
@@ -641,3 +690,62 @@ bool MonCap::parse(const string& str, ostream *err)
   return false; 
 }
 
+bool MonCap::merge(MonCap newcap)
+{
+  ceph_assert(newcap.grants.size() == 1);
+  auto& ng = newcap.grants[0];
+
+  for (auto& g : grants) {
+    /* TODO: check case where cap is "allow rw *". */
+
+    if (g.fs_name == ng.fs_name) {
+      if (g.allow == ng.allow) {
+	// no update required; maintain idempotency.
+	return false;
+      } else {
+	// cap for given fs name is present, let's update it.
+	g.allow = ng.allow;
+	return true;
+      }
+    }
+  }
+
+  // cap for given fs name is absent, let's add a new cap for it.
+  grants.push_back(MonCapGrant(ng.allow, ng.fs_name));
+  return true;
+}
+
+string MonCapGrant::to_string()
+{
+  string str = "allow ";
+
+  if (allow & MON_CAP_R) {
+      str+= "r";
+  } else if (allow & MON_CAP_W) {
+      str+= "w";
+  } else if (allow & MON_CAP_X) {
+      str+= "x";
+  } else if (allow == MON_CAP_ANY) {
+      str+= "*";
+  }
+
+  if (not fs_name.empty()) {
+    str += " fsname=" + fs_name;
+  }
+
+  return str;
+}
+
+string MonCap::to_string()
+{
+  string str;
+
+  for (size_t i = 0; i < grants.size(); ++i) {
+    str += grants[i].to_string();
+    if (i < grants.size () - 1) {
+      str += ", ";
+    }
+  }
+
+  return str;
+}

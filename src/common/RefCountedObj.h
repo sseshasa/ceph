@@ -74,12 +74,7 @@ protected:
 private:
   void _get() const;
 
-#if defined(WITH_SEASTAR) && !defined(WITH_ALIEN)
-  // crimson is single threaded at the moment
-  mutable uint64_t nref{1};
-#else
   mutable std::atomic<uint64_t> nref{1};
-#endif
   CephContext *cct{nullptr};
 };
 
@@ -185,6 +180,12 @@ struct RefCountedWaitObject {
   }
 };
 
+static inline void intrusive_ptr_add_ref(RefCountedWaitObject *p) {
+  p->get();
+}
+static inline void intrusive_ptr_release(RefCountedWaitObject *p) {
+  p->put();
+}
 #endif // !defined(WITH_SEASTAR)|| defined(WITH_ALIEN)
 
 static inline void intrusive_ptr_add_ref(const RefCountedObject *p) {
@@ -193,7 +194,15 @@ static inline void intrusive_ptr_add_ref(const RefCountedObject *p) {
 static inline void intrusive_ptr_release(const RefCountedObject *p) {
   p->put();
 }
-}
+struct UniquePtrDeleter
+{
+  void operator()(RefCountedObject *p) const
+  {
+    // Don't expect a call to `get()` in the ctor as we manually set nref to 1
+    p->put();
+  }
+};
+} // namespace TOPNSPC::common
 using RefCountedPtr = ceph::ref_t<TOPNSPC::common::RefCountedObject>;
 
 #endif

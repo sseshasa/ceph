@@ -15,13 +15,17 @@
 class BitmapAllocator : public Allocator,
   public AllocatorLevel02<AllocatorLevel01Loose> {
   CephContext* cct;
-
 public:
-  BitmapAllocator(CephContext* _cct, int64_t capacity, int64_t alloc_unit, const std::string& name);
+  BitmapAllocator(CephContext* _cct, int64_t capacity, int64_t alloc_unit,
+		  std::string_view name);
   ~BitmapAllocator() override
   {
   }
 
+  const char* get_type() const override
+  {
+    return "bitmap";
+  }
   int64_t allocate(
     uint64_t want_size, uint64_t alloc_unit, uint64_t max_alloc_size,
     int64_t hint, PExtentVector *extents) override;
@@ -37,10 +41,14 @@ public:
   }
 
   void dump() override;
-  void dump(std::function<void(uint64_t offset, uint64_t length)> notify) override;
+  void foreach(
+    std::function<void(uint64_t offset, uint64_t length)> notify) override
+  {
+    foreach_internal(notify);
+  }
   double get_fragmentation() override
   {
-    return _get_fragmentation();
+    return get_fragmentation_internal();
   }
 
   void init_add_free(uint64_t offset, uint64_t length) override;

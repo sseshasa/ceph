@@ -3,9 +3,9 @@
 
 #pragma once
 
-#include <seastar/core/gate.hh>
 #include <seastar/core/timer.hh>
 
+#include "crimson/common/gated.h"
 #include "crimson/net/Dispatcher.h"
 #include "crimson/net/Fwd.h"
 #include "mon/MgrMap.h"
@@ -24,9 +24,7 @@ namespace crimson::mgr
 // implement WithStats if you want to report stats to mgr periodically
 class WithStats {
 public:
-  // the method is not const, because the class sending stats might need to
-  // update a seq number every time it collects the stats
-  virtual MessageRef get_stats() = 0;
+  virtual seastar::future<MessageURef> get_stats() = 0;
   virtual ~WithStats() {}
 };
 
@@ -36,25 +34,38 @@ public:
 	 WithStats& with_stats);
   seastar::future<> start();
   seastar::future<> stop();
-private:
-  seastar::future<> ms_dispatch(crimson::net::Connection* conn,
-				Ref<Message> m) override;
-  seastar::future<> ms_handle_reset(crimson::net::ConnectionRef conn, bool is_replace) final;
-  seastar::future<> ms_handle_connect(crimson::net::ConnectionRef conn) final;
-  seastar::future<> handle_mgr_map(crimson::net::Connection* conn,
-				   Ref<MMgrMap> m);
-  seastar::future<> handle_mgr_conf(crimson::net::Connection* conn,
-				    Ref<MMgrConfigure> m);
-  seastar::future<> reconnect();
   void report();
 
+private:
+  std::optional<seastar::future<>> ms_dispatch(
+      crimson::net::ConnectionRef conn, Ref<Message> m) override;
+  void ms_handle_reset(crimson::net::ConnectionRef conn, bool is_replace) final;
+  void ms_handle_connect(crimson::net::ConnectionRef conn, seastar::shard_id) final;
+  seastar::future<> handle_mgr_map(crimson::net::ConnectionRef conn,
+				   Ref<MMgrMap> m);
+  seastar::future<> handle_mgr_conf(crimson::net::ConnectionRef conn,
+				    Ref<MMgrConfigure> m);
+  seastar::future<> reconnect();
+
+  void print(std::ostream&) const;
+  friend std::ostream& operator<<(std::ostream& out, const Client& client);
 private:
   MgrMap mgrmap;
   crimson::net::Messenger& msgr;
   WithStats& with_stats;
   crimson::net::ConnectionRef conn;
   seastar::timer<seastar::lowres_clock> report_timer;
-  seastar::gate gate;
+  crimson::common::Gated gate;
+  uint64_t last_config_bl_version = 0;
 };
 
+inline std::ostream& operator<<(std::ostream& out, const Client& client) {
+  client.print(out);
+  return out;
 }
+
+}
+
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<crimson::mgr::Client> : fmt::ostream_formatter {};
+#endif

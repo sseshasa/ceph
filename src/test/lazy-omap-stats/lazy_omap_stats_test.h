@@ -19,11 +19,12 @@
 #include <regex>
 #include <string>
 
+#include "include/compat.h"
 #include "include/rados/librados.hpp"
 
 struct index_t {
-  uint byte_index = 0;
-  uint key_index = 0;
+  unsigned byte_index = 0;
+  unsigned key_index = 0;
 };
 
 class LazyOmapStatsTest
@@ -33,14 +34,20 @@ class LazyOmapStatsTest
   std::map<std::string, librados::bufferlist> payload;
 
   struct lazy_omap_test_t {
-    uint payload_size = 0;
-    uint replica_count = 3;
-    uint keys = 2000;
-    uint how_many = 50;
+    unsigned payload_size = 0;
+    unsigned replica_count = 3;
+    unsigned keys = 2000;
+    unsigned how_many = 50;
     std::string pool_name = "lazy_omap_test_pool";
-    uint total_bytes = 0;
-    uint total_keys = 0;
+    std::string pool_id;
+    unsigned total_bytes = 0;
+    unsigned total_keys = 0;
   } conf;
+
+  typedef enum {
+    TARGET_MON,
+    TARGET_MGR
+  } CommandTarget;
 
   LazyOmapStatsTest(LazyOmapStatsTest&) = delete;
   void operator=(LazyOmapStatsTest) = delete;
@@ -49,18 +56,17 @@ class LazyOmapStatsTest
   void write_omap(const std::string& object_name);
   const std::string get_name() const;
   void create_payload();
-  void write_many(const uint how_many);
-  void scrub() const;
+  void write_many(const unsigned how_many);
+  void scrub();
   const int find_matches(std::string& output, std::regex& reg) const;
   void check_one();
   const int find_index(std::string& haystack, std::regex& needle,
                        std::string label) const;
-  const uint tally_column(const uint omap_bytes_index,
+  const unsigned tally_column(const unsigned omap_bytes_index,
                           const std::string& table, bool header) const;
   void check_column(const int index, const std::string& table,
                     const std::string& type, bool header = true) const;
   index_t get_indexes(std::regex& reg, std::string& output) const;
-  const std::string get_pool_id(std::string& pool);
   void check_pg_dump();
   void check_pg_dump_summary();
   void check_pg_dump_pgs();
@@ -68,7 +74,10 @@ class LazyOmapStatsTest
   void check_pg_ls();
   const std::string get_output(
       const std::string command = R"({"prefix": "pg dump"})",
-      const bool silent = false);
+      const bool silent = false,
+      const CommandTarget target = CommandTarget::TARGET_MGR);
+  void get_pool_id(const std::string& pool);
+  std::map<std::string, std::string> get_scrub_stamps();
   void wait_for_active_clean();
 
  public:

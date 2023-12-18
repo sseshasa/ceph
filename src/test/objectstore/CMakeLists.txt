@@ -37,44 +37,6 @@ target_link_libraries(ceph_test_keyvaluedb
 install(TARGETS ceph_test_keyvaluedb
   DESTINATION ${CMAKE_INSTALL_BINDIR})
 
-# ceph_test_filestore_idempotent
-add_executable(ceph_test_filestore_idempotent
-  test_idempotent.cc
-  FileStoreTracker.cc
-  ${CMAKE_SOURCE_DIR}/src/test/common/ObjectContents.cc
-  )
-target_link_libraries(ceph_test_filestore_idempotent
-  os
-  global
-  ${EXTRALIBS}
-  ${BLKID_LIBRARIES}
-  ${CMAKE_DL_LIBS}
-  )
-
-# ceph_test_filestore_idempotent_sequence
-add_executable(ceph_test_filestore_idempotent_sequence
-  test_idempotent_sequence.cc
-  DeterministicOpSequence.cc
-  TestObjectStoreState.cc
-  FileStoreDiff.cc
-  )
-target_link_libraries(ceph_test_filestore_idempotent_sequence
-  os
-  global
-  ${EXTRALIBS}
-  ${BLKID_LIBRARIES}
-  ${CMAKE_DL_LIBS}
-  )
-install(TARGETS ceph_test_filestore_idempotent_sequence
-  DESTINATION ${CMAKE_INSTALL_BINDIR})
-
-# unittest_chain_xattr
-add_executable(unittest_chain_xattr
-  chain_xattr.cc
-  )
-add_ceph_unittest(unittest_chain_xattr)
-target_link_libraries(unittest_chain_xattr os global)
-
 # unittest_rocksdb_option
 add_executable(unittest_rocksdb_option
   TestRocksdbOptionParse.cc
@@ -139,6 +101,21 @@ if(WITH_BLUESTORE)
     )
   add_ceph_unittest(unittest_bluestore_types)
   target_link_libraries(unittest_bluestore_types os global)
+
+  # unittest_bdev
+  add_executable(unittest_bdev
+    test_bdev.cc
+    )
+  add_ceph_unittest(unittest_bdev)
+  target_link_libraries(unittest_bdev os global)
+
+  # unittest_deferred
+  add_executable(unittest_deferred
+    test_deferred.cc
+    )
+  add_ceph_unittest(unittest_deferred)
+  target_link_libraries(unittest_deferred os global)
+
 endif(WITH_BLUESTORE)
 
 # unittest_transaction
@@ -155,9 +132,21 @@ add_ceph_unittest(unittest_memstore_clone)
 target_link_libraries(unittest_memstore_clone os global)
 
 if(WITH_BLUESTORE)
-  add_executable(ceph_test_bmap_alloc_replay
-    bmap_allocator_replay_test.cc)
-  target_link_libraries(ceph_test_bmap_alloc_replay os global ${UNITTEST_LIBS})
-  install(TARGETS ceph_test_bmap_alloc_replay
+  add_executable(ceph_test_alloc_replay
+    allocator_replay_test.cc)
+  target_link_libraries(ceph_test_alloc_replay os global ${UNITTEST_LIBS})
+  install(TARGETS ceph_test_alloc_replay
     DESTINATION bin)
 endif()
+
+# fragmentation simulator
+add_library(ObjectStoreImitator OBJECT ObjectStoreImitator.cc)
+
+add_executable(ceph_test_fragmentation_sim
+  Fragmentation_simulator.cc
+  $<TARGET_OBJECTS:ObjectStoreImitator>)
+add_ceph_unittest(ceph_test_fragmentation_sim)
+target_link_libraries(ceph_test_fragmentation_sim os global)
+
+set_target_properties(ceph_test_fragmentation_sim PROPERTIES COMPILE_FLAGS
+"${UNITTEST_CXX_FLAGS}")

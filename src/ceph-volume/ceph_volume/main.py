@@ -6,7 +6,7 @@ import sys
 import logging
 
 from ceph_volume.decorators import catches
-from ceph_volume import log, devices, configuration, conf, exceptions, terminal, inventory
+from ceph_volume import log, devices, configuration, conf, exceptions, terminal, inventory, drive_group, activate
 
 
 class Volume(object):
@@ -29,6 +29,8 @@ Ceph Conf: {ceph_path}
             'simple': devices.simple.Simple,
             'raw': devices.raw.Raw,
             'inventory': inventory.Inventory,
+            'activate': activate.Activate,
+            'drive-group': drive_group.Deploy,
         }
         self.plugin_help = "No plugins found/loaded"
         if argv is None:
@@ -120,6 +122,7 @@ Ceph Conf: {ceph_path}
         parser.add_argument(
             '--log-level',
             default='debug',
+            choices=['debug', 'info', 'warning', 'error', 'critical'],
             help='Change the file log level (defaults to debug)',
         )
         parser.add_argument(
@@ -131,7 +134,7 @@ Ceph Conf: {ceph_path}
         conf.log_path = args.log_path
         if os.path.isdir(conf.log_path):
             conf.log_path = os.path.join(args.log_path, 'ceph-volume.log')
-        log.setup()
+        log.setup(log_level=args.log_level)
         log.setup_console()
         logger = logging.getLogger(__name__)
         logger.info("Running command: ceph-volume %s %s", " ".join(main_args), " ".join(subcommand_args))
@@ -144,8 +147,8 @@ Ceph Conf: {ceph_path}
             # we warn only here, because it is possible that the configuration
             # file is not needed, or that it will be loaded by some other means
             # (like reading from lvm tags)
-            logger.exception('ignoring inability to load ceph.conf')
-            terminal.red(error)
+            logger.warning('ignoring inability to load ceph.conf', exc_info=1)
+            terminal.yellow(error)
         # dispatch to sub-commands
         terminal.dispatch(self.mapper, subcommand_args)
 

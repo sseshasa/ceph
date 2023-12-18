@@ -6,17 +6,17 @@
 #include "common/debug.h"
 #include "common/errno.h"
 #include "common/Timer.h"
-#include "common/WorkQueue.h"
 #include "cls/rbd/cls_rbd_client.h"
 #include "librbd/ImageCtx.h"
 #include "librbd/Utils.h"
+#include "librbd/asio/ContextWQ.h"
 #include "tools/rbd_mirror/Threads.h"
 #include "tools/rbd_mirror/Types.h"
 
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rbd_mirror
 #undef dout_prefix
-#define dout_prefix *_dout << "rbd::mirror::RemotePollPoller: " << this << " " \
+#define dout_prefix *_dout << "rbd::mirror::RemotePoolPoller: " << this << " " \
                            << __func__ << ": "
 
 namespace rbd {
@@ -138,14 +138,14 @@ void RemotePoolPoller<I>::handle_mirror_peer_ping(int r) {
   dout(10) << "r=" << r << dendl;
 
   if (r == -EOPNOTSUPP) {
-    // older OSD that doesn't support snaphot-based mirroring, so no need
+    // older OSD that doesn't support snapshot-based mirroring, so no need
     // to query remote peers
     dout(10) << "remote peer does not support snapshot-based mirroring"
              << dendl;
     notify_listener();
     return;
   } else if (r < 0) {
-    // we can still see if we can perform a peer list and find outselves
+    // we can still see if we can perform a peer list and find ourselves
     derr << "failed to ping remote mirror peer: " << cpp_strerror(r) << dendl;
   }
 
@@ -183,7 +183,7 @@ void RemotePoolPoller<I>::handle_mirror_peer_list(int r) {
 
   cls::rbd::MirrorPeer* matched_peer = nullptr;
   for (auto& peer : peers) {
-    if (peer.mirror_peer_direction == cls::rbd::MIRROR_PEER_DIRECTION_TX) {
+    if (peer.mirror_peer_direction == cls::rbd::MIRROR_PEER_DIRECTION_RX) {
       continue;
     }
 

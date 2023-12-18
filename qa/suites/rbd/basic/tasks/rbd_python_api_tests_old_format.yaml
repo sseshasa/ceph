@@ -1,8 +1,12 @@
 overrides:
   ceph:
-    log-whitelist:
+    log-ignorelist:
       - \(SLOW_OPS\)
       - slow request
+  install:
+    ceph:
+      extra_system_packages:
+      - python3-pytest
 tasks:
 - workunit:
     clients:

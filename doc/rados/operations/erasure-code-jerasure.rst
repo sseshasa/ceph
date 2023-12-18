@@ -6,25 +6,29 @@ The *jerasure* plugin is the most generic and flexible plugin, it is
 also the default for Ceph erasure coded pools. 
 
 The *jerasure* plugin encapsulates the `Jerasure
-<http://jerasure.org>`_ library. It is
-recommended to read the *jerasure* documentation to get a better
-understanding of the parameters.
+<https://github.com/ceph/jerasure>`_ library. It is
+recommended to read the ``jerasure`` documentation to
+understand the parameters. Note that the ``jerasure.org``
+web site as of 2023 may no longer be connected to the original
+project or legitimate.
 
 Create a jerasure profile
 =========================
 
-To create a new *jerasure* erasure code profile::
+To create a new *jerasure* erasure code profile:
+ 
+.. prompt:: bash $
 
-        ceph osd erasure-code-profile set {name} \
-             plugin=jerasure \
-             k={data-chunks} \
-             m={coding-chunks} \
-             technique={reed_sol_van|reed_sol_r6_op|cauchy_orig|cauchy_good|liberation|blaum_roth|liber8tion} \
-             [crush-root={root}] \
-             [crush-failure-domain={bucket-type}] \
-             [crush-device-class={device-class}] \
-             [directory={directory}] \
-             [--force]
+   ceph osd erasure-code-profile set {name} \
+     plugin=jerasure \
+     k={data-chunks} \
+     m={coding-chunks} \
+     technique={reed_sol_van|reed_sol_r6_op|cauchy_orig|cauchy_good|liberation|blaum_roth|liber8tion} \
+     [crush-root={root}] \
+     [crush-failure-domain={bucket-type}] \
+     [crush-device-class={device-class}] \
+     [directory={directory}] \
+     [--force]
 
 Where:
 

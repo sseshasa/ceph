@@ -1,10 +1,16 @@
+.. _Perf Counters:
+
 ===============
  Perf counters
 ===============
 
-The perf counters provide generic internal infrastructure for gauges and counters.  The counted values can be both integer and float.  There is also an "average" type (normally float) that combines a sum and num counter which can be divided to provide an average.
+The perf counters provide generic internal infrastructure for gauges and counters.  The counted values can be both integer and float. There is also an "average" type (normally float) that combines a sum and num counter which can be divided to provide an average.
 
-The intention is that this data will be collected and aggregated by a tool like ``collectd`` or ``statsd`` and fed into a tool like ``graphite`` for graphing and analysis.  Also, note the :doc:`../mgr/prometheus`.
+The intention is that this data will be collected and aggregated by a tool like ``collectd`` or ``statsd`` and fed into a tool like ``graphite`` for graphing and analysis.  Also, note the :doc:`../mgr/prometheus` and the :doc:`../mgr/telemetry`.
+
+Users and developers can also access perf counter data locally to check a cluster's overall health, identify workload patterns, monitor cluster performance by daemon types, and troubleshoot issues with latency, throttling, memory management, etc. (see :ref:`Access`)
+
+.. _Access:
 
 Access
 ------
@@ -60,7 +66,7 @@ lifetime average value.  Normally these are used to measure latencies
 for the previous interval is what is interesting.
 
 Instead of interpreting the bit fields, the ``metric type`` has a
-value of either ``guage`` or ``counter``, and the ``value type``
+value of either ``gauge`` or ``counter``, and the ``value type``
 property will be one of ``real``, ``integer``, ``real-integer-pair``
 (for a sum + real count pair), or ``integer-integer-pair`` (for a
 sum + integer count pair).
@@ -196,3 +202,50 @@ The actual dump is similar to the schema, except that average values are grouped
    }
  }
 
+.. _Labeled Perf Counters:
+
+Labeled Perf Counters
+---------------------
+
+A Ceph daemon has the ability to emit a set of perf counter instances with varying labels. These counters are intended for visualizing specific metrics in 3rd party tools like Prometheus and Grafana.
+
+For example, the below counters show the number of put requests for different users on different buckets::
+
+  {
+      "rgw": [
+          {
+              "labels": {
+                  "Bucket: "bkt1",
+                  "User: "user1",
+              },
+              "counters": {
+                  "put": 1,
+              },
+          },
+          {
+              "labels": {},
+              "counters": {
+                  "put": 4,
+              },
+          },
+          {
+              "labels": {
+                  "Bucket: "bkt1",
+                  "User: "user2",
+              },
+              "counters": {
+                  "put": 3,
+              },
+          },
+      ]
+  }
+
+All labeled and unlabeled perf counters can be viewed with ``ceph daemon {daemon id} counter dump``. 
+
+All labeled and unlabeled perf counter's schema can be viewed with ``ceph daemon {daemon id} counter schema``.
+
+In the above example the second counter without labels is a counter that would also be shown in ``ceph daemon {daemon id} perf dump``.
+
+Since the ``counter dump`` and ``counter schema`` commands can be used to view both types of counters it is not recommended to use the ``perf dump`` and ``perf schema`` commands which are retained for backwards compatibility and continue to emit only non-labeled counters.
+
+Some perf counters that are emitted via ``perf dump`` and ``perf schema`` may become labeled in future releases and as such will no longer be emitted by ``perf dump`` and ``perf schema`` respectively.

@@ -153,7 +153,8 @@ class MetadataTool
   void build_file_dentry(
     inodeno_t ino, uint64_t file_size, time_t file_mtime,
     const file_layout_t &layout,
-    InodeStore *out);
+    InodeStore *out,
+    std::string symlink);
 
   /**
    * Construct a synthetic InodeStore for a directory
@@ -244,13 +245,15 @@ class DataScan : public MDSUtility, public MetadataTool
     RecoveryDriver *driver;
     fs_cluster_id_t fscid;
 
-    string metadata_pool_name;
+    std::string metadata_pool_name;
     std::vector<int64_t> data_pools;
 
     // IoCtx for data pool (where we scrape file backtraces from)
     librados::IoCtx data_io;
     // Remember the data pool ID for use in layouts
     int64_t data_pool_id;
+    // IoCtxs for extra data pools
+    std::vector<librados::IoCtx> extra_data_ios;
 
     uint32_t n;
     uint32_t m;
@@ -291,7 +294,7 @@ class DataScan : public MDSUtility, public MetadataTool
     // Overwrite root objects even if they exist
     bool force_init;
     // Only scan inodes without this scrub tag
-    string filter_tag;
+    std::string filter_tag;
 
     /**
      * @param r set to error on valid key with invalid value

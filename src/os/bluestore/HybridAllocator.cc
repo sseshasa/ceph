@@ -3,6 +3,7 @@
 
 #include "HybridAllocator.h"
 
+#include <bit>
 #include <limits>
 
 #include "common/config_proxy.h"
@@ -22,12 +23,12 @@ int64_t HybridAllocator::allocate(
   PExtentVector* extents)
 {
   ldout(cct, 10) << __func__ << std::hex
-                 << " want 0x" << want
-                 << " unit 0x" << unit
-                 << " max_alloc_size 0x" << max_alloc_size
-                 << " hint 0x" << hint
+                 << " 0x" << want
+                 << "/" << unit
+                 << "," << max_alloc_size
+                 << "," << hint
                  << std::dec << dendl;
-  ceph_assert(isp2(unit));
+  ceph_assert(std::has_single_bit(unit));
   ceph_assert(want % unit == 0);
 
   if (max_alloc_size == 0) {
@@ -38,68 +39,52 @@ int64_t HybridAllocator::allocate(
     max_alloc_size = p2align(uint64_t(cap), (uint64_t)get_block_size());
   }
 
-  std::lock_guard l(lock);
-
   int64_t res;
-  PExtentVector local_extents;
 
-  // preserve original 'extents' vector state
-  auto orig_size = extents->size();
-  auto orig_pos = extents->end();
-  if (orig_size) {
-    --orig_pos;
-  }
+  typedef
+    std::function<int64_t(uint64_t, uint64_t, uint64_t, int64_t, PExtentVector*)>
+    alloc_fn;
+  alloc_fn priA = [&](uint64_t _want,
+                      uint64_t _unit,
+                      uint64_t _max_alloc_size,
+                      int64_t  _hint,
+                      PExtentVector* _extents) {
+    return _allocate(_want, _unit, _max_alloc_size, _hint, _extents);
+  };
+  alloc_fn secA = [&](uint64_t _want,
+                      uint64_t _unit,
+                      uint64_t _max_alloc_size,
+                      int64_t  _hint,
+                      PExtentVector* _extents) {
+    return bmap_alloc ?
+      bmap_alloc->allocate(_want, _unit, _max_alloc_size, _hint, _extents) :
+      0;
+  };
 
+  std::lock_guard l(lock);
   // try bitmap first to avoid unneeded contiguous extents split if
   // desired amount is less than shortes range in AVL
   if (bmap_alloc && bmap_alloc->get_free() &&
     want < _lowest_size_available()) {
-    res = bmap_alloc->allocate(want, unit, max_alloc_size, hint, extents);
+    std::swap(priA, secA);
+  }
+
+  {
+    auto orig_size = extents->size();
+    res = priA(want, unit, max_alloc_size, hint, extents);
     if (res < 0) {
-      // got a failure, release already allocated and
-      // start over allocation from avl
-      if (orig_size) {
-        local_extents.insert(
-          local_extents.end(), ++orig_pos, extents->end());
-        extents->resize(orig_size);
-      } else {
-        extents->swap(local_extents);
-      }
-      bmap_alloc->release(local_extents);
+      // allocator shouldn't return new extents on error
+      ceph_assert(orig_size == extents->size());
       res = 0;
     }
-    if ((uint64_t)res < want) {
-      auto res2 = _allocate(want - res, unit, max_alloc_size, hint, extents);
-      if (res2 < 0) {
-        res = res2; // caller to do the release
-      } else {
-        res += res2;
-      }
-    }
-  } else {
-    res = _allocate(want, unit, max_alloc_size, hint, extents);
-    if (res < 0) {
-      // got a failure, release already allocated and
-      // start over allocation from bitmap
-      if (orig_size) {
-        local_extents.insert(
-          local_extents.end(), ++orig_pos, extents->end());
-        extents->resize(orig_size);
-      } else {
-        extents->swap(local_extents);
-      }
-      _release(local_extents);
-      res = 0;
-    }
-    if ((uint64_t)res < want ) {
-      auto res2 = bmap_alloc ?
-        bmap_alloc->allocate(want - res, unit, max_alloc_size, hint, extents) :
-        0;
-      if (res2 < 0 ) {
-        res = res2; // caller to do the release
-      } else {
-        res += res2;
-      }
+  }
+  if ((uint64_t)res < want) {
+    auto orig_size = extents->size();
+    auto res2 = secA(want - res, unit, max_alloc_size, hint, extents);
+    if (res2 > 0) {
+      res += res2;
+    } else {
+      ceph_assert(orig_size == extents->size());
     }
   }
   return res ? res : -ENOSPC;
@@ -145,16 +130,20 @@ void HybridAllocator::dump()
     << dendl;
 }
 
-void HybridAllocator::dump(std::function<void(uint64_t offset, uint64_t length)> notify)
+void HybridAllocator::foreach(
+  std::function<void(uint64_t offset, uint64_t length)> notify)
 {
-  AvlAllocator::dump(notify);
+  std::lock_guard l(lock);
+  AvlAllocator::_foreach(notify);
   if (bmap_alloc) {
-    bmap_alloc->dump(notify);
+    bmap_alloc->foreach(notify);
   }
 }
 
 void HybridAllocator::init_rm_free(uint64_t offset, uint64_t length)
 {
+  if (!length)
+    return;
   std::lock_guard l(lock);
   ldout(cct, 10) << __func__ << std::hex
                  << " offset 0x" << offset
@@ -166,7 +155,7 @@ void HybridAllocator::init_rm_free(uint64_t offset, uint64_t length)
         if (bmap_alloc) {
           bmap_alloc->init_rm_free(o, l);
         } else {
-          lderr(cct) << "init_rm_free lambda" << std::hex
+          lderr(cct) << "init_rm_free lambda " << std::hex
             << "Uexpected extent: "
             << " 0x" << o << "~" << l
             << std::dec << dendl;
@@ -204,7 +193,7 @@ void HybridAllocator::_spillover_range(uint64_t start, uint64_t end)
     bmap_alloc = new BitmapAllocator(cct,
       get_capacity(),
       get_block_size(),
-      get_name());
+      get_name() + ".fallback");
   }
   bmap_alloc->init_add_free(start, size);
 }

@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 
-import * as _ from 'lodash';
+import _ from 'lodash';
 import { IndividualConfig, ToastrService } from 'ngx-toastr';
 import { BehaviorSubject, Subject } from 'rxjs';
 
@@ -182,7 +182,7 @@ export class NotificationService {
   renderTimeAndApplicationHtml(notification: CdNotification): string {
     return `<small class="date">${this.cdDatePipe.transform(
       notification.timestamp
-    )}</small><i class="float-right custom-icon ${notification.applicationClass}" title="${
+    )}</small><i class="float-end custom-icon ${notification.applicationClass}" title="${
       notification.application
     }"></i>`;
   }

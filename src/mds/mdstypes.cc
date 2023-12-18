@@ -2,6 +2,7 @@
 // vim: ts=8 sw=2 smarttab
 
 #include "mdstypes.h"
+#include "include/cephfs/types.h"
 #include "MDSContext.h"
 #include "common/Formatter.h"
 #include "common/StackStringStream.h"
@@ -58,7 +59,7 @@ void frag_info_t::dump(Formatter *f) const
 void frag_info_t::decode_json(JSONObj *obj){
 
   JSONDecoder::decode_json("version", version, obj, true);
-  //JSONDecoder::decode_json("mtime", mtime, obj, true);   // remove now
+  JSONDecoder::decode_json("mtime", mtime, obj, true);
   JSONDecoder::decode_json("num_files", nfiles, obj, true);
   JSONDecoder::decode_json("num_subdirs", nsubdirs, obj, true);
   JSONDecoder::decode_json("change_attr", change_attr, obj, true);
@@ -142,7 +143,7 @@ void nest_info_t::decode_json(JSONObj *obj){
   JSONDecoder::decode_json("rfiles", rfiles, obj, true);
   JSONDecoder::decode_json("rsubdirs", rsubdirs, obj, true);
   JSONDecoder::decode_json("rsnaps", rsnaps, obj, true);
-  //JSONDecoder::decode_json("rctime", rctime, obj, true);   // remove now
+  JSONDecoder::decode_json("rctime", rctime, obj, true);
 }
 
 void nest_info_t::generate_test_instances(std::list<nest_info_t*>& ls)
@@ -275,10 +276,27 @@ void inline_data_t::decode(bufferlist::const_iterator &p)
   decode(version, p);
   uint32_t inline_len;
   decode(inline_len, p);
-  if (inline_len > 0)
-    ceph::decode_nohead(inline_len, get_data(), p);
-  else
+  if (inline_len > 0) {
+    ceph::buffer::list bl;
+    decode_nohead(inline_len, bl, p);
+    set_data(bl);
+  } else
     free_data();
+}
+
+void inline_data_t::dump(Formatter *f) const
+{
+  f->dump_unsigned("version", version);
+  f->dump_unsigned("length", length());
+}
+
+void inline_data_t::generate_test_instances(std::list<inline_data_t*>& ls)
+{
+  ls.push_back(new inline_data_t);
+  ls.push_back(new inline_data_t);
+  bufferlist bl;
+  bl.append("inline data");
+  ls.back()->set_data(bl);
 }
 
 
@@ -344,7 +362,16 @@ void fnode_t::dump(Formatter *f) const
   accounted_rstat.dump(f);
   f->close_section();
 }
-
+void fnode_t::decode_json(JSONObj *obj){
+  JSONDecoder::decode_json("version", version, obj, true);
+  uint64_t tmp;
+  JSONDecoder::decode_json("snap_purged_thru", tmp, obj, true);
+  snap_purged_thru.val = tmp;
+  JSONDecoder::decode_json("fragstat", fragstat, obj, true);
+  JSONDecoder::decode_json("accounted_fragstat", accounted_fragstat, obj, true);
+  JSONDecoder::decode_json("rstat", rstat, obj, true);
+  JSONDecoder::decode_json("accounted_rstat", accounted_rstat, obj, true);
+}
 void fnode_t::generate_test_instances(std::list<fnode_t*>& ls)
 {
   ls.push_back(new fnode_t);
@@ -480,10 +507,15 @@ void feature_bitset_t::dump(Formatter *f) const {
 void feature_bitset_t::print(ostream& out) const
 {
   std::ios_base::fmtflags f(out.flags());
-  out << "0x";
-  for (int i = _vec.size() - 1; i >= 0; --i)
-    out << std::setfill('0') << std::setw(sizeof(block_type) * 2)
-        << std::hex << _vec[i];
+  int size = _vec.size();
+  if (!size) {
+    out << "0x0";
+  } else {
+    out << "0x";
+    for (int i = size - 1; i >= 0; --i)
+      out << std::setfill('0') << std::setw(sizeof(block_type) * 2)
+          << std::hex << _vec[i];
+  }
   out.flags(f);
 }
 
@@ -554,7 +586,7 @@ void session_info_t::encode(bufferlist& bl, uint64_t features) const
   encode(inst, bl, features);
   encode(completed_requests, bl);
   encode(prealloc_inos, bl);   // hacky, see below.
-  encode(used_inos, bl);
+  encode((__u32)0, bl); // used_inos
   encode(completed_flushes, bl);
   encode(auth_name, bl);
   encode(client_metadata, bl);
@@ -576,9 +608,11 @@ void session_info_t::decode(bufferlist::const_iterator& p)
     decode(completed_requests, p);
   }
   decode(prealloc_inos, p);
-  decode(used_inos, p);
-  prealloc_inos.insert(used_inos);
-  used_inos.clear();
+  {
+    interval_set<inodeno_t> used_inos;
+    decode(used_inos, p);
+    prealloc_inos.insert(used_inos);
+  }
   if (struct_v >= 4 && struct_v < 7) {
     decode(client_metadata.kv_map, p);
   }
@@ -609,15 +643,6 @@ void session_info_t::dump(Formatter *f) const
 
   f->open_array_section("prealloc_inos");
   for (const auto& [start, len] : prealloc_inos) {
-    f->open_object_section("ino_range");
-    f->dump_stream("start") << start;
-    f->dump_unsigned("length", len);
-    f->close_section();
-  }
-  f->close_section();
-
-  f->open_array_section("used_inos");
-  for (const auto& [start, len] : used_inos) {
     f->open_object_section("ino_range");
     f->dump_stream("start") << start;
     f->dump_unsigned("length", len);
@@ -761,6 +786,10 @@ void mds_table_pending_t::generate_test_instances(std::list<mds_table_pending_t*
   ls.back()->tid = 35434;
 }
 
+void metareqid_t::dump(ceph::Formatter* f) const {
+  f->dump_object("entity", name);
+  f->dump_unsigned("tid", tid);
+}
 
 /*
  * inode_load_vec_t

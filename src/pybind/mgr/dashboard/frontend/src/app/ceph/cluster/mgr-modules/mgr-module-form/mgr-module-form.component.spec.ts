@@ -5,25 +5,28 @@ import { RouterTestingModule } from '@angular/router/testing';
 
 import { ToastrModule } from 'ngx-toastr';
 
-import { configureTestBed, i18nProviders } from '../../../../../testing/unit-test-helper';
-import { SharedModule } from '../../../../shared/shared.module';
+import { LoadingPanelComponent } from '~/app/shared/components/loading-panel/loading-panel.component';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { MgrModuleFormComponent } from './mgr-module-form.component';
 
 describe('MgrModuleFormComponent', () => {
   let component: MgrModuleFormComponent;
   let fixture: ComponentFixture<MgrModuleFormComponent>;
 
-  configureTestBed({
-    declarations: [MgrModuleFormComponent],
-    imports: [
-      HttpClientTestingModule,
-      ReactiveFormsModule,
-      RouterTestingModule,
-      SharedModule,
-      ToastrModule.forRoot()
-    ],
-    providers: i18nProviders
-  });
+  configureTestBed(
+    {
+      declarations: [MgrModuleFormComponent],
+      imports: [
+        HttpClientTestingModule,
+        ReactiveFormsModule,
+        RouterTestingModule,
+        SharedModule,
+        ToastrModule.forRoot()
+      ]
+    },
+    [LoadingPanelComponent]
+  );
 
   beforeEach(() => {
     fixture = TestBed.createComponent(MgrModuleFormComponent);
@@ -41,27 +44,11 @@ describe('MgrModuleFormComponent', () => {
       expect(result.length).toBe(1);
     });
 
-    it('should return number, required validators for types uint, int, size, secs', () => {
+    it('should return required validator for types uint, int, size, secs', () => {
       const types = ['uint', 'int', 'size', 'secs'];
       types.forEach((type) => {
         const result = component.getValidators({ type: type });
-        expect(result.length).toBe(2);
-      });
-    });
-
-    it('should return number, required, min validators for types uint, int, size, secs', () => {
-      const types = ['uint', 'int', 'size', 'secs'];
-      types.forEach((type) => {
-        const result = component.getValidators({ type: type, min: 2 });
-        expect(result.length).toBe(3);
-      });
-    });
-
-    it('should return number, required, min, max validators for types uint, int, size, secs', () => {
-      const types = ['uint', 'int', 'size', 'secs'];
-      types.forEach((type) => {
-        const result = component.getValidators({ type: type, min: 2, max: 5 });
-        expect(result.length).toBe(4);
+        expect(result.length).toBe(1);
       });
     });
 

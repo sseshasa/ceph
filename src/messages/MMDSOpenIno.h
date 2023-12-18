@@ -15,24 +15,24 @@
 #ifndef CEPH_MDSOPENINO_H
 #define CEPH_MDSOPENINO_H
 
-#include "msg/Message.h"
+#include "messages/MMDSOp.h"
 
-class MMDSOpenIno : public SafeMessage {
-  static const int HEAD_VERSION = 1;
-  static const int COMPAT_VERSION = 1;
+class MMDSOpenIno final : public MMDSOp {
+  static constexpr int HEAD_VERSION = 1;
+  static constexpr int COMPAT_VERSION = 1;
 public:
   inodeno_t ino;
   std::vector<inode_backpointer_t> ancestors;
 
 protected:
-  MMDSOpenIno() : SafeMessage{MSG_MDS_OPENINO, HEAD_VERSION, COMPAT_VERSION} {}
+  MMDSOpenIno() : MMDSOp{MSG_MDS_OPENINO, HEAD_VERSION, COMPAT_VERSION} {}
   MMDSOpenIno(ceph_tid_t t, inodeno_t i, std::vector<inode_backpointer_t>* pa) :
-    SafeMessage{MSG_MDS_OPENINO, HEAD_VERSION, COMPAT_VERSION}, ino(i) {
+    MMDSOp{MSG_MDS_OPENINO, HEAD_VERSION, COMPAT_VERSION}, ino(i) {
     header.tid = t;
     if (pa)
       ancestors = *pa;
   }
-  ~MMDSOpenIno() override {}
+  ~MMDSOpenIno() final {}
 
 public:
   std::string_view get_type_name() const override { return "openino"; }
@@ -54,6 +54,8 @@ public:
 private:
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 };
 
 #endif

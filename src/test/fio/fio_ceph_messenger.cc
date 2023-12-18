@@ -22,6 +22,8 @@
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_
 
+using namespace std;
+
 enum ceph_msgr_type {
   CEPH_MSGR_TYPE_UNDEF,
   CEPH_MSGR_TYPE_POSIX,
@@ -78,7 +80,8 @@ struct ceph_msgr_reply_io {
 
 static void *str_to_ptr(const std::string &str)
 {
-  return (void *)strtoul(str.c_str(), NULL, 16);
+  // str is assumed to be a valid ptr string
+  return reinterpret_cast<void*>(ceph::parse<uintptr_t>(str, 16).value());
 }
 
 static std::string ptr_to_str(void *ptr)
@@ -129,7 +132,7 @@ static void put_ceph_context(void)
     Formatter* f;
 
     f = Formatter::create("json-pretty");
-    g_ceph_context->get_perfcounters_collection()->dump_formatted(f, false);
+    g_ceph_context->get_perfcounters_collection()->dump_formatted(f, false, false);
     ostr << ">>>>>>>>>>>>> PERFCOUNTERS BEGIN <<<<<<<<<<<<" << std::endl;
     f->flush(ostr);
     ostr << ">>>>>>>>>>>>>  PERFCOUNTERS END  <<<<<<<<<<<<" << std::endl;
@@ -268,7 +271,7 @@ public:
   bool ms_handle_refused(Connection *con) override {
     return false;
   }
-  int ms_handle_authentication(Connection *con) override {
+  int ms_handle_fast_authentication(Connection *con) override {
     return 1;
   }
 };
@@ -291,11 +294,6 @@ static Messenger *create_messenger(struct ceph_msgr_options *o)
   std::string lname = o->is_receiver ?
     "receiver" : "sender";
 
-  /* Does anybody really uses those flags in messenger? Seems not. */
-  unsigned flags = o->is_receiver ?
-    Messenger::HAS_HEAVY_TRAFFIC |
-    Messenger::HAS_MANY_CONNECTIONS : 0;
-
   std::string ms_type = o->ms_type != CEPH_MSGR_TYPE_UNDEF ?
     ceph_msgr_types[o->ms_type] :
     g_ceph_context->_conf.get_val<std::string>("ms_type");
@@ -303,7 +301,7 @@ static Messenger *create_messenger(struct ceph_msgr_options *o)
   /* o->td__>pid doesn't set value, so use getpid() instead*/
   auto nonce = o->is_receiver ? 0 : (getpid() + o->td__->thread_number);
   Messenger *msgr = Messenger::create(g_ceph_context, ms_type.c_str(),
-				      ename, lname, nonce, flags);
+				      ename, lname, nonce);
   if (o->is_receiver) {
     msgr->set_default_policy(Messenger::Policy::stateless_server(0));
     msgr->bind(hostname_to_addr(o));

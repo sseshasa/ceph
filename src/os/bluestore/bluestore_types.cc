@@ -279,6 +279,42 @@ out:
   }
 }
 
+/// Inspects reference region at specified offset.
+/// If reference region is located, returns its reference count and
+/// distance from offset to the end of the region.
+/// If reference region is not located, returns 0 reference count and
+/// distance to the next region.
+/// If offset is beyond last region, returns 0 for both
+/// reference count and the distance.
+bluestore_extent_ref_map_t::debug_len_cnt bluestore_extent_ref_map_t::debug_peek(uint64_t offset) const
+{
+  // locate offset
+  auto p = ref_map.lower_bound(offset);
+  if (p != ref_map.end() && p->first == offset) {
+    // direct request for us
+    return {p->second.length, p->second.refs};
+  }
+  if (p != ref_map.begin()) {
+    --p;
+    if (p->first + p->second.length <= offset) {
+      // nah, it ends too soon, we landed in a hole
+      ++p;
+      if (p != ref_map.end()) {
+	// there is a region after
+	return {uint32_t(p->first - offset), 0};
+      } else {
+	// nothing after
+	return {0, 0};
+      }
+    } else {
+      // we're in the range
+      return {uint32_t((p->first + p->second.length) - offset), p->second.refs};
+    }
+  } else {
+    return {uint32_t(p->first - offset), 0};
+  }
+}
+
 bool bluestore_extent_ref_map_t::contains(uint64_t offset, uint32_t length) const
 {
   auto p = ref_map.lower_bound(offset);
@@ -366,11 +402,12 @@ ostream& operator<<(ostream& out, const bluestore_extent_ref_map_t& m)
 bluestore_blob_use_tracker_t::bluestore_blob_use_tracker_t(
   const bluestore_blob_use_tracker_t& tracker)
  : au_size{tracker.au_size},
-   num_au{tracker.num_au},
+   num_au(0),
+   alloc_au(0),
    bytes_per_au{nullptr}
 {
-  if (num_au > 0) {
-    allocate();
+  if (tracker.num_au > 0) {
+    allocate(tracker.num_au);
     std::copy(tracker.bytes_per_au, tracker.bytes_per_au + num_au, bytes_per_au);
   } else {
     total_bytes = tracker.total_bytes;
@@ -385,9 +422,8 @@ bluestore_blob_use_tracker_t::operator=(const bluestore_blob_use_tracker_t& rhs)
   }
   clear();
   au_size = rhs.au_size;
-  num_au = rhs.num_au;
   if (rhs.num_au > 0) {
-    allocate();
+    allocate( rhs.num_au);
     std::copy(rhs.bytes_per_au, rhs.bytes_per_au + num_au, bytes_per_au);
   } else {
     total_bytes = rhs.total_bytes;
@@ -395,12 +431,28 @@ bluestore_blob_use_tracker_t::operator=(const bluestore_blob_use_tracker_t& rhs)
   return *this;
 }
 
-void bluestore_blob_use_tracker_t::allocate()
+void bluestore_blob_use_tracker_t::allocate(uint32_t au_count)
 {
-  ceph_assert(num_au != 0);
-  bytes_per_au = new uint32_t[num_au];
+  ceph_assert(au_count != 0);
+  ceph_assert(num_au == 0);
+  ceph_assert(alloc_au == 0);
+  num_au = alloc_au = au_count;
+  bytes_per_au = new uint32_t[alloc_au];
+  mempool::get_pool(
+    mempool::pool_index_t(mempool::mempool_bluestore_cache_other)).
+      adjust_count(alloc_au, sizeof(uint32_t) * alloc_au);
+
   for (uint32_t i = 0; i < num_au; ++i) {
     bytes_per_au[i] = 0;
+  }
+}
+
+void bluestore_blob_use_tracker_t::release(uint32_t au_count, uint32_t* ptr) {
+  if (au_count) {
+    delete[] ptr;
+    mempool::get_pool(
+      mempool::pool_index_t(mempool::mempool_bluestore_cache_other)).
+        adjust_count(-(int32_t)au_count, -(int32_t)(sizeof(uint32_t) * au_count));
   }
 }
 
@@ -413,8 +465,7 @@ void bluestore_blob_use_tracker_t::init(
   uint32_t _num_au = round_up_to(full_length, _au_size) / _au_size;
   au_size = _au_size;
   if ( _num_au > 1 ) {
-    num_au = _num_au;
-    allocate();
+    allocate(_num_au);
   }
 }
 
@@ -426,7 +477,9 @@ void bluestore_blob_use_tracker_t::get(
     total_bytes += length;
   } else {
     auto end = offset + length;
-
+    if (end / au_size >= num_au) {
+      add_tail(end, au_size);
+    }
     while (offset < end) {
       auto phase = offset % au_size;
       bytes_per_au[offset / au_size] += 
@@ -519,6 +572,19 @@ void bluestore_blob_use_tracker_t::split(
     total_bytes = tmp;
   } else {
     num_au = new_num_au;
+  }
+}
+
+void bluestore_blob_use_tracker_t::dup(const bluestore_blob_use_tracker_t& from,
+				       uint32_t start, uint32_t len)
+{
+  uint32_t end = start + len;
+  ceph_assert(from.total_bytes >= end);
+  init(end, from.au_size);
+  uint32_t* array = dirty_au_array();
+  const uint32_t* afrom = from.get_au_array();
+  for (uint32_t i = start / au_size, pos = start; pos < end; i++, pos += au_size) {
+    array[i] = afrom[i];
   }
 }
 
@@ -654,6 +720,29 @@ string bluestore_blob_t::get_flags_string(unsigned flags)
   return s;
 }
 
+void bluestore_blob_t::adjust_to(const bluestore_blob_t& other, uint32_t target_length)
+{
+  // there is no way to expand compressed
+  ceph_assert(!is_compressed());
+  // never import data from other compressed
+  ceph_assert(!other.is_compressed());
+  // unused is wanky, as it is based on logical_length size
+  // it could be cleared here, but it feels better to force caller
+  // to be aware that unused is inacceptable
+  ceph_assert(!has_unused());
+  ceph_assert(logical_length == 0); // not initialized yet
+  ceph_assert(target_length <= other.logical_length);
+
+  logical_length = target_length;
+  ceph_assert(!has_csum());
+  if (other.has_csum()) {
+    init_csum(other.csum_type, other.csum_chunk_order, logical_length);
+    ceph_assert(csum_data.length() <= other.csum_data.length());
+    memcpy(csum_data.c_str(), other.csum_data.c_str(), csum_data.length());
+  }
+  compressed_length = 0;
+}
+
 size_t bluestore_blob_t::get_csum_value_size() const 
 {
   return Checksummer::get_csum_value_size(csum_type);
@@ -705,13 +794,16 @@ ostream& operator<<(ostream& out, const bluestore_blob_t& o)
 	<< " -> 0x"
 	<< o.get_compressed_payload_length()
 	<< std::dec;
+  } else {
+    out << " llen=0x" << std::hex << o.get_logical_length() << std::dec;
   }
   if (o.flags) {
     out << " " << o.get_flags_string();
   }
   if (o.has_csum()) {
     out << " " << Checksummer::get_csum_type_string(o.csum_type)
-	<< "/0x" << std::hex << (1ull << o.csum_chunk_order) << std::dec;
+	<< "/0x" << std::hex << (1ull << o.csum_chunk_order) << std::dec
+	<< "/" << o.csum_data.length();
   }
   if (o.has_unused())
     out << " unused=0x" << std::hex << o.unused << std::dec;
@@ -1041,7 +1133,26 @@ void bluestore_blob_t::split(uint32_t blob_offset, bluestore_blob_t& rb)
   }
 }
 
+void bluestore_blob_t::dup(const bluestore_blob_t& from)
+{
+  extents = from.extents;
+  logical_length = from.logical_length;
+  compressed_length = from.compressed_length;
+  flags = from.flags;
+  unused = from.unused;
+  csum_type = from.csum_type;
+  csum_chunk_order = from.csum_chunk_order;
+  if (from.csum_data.length()) {
+    csum_data = ceph::buffer::ptr(from.csum_data.c_str(), from.csum_data.length());
+    csum_data.reassign_to_mempool(mempool::mempool_bluestore_cache_other);
+  } else {
+    csum_data = ceph::buffer::ptr();
+  }
+}
+
 // bluestore_shared_blob_t
+MEMPOOL_DEFINE_OBJECT_FACTORY(bluestore_shared_blob_t, bluestore_shared_blob_t,
+	          bluestore_shared_blob);
 
 void bluestore_shared_blob_t::dump(Formatter *f) const
 {
@@ -1068,6 +1179,15 @@ void bluestore_onode_t::shard_info::dump(Formatter *f) const
 {
   f->dump_unsigned("offset", offset);
   f->dump_unsigned("bytes", bytes);
+}
+
+void bluestore_onode_t::shard_info::generate_test_instances(
+  list<shard_info*>& o)
+{
+  o.push_back(new shard_info);
+  o.push_back(new shard_info);
+  o.back()->offset = 123;
+  o.back()->bytes = 456;
 }
 
 ostream& operator<<(ostream& out, const bluestore_onode_t::shard_info& si)
@@ -1163,6 +1283,9 @@ void bluestore_compression_header_t::dump(Formatter *f) const
 {
   f->dump_unsigned("type", type);
   f->dump_unsigned("length", length);
+  if (compressor_message) {
+    f->dump_int("compressor_message", *compressor_message);
+  }
 }
 
 void bluestore_compression_header_t::generate_test_instances(
@@ -1171,4 +1294,89 @@ void bluestore_compression_header_t::generate_test_instances(
   o.push_back(new bluestore_compression_header_t);
   o.push_back(new bluestore_compression_header_t(1));
   o.back()->length = 1234;
+}
+
+// adds more salt to build a hash func input
+shared_blob_2hash_tracker_t::hash_input_t
+  shared_blob_2hash_tracker_t::build_hash_input(
+    uint64_t sbid,
+    uint64_t offset) const
+{
+  hash_input_t res = {
+    sbid,
+    offset >> au_void_bits,
+    ((sbid & 0xffffffff) << 32) + ~(uint32_t((offset >> au_void_bits) & 0xffffffff))
+  };
+  return res;
+}
+
+void shared_blob_2hash_tracker_t::inc(
+  uint64_t sbid,
+  uint64_t offset,
+  int n)
+{
+  auto hash_input = build_hash_input(sbid, offset);
+  ref_counter_2hash_tracker_t::inc(
+    (char*)hash_input.data(),
+    get_hash_input_size(),
+    n);
+}
+
+void shared_blob_2hash_tracker_t::inc_range(
+  uint64_t sbid,
+  uint64_t offset,
+  uint32_t len,
+  int n)
+{
+  uint32_t alloc_unit = 1 << au_void_bits;
+  int64_t l = len;
+  while (l > 0) {
+    // don't care about ofset alignment as inc() trims it anyway
+    inc(sbid, offset, n);
+    offset += alloc_unit;
+    l -= alloc_unit;
+  }
+}
+
+bool shared_blob_2hash_tracker_t::test_hash_conflict(
+  uint64_t sbid1,
+  uint64_t offset1,
+  uint64_t sbid2,
+  uint64_t offset2) const
+{
+  auto hash_input1 = build_hash_input(sbid1, offset1);
+  auto hash_input2 = build_hash_input(sbid2, offset2);
+  return ref_counter_2hash_tracker_t::test_hash_conflict(
+    (char*)hash_input1.data(),
+    (char*)hash_input2.data(),
+    get_hash_input_size());
+}
+
+bool shared_blob_2hash_tracker_t::test_all_zero(
+  uint64_t sbid,
+  uint64_t offset) const
+{
+  auto hash_input = build_hash_input(sbid, offset);
+  return
+    ref_counter_2hash_tracker_t::test_all_zero(
+      (char*)hash_input.data(),
+      get_hash_input_size());
+}
+
+bool shared_blob_2hash_tracker_t::test_all_zero_range(
+  uint64_t sbid,
+  uint64_t offset,
+  uint32_t len) const
+{
+  uint32_t alloc_unit = 1 << au_void_bits;
+  int64_t l = len;
+  while (l > 0) {
+    // don't care about ofset alignment as inc() trims it anyway
+    if (!test_all_zero(sbid, offset)) {
+      return false;
+    }
+    offset += alloc_unit;
+    l -= alloc_unit;
+  }
+  return true;
 }

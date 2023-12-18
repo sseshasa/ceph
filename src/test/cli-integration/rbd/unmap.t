@@ -3,13 +3,13 @@ Setup
 =====
 
   $ rbd create --size 1 img
-  $ rbd snap create img@snap
+  $ rbd snap create img@snap --no-progress
   $ rbd create --size 1 anotherimg
   $ ceph osd pool create custom >/dev/null 2>&1
   $ rbd pool init custom
   $ rbd create --size 1 custom/img
-  $ rbd snap create custom/img@snap
-  $ rbd snap create custom/img@anothersnap
+  $ rbd snap create custom/img@snap --no-progress
+  $ rbd snap create custom/img@anothersnap --no-progress
 
 Spell out device instead of using $DEV - sfdisk is not a joke.
 
@@ -458,6 +458,23 @@ pool/img@snap, custom pool:
   ?   custom             img    snap  /dev/rbd? (glob)
   $ sudo rbd device unmap custom/img@snap
   $ rbd device list
+
+
+Odd names
+=========
+
+  $ ceph osd pool create foo\* >/dev/null 2>&1
+  $ rbd pool init foo\*
+  $ rbd create --size 1 foo\*/[0.0.0.0]
+  $ rbd snap create foo\*/[0.0.0.0]@\?bar --no-progress
+  $ sudo rbd device map foo\*/[0.0.0.0]@\?bar
+  /dev/rbd? (glob)
+  $ rbd device list
+  id  pool  namespace  image      snap  device   
+  ?   foo*             [0.0.0.0]  ?bar  /dev/rbd? (glob)
+  $ sudo rbd device unmap foo\*/[0.0.0.0]@\?bar
+  $ rbd device list
+  $ ceph osd pool delete foo\* foo\* --yes-i-really-really-mean-it >/dev/null 2>&1
 
 
 Teardown

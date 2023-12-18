@@ -9,9 +9,10 @@ overrides:
         filestore queue throttle high multiple: 2
         filestore queue throttle max multiple: 10
         osd max backfills: 9
-    log-whitelist:
+    log-ignorelist:
     - but it is still running
     - objects unfound and apparently lost
+    - \(POOL_APP_NOT_ENABLED\)
 tasks:
 - thrashosds:
     timeout: 1200

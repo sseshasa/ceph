@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import stat
+import time
 from ceph_volume import process
 from ceph_volume.api import lvm
 from ceph_volume.util.system import get_file_contents
@@ -24,7 +25,7 @@ def get_partuuid(device):
     device
     """
     out, err, rc = process.call(
-        ['blkid', '-s', 'PARTUUID', '-o', 'value', device]
+        ['blkid', '-c', '/dev/null', '-s', 'PARTUUID', '-o', 'value', device]
     )
     return ' '.join(out).strip()
 
@@ -98,7 +99,7 @@ def blkid(device):
     PART_ENTRY_UUID                 PARTUUID
     """
     out, err, rc = process.call(
-        ['blkid', '-p', device]
+        ['blkid', '-c', '/dev/null', '-p', device]
     )
     return _blkid_parser(' '.join(out))
 
@@ -110,7 +111,7 @@ def get_part_entry_type(device):
     used for udev rules, but it is useful in this case as it is the only
     consistent way to retrieve the GUID used by ceph-disk to identify devices.
     """
-    out, err, rc = process.call(['blkid', '-p', '-o', 'udev', device])
+    out, err, rc = process.call(['blkid', '-c', '/dev/null', '-p', '-o', 'udev', device])
     for line in out:
         if 'ID_PART_ENTRY_TYPE=' in line:
             return line.split('=')[-1].strip()
@@ -123,7 +124,7 @@ def get_device_from_partuuid(partuuid):
     device is
     """
     out, err, rc = process.call(
-        ['blkid', '-t', 'PARTUUID="%s"' % partuuid, '-o', 'device']
+        ['blkid', '-c', '/dev/null', '-t', 'PARTUUID="%s"' % partuuid, '-o', 'device']
     )
     return ' '.join(out).strip()
 
@@ -134,14 +135,21 @@ def remove_partition(device):
 
     :param device: A ``Device()`` object
     """
-    parent_device = '/dev/%s' % device.disk_api['PKNAME']
-    udev_info = udevadm_property(device.abspath)
-    partition_number = udev_info.get('ID_PART_ENTRY_NUMBER')
+    # Sometimes there's a race condition that makes 'ID_PART_ENTRY_NUMBER' be not present
+    # in the output of `udevadm info --query=property`.
+    # Probably not ideal and not the best fix but this allows to get around that issue.
+    # The idea is to make it retry multiple times before actually failing.
+    for i in range(10):
+        udev_info = udevadm_property(device.path)
+        partition_number = udev_info.get('ID_PART_ENTRY_NUMBER')
+        if partition_number:
+            break
+        time.sleep(0.2)
     if not partition_number:
-        raise RuntimeError('Unable to detect the partition number for device: %s' % device.abspath)
+        raise RuntimeError('Unable to detect the partition number for device: %s' % device.path)
 
     process.run(
-        ['parted', parent_device, '--script', '--', 'rm', partition_number]
+        ['parted', device.parent_device, '--script', '--', 'rm', partition_number]
     )
 
 
@@ -230,6 +238,18 @@ def _udevadm_info(device):
 
 
 def lsblk(device, columns=None, abspath=False):
+    result = []
+    if not os.path.isdir(device):
+        result = lsblk_all(device=device,
+                           columns=columns,
+                           abspath=abspath)
+    if not result:
+        logger.debug(f"{device} not found is lsblk report")
+        return {}
+
+    return result[0]
+
+def lsblk_all(device='', columns=None, abspath=False):
     """
     Create a dictionary of identifying values for a device using ``lsblk``.
     Each supported column is a key, in its *raw* format (all uppercase
@@ -242,6 +262,7 @@ def lsblk(device, columns=None, abspath=False):
 
          NAME  device name
         KNAME  internal kernel device name
+        PKNAME internal kernel parent device name
       MAJ:MIN  major:minor device number
        FSTYPE  filesystem type
    MOUNTPOINT  where the device is mounted
@@ -285,37 +306,42 @@ def lsblk(device, columns=None, abspath=False):
 
     Normal CLI output, as filtered by the flags in this function will look like ::
 
-        $ lsblk --nodeps -P -o NAME,KNAME,MAJ:MIN,FSTYPE,MOUNTPOINT
+        $ lsblk -P -o NAME,KNAME,PKNAME,MAJ:MIN,FSTYPE,MOUNTPOINT
         NAME="sda1" KNAME="sda1" MAJ:MIN="8:1" FSTYPE="ext4" MOUNTPOINT="/"
 
     :param columns: A list of columns to report as keys in its original form.
     :param abspath: Set the flag for absolute paths on the report
     """
     default_columns = [
-        'NAME', 'KNAME', 'MAJ:MIN', 'FSTYPE', 'MOUNTPOINT', 'LABEL', 'UUID',
-        'RO', 'RM', 'MODEL', 'SIZE', 'STATE', 'OWNER', 'GROUP', 'MODE',
+        'NAME', 'KNAME', 'PKNAME', 'MAJ:MIN', 'FSTYPE', 'MOUNTPOINT', 'LABEL',
+        'UUID', 'RO', 'RM', 'MODEL', 'SIZE', 'STATE', 'OWNER', 'GROUP', 'MODE',
         'ALIGNMENT', 'PHY-SEC', 'LOG-SEC', 'ROTA', 'SCHED', 'TYPE', 'DISC-ALN',
         'DISC-GRAN', 'DISC-MAX', 'DISC-ZERO', 'PKNAME', 'PARTLABEL'
     ]
-    device = device.rstrip('/')
     columns = columns or default_columns
-    # --nodeps -> Avoid adding children/parents to the device, only give information
-    #             on the actual device we are querying for
     # -P       -> Produce pairs of COLUMN="value"
     # -p       -> Return full paths to devices, not just the names, when ``abspath`` is set
     # -o       -> Use the columns specified or default ones provided by this function
-    base_command = ['lsblk', '--nodeps', '-P']
+    base_command = ['lsblk', '-P']
     if abspath:
         base_command.append('-p')
     base_command.append('-o')
     base_command.append(','.join(columns))
-    base_command.append(device)
+    if device:
+        base_command.append('--nodeps')
+        base_command.append(device)
+
     out, err, rc = process.call(base_command)
 
     if rc != 0:
-        return {}
+        raise RuntimeError(f"Error: {err}")
 
-    return _lsblk_parser(' '.join(out))
+    result = []
+
+    for line in out:
+        result.append(_lsblk_parser(line))
+
+    return result
 
 
 def is_device(dev):
@@ -327,39 +353,36 @@ def is_device(dev):
     """
     if not os.path.exists(dev):
         return False
-    # use lsblk first, fall back to using stat
+    if not dev.startswith('/dev/'):
+        return False
+    if dev[len('/dev/'):].startswith('loop'):
+        if not allow_loop_devices():
+            return False
+
     TYPE = lsblk(dev).get('TYPE')
     if TYPE:
-        return TYPE == 'disk'
+        return TYPE in ['disk', 'mpath']
 
     # fallback to stat
-    return _stat_is_device(os.lstat(dev).st_mode)
-    if stat.S_ISBLK(os.lstat(dev)):
-        return True
-    return False
+    return _stat_is_device(os.lstat(dev).st_mode) and not is_partition(dev)
 
 
-def is_partition(dev):
+def is_partition(dev: str) -> bool:
     """
     Boolean to determine if a given device is a partition, like /dev/sda1
     """
     if not os.path.exists(dev):
         return False
-    # use lsblk first, fall back to using stat
-    TYPE = lsblk(dev).get('TYPE')
-    if TYPE:
-        return TYPE == 'part'
 
-    # fallback to stat
-    stat_obj = os.stat(dev)
-    if _stat_is_device(stat_obj.st_mode):
-        return False
+    partitions = get_partitions()
+    return dev.split("/")[-1] in partitions
 
-    major = os.major(stat_obj.st_rdev)
-    minor = os.minor(stat_obj.st_rdev)
-    if os.path.exists('/sys/dev/block/%d:%d/partition' % (major, minor)):
-        return True
-    return False
+
+def is_ceph_rbd(dev):
+    """
+    Boolean to determine if a given device is a ceph RBD device, like /dev/rbd0
+    """
+    return dev.startswith(('/dev/rbd'))
 
 
 class BaseFloatUnit(float):
@@ -403,6 +426,8 @@ class FloatKB(BaseFloatUnit):
 class FloatTB(BaseFloatUnit):
     pass
 
+class FloatPB(BaseFloatUnit):
+    pass
 
 class Size(object):
     """
@@ -457,10 +482,10 @@ class Size(object):
     @classmethod
     def parse(cls, size):
         if (len(size) > 2 and
-            size[-2].lower() in ['k', 'm', 'g', 't'] and
+            size[-2].lower() in ['k', 'm', 'g', 't', 'p'] and
             size[-1].lower() == 'b'):
             return cls(**{size[-2:].lower(): float(size[0:-2])})
-        elif size[-1].lower() in ['b', 'k', 'm', 'g', 't']:
+        elif size[-1].lower() in ['b', 'k', 'm', 'g', 't', 'p']:
             return cls(**{size[-1].lower(): float(size[0:-1])})
         else:
             return cls(b=float(size))
@@ -475,6 +500,7 @@ class Size(object):
             [('m', 'mb', 'megabytes'), self._multiplier ** 2],
             [('g', 'gb', 'gigabytes'), self._multiplier ** 3],
             [('t', 'tb', 'terabytes'), self._multiplier ** 4],
+            [('p', 'pb', 'petabytes'), self._multiplier ** 5]
         ]
         # and mappings for units-to-formatters, including bytes and aliases for
         # each
@@ -484,6 +510,7 @@ class Size(object):
             [('mb', 'megabytes'), FloatMB],
             [('gb', 'gigabytes'), FloatGB],
             [('tb', 'terabytes'), FloatTB],
+            [('pb', 'petabytes'), FloatPB],
         ]
         self._formatters = {}
         for key, value in format_aliases:
@@ -517,7 +544,7 @@ class Size(object):
         than 1024. This allows to represent size in the most readable format
         available
         """
-        for unit in ['b', 'kb', 'mb', 'gb', 'tb']:
+        for unit in ['b', 'kb', 'mb', 'gb', 'tb', 'pb']:
             if getattr(self, unit) > 1024:
                 continue
             return getattr(self, unit)
@@ -603,6 +630,12 @@ class Size(object):
         _b = self._b / other
         return Size(b=_b)
 
+    def __bool__(self):
+        return self.b != 0
+
+    def __nonzero__(self):
+        return self.__bool__()
+
     def __getattr__(self, unit):
         """
         Calculate units on the fly, relies on the fact that ``bytes`` has been
@@ -627,14 +660,15 @@ def human_readable_size(size):
     Take a size in bytes, and transform it into a human readable size with up
     to two decimals of precision.
     """
-    suffixes = ['B', 'KB', 'MB', 'GB', 'TB']
-    suffix_index = 0
-    while size > 1024:
-        suffix_index += 1
-        size = size / 1024.0
+    suffixes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+    for suffix in suffixes:
+        if size >= 1024:
+            size = size / 1024
+        else:
+            break
     return "{size:.2f} {suffix}".format(
         size=size,
-        suffix=suffixes[suffix_index])
+        suffix=suffix)
 
 
 def size_from_human_readable(s):
@@ -646,6 +680,8 @@ def size_from_human_readable(s):
     if s[-1].isdigit():
         return Size(b=float(s))
     n = float(s[:-1])
+    if s[-1].lower() == 'p':
+        return Size(pb=n)
     if s[-1].lower() == 't':
         return Size(tb=n)
     if s[-1].lower() == 'g':
@@ -690,46 +726,92 @@ def is_mapper_device(device_name):
     return device_name.startswith(('/dev/mapper', '/dev/dm-'))
 
 
-def is_locked_raw_device(disk_path):
-    """
-    A device can be locked by a third party software like a database.
-    To detect that case, the device is opened in Read/Write and exclusive mode
-    """
-    open_flags = (os.O_RDWR | os.O_EXCL)
-    open_mode = 0
-    fd = None
+class AllowLoopDevices(object):
+    allow = False
+    warned = False
 
-    try:
-        fd = os.open(disk_path, open_flags, open_mode)
-    except OSError:
-        return 1
-
-    try:
-        os.close(fd)
-    except OSError:
-        return 1
-
-    return 0
-
-
-def get_block_devs_lsblk():
-    '''
-    This returns a list of lists with 3 items per inner list.
-    KNAME - reflects the kernel device name , for example /dev/sda or /dev/dm-0
-    NAME - the device name, for example /dev/sda or
-           /dev/mapper/<vg_name>-<lv_name>
-    TYPE - the block device type: disk, partition, lvm and such
-
-    '''
-    cmd = ['lsblk', '-plno', 'KNAME,NAME,TYPE']
-    stdout, stderr, rc = process.call(cmd)
-    # lsblk returns 1 on failure
-    if rc == 1:
-        raise OSError('lsblk returned failure, stderr: {}'.format(stderr))
-    return [re.split(r'\s+', line) for line in stdout]
+    @classmethod
+    def __call__(cls):
+        val = os.environ.get("CEPH_VOLUME_ALLOW_LOOP_DEVICES", "false").lower()
+        if val not in ("false", 'no', '0'):
+            cls.allow = True
+            if not cls.warned:
+                logger.warning(
+                    "CEPH_VOLUME_ALLOW_LOOP_DEVICES is set in your "
+                    "environment, so we will allow the use of unattached loop"
+                    " devices as disks. This feature is intended for "
+                    "development purposes only and will never be supported in"
+                    " production. Issues filed based on this behavior will "
+                    "likely be ignored."
+                )
+                cls.warned = True
+        return cls.allow
 
 
-def get_devices(_sys_block_path='/sys/block'):
+allow_loop_devices = AllowLoopDevices()
+
+
+def get_block_devs_sysfs(_sys_block_path='/sys/block', _sys_dev_block_path='/sys/dev/block', device=''):
+    def holder_inner_loop():
+        for holder in holders:
+            # /sys/block/sdy/holders/dm-8/dm/uuid
+            holder_dm_type = get_file_contents(os.path.join(_sys_block_path, dev, f'holders/{holder}/dm/uuid')).split('-')[0].lower()
+            if holder_dm_type == 'mpath':
+                return True
+
+    # First, get devices that are _not_ partitions
+    result = list()
+    if not device:
+        dev_names = os.listdir(_sys_block_path)
+    else:
+        dev_names = [device]
+    for dev in dev_names:
+        name = kname = os.path.join("/dev", dev)
+        if not os.path.exists(name):
+            continue
+        type_ = 'disk'
+        holders = os.listdir(os.path.join(_sys_block_path, dev, 'holders'))
+        if holder_inner_loop():
+            continue
+        dm_dir_path = os.path.join(_sys_block_path, dev, 'dm')
+        if os.path.isdir(dm_dir_path):
+            dm_type = get_file_contents(os.path.join(dm_dir_path, 'uuid'))
+            type_ = dm_type.split('-')[0].lower()
+            basename = get_file_contents(os.path.join(dm_dir_path, 'name'))
+            name = os.path.join("/dev/mapper", basename)
+        if dev.startswith('loop'):
+            if not allow_loop_devices():
+                continue
+            # Skip loop devices that are not attached
+            if not os.path.exists(os.path.join(_sys_block_path, dev, 'loop')):
+                continue
+            type_ = 'loop'
+        result.append([kname, name, type_])
+    # Next, look for devices that _are_ partitions
+    for item in os.listdir(_sys_dev_block_path):
+        is_part = get_file_contents(os.path.join(_sys_dev_block_path, item, 'partition')) == "1"
+        dev = os.path.basename(os.readlink(os.path.join(_sys_dev_block_path, item)))
+        if not is_part:
+            continue
+        name = kname = os.path.join("/dev", dev)
+        result.append([name, kname, "part"])
+    return sorted(result, key=lambda x: x[0])
+
+def get_partitions(_sys_dev_block_path ='/sys/dev/block'):
+    devices = os.listdir(_sys_dev_block_path)
+    result = dict()
+    for device in devices:
+        device_path = os.path.join(_sys_dev_block_path, device)
+        is_partition = int(get_file_contents(os.path.join(device_path, 'partition'), '0')) > 0
+        if not is_partition:
+            continue
+
+        partition_sys_name = os.path.basename(os.readlink(device_path))
+        parent_device_sys_name = os.readlink(device_path).split('/')[-2:-1][0]
+        result[partition_sys_name] = parent_device_sys_name
+    return result
+
+def get_devices(_sys_block_path='/sys/block', device=''):
     """
     Captures all available block devices as reported by lsblk.
     Additional interesting metadata like sectors, size, vendor,
@@ -742,19 +824,32 @@ def get_devices(_sys_block_path='/sys/block'):
 
     device_facts = {}
 
-    block_devs = get_block_devs_lsblk()
+    block_devs = get_block_devs_sysfs(_sys_block_path)
+    partitions = get_partitions()
+
+    block_types = ['disk', 'mpath', 'lvm', 'part']
+    if allow_loop_devices():
+        block_types.append('loop')
 
     for block in block_devs:
+        if block[2] == 'lvm':
+            block[1] = lvm.get_lv_path_from_mapper(block[1])
         devname = os.path.basename(block[0])
         diskname = block[1]
-        if block[2] != 'disk':
+        if block[2] not in block_types:
             continue
         sysdir = os.path.join(_sys_block_path, devname)
+        if block[2] == 'part':
+            sysdir = os.path.join(_sys_block_path, partitions[devname], devname)
         metadata = {}
+
+        # If the device is ceph rbd it gets excluded
+        if is_ceph_rbd(diskname):
+            continue
 
         # If the mapper device is a logical volume it gets excluded
         if is_mapper_device(diskname):
-            if lvm.is_lv(diskname):
+            if lvm.get_device_lvs(diskname):
                 continue
 
         # all facts that have no defaults
@@ -772,6 +867,26 @@ def get_devices(_sys_block_path='/sys/block'):
                 ]
         for key, file_ in facts:
             metadata[key] = get_file_contents(os.path.join(sysdir, file_))
+
+        device_slaves = []
+        if block[2] != 'part':
+            device_slaves = os.listdir(os.path.join(sysdir, 'slaves'))
+            metadata['partitions'] = get_partitions_facts(sysdir)
+
+        if device_slaves:
+            metadata['device_nodes'] = ','.join(device_slaves)
+        else:
+            if block[2] == 'part':
+                metadata['device_nodes'] = partitions[devname]
+            else:
+                metadata['device_nodes'] = devname
+
+        metadata['actuators'] = None
+        if os.path.isdir(sysdir + "/queue/independent_access_ranges/"):
+            actuators = 0
+            while os.path.isdir(sysdir + "/queue/independent_access_ranges/" + str(actuators)):
+                actuators += 1
+            metadata['actuators'] = actuators
 
         metadata['scheduler_mode'] = ""
         scheduler = get_file_contents(sysdir + "/queue/scheduler")
@@ -792,7 +907,28 @@ def get_devices(_sys_block_path='/sys/block'):
         metadata['size'] = float(size) * 512
         metadata['human_readable_size'] = human_readable_size(metadata['size'])
         metadata['path'] = diskname
-        metadata['locked'] = is_locked_raw_device(metadata['path'])
+        metadata['type'] = block[2]
+
+        # some facts from udevadm
+        p = udevadm_property(sysdir)
+        metadata['id_bus'] = p.get('ID_BUS', '')
 
         device_facts[diskname] = metadata
     return device_facts
+
+def has_bluestore_label(device_path):
+    isBluestore = False
+    bluestoreDiskSignature = 'bluestore block device' # 22 bytes long
+
+    # throws OSError on failure
+    logger.info("opening device {} to check for BlueStore label".format(device_path))
+    try:
+        with open(device_path, "rb") as fd:
+            # read first 22 bytes looking for bluestore disk signature
+            signature = fd.read(22)
+            if signature.decode('ascii', 'replace') == bluestoreDiskSignature:
+                isBluestore = True
+    except IsADirectoryError:
+        logger.info(f'{device_path} is a directory, skipping.')
+
+    return isBluestore

@@ -11,28 +11,27 @@ whether authentication is required, etc. Most of these values are set by
 default, so it's useful to know about them when setting up your cluster for
 production.
 
-Following the same configuration as `Installation (ceph-deploy)`_, we will set up a
-cluster with ``node1`` as  the monitor node, and ``node2`` and ``node3`` for
-OSD nodes.
+We will set up a cluster with ``mon-node1`` as  the monitor node, and ``osd-node1`` and
+``osd-node2`` for OSD nodes.
 
 
 
 .. ditaa::
 
            /------------------\         /----------------\
-           |    Admin Node    |         |     node1      |
+           |    Admin Node    |         |    mon-node1   |
            |                  +-------->+                |
            |                  |         | cCCC           |
            \---------+--------/         \----------------/
                      |
                      |                  /----------------\
-                     |                  |     node2      |
+                     |                  |    osd-node1   |
                      +----------------->+                |
                      |                  | cCCC           |
                      |                  \----------------/
                      |
                      |                  /----------------\
-                     |                  |     node3      |
+                     |                  |    osd-node2   |
                      +----------------->|                |
                                         | cCCC           |
                                         \----------------/
@@ -100,7 +99,7 @@ The procedure is as follows:
 
    For example::
 
-	ssh node1
+	ssh mon-node1
 
 
 #. Ensure you have a directory for the Ceph configuration file. By default,
@@ -109,12 +108,10 @@ The procedure is as follows:
 
 	ls /etc/ceph
 
-   **Note:** Deployment tools may remove this directory when purging a
-   cluster (e.g., ``ceph-deploy purgedata {node-name}``, ``ceph-deploy purge
-   {node-name}``).
 
 #. Create a Ceph configuration file. By default, Ceph uses
-   ``ceph.conf``, where ``ceph`` reflects the cluster name. ::
+   ``ceph.conf``, where ``ceph`` reflects the cluster name. Add a line
+   containing "[global]" to the configuration file. ::
 
 	sudo vim /etc/ceph/ceph.conf
 
@@ -135,29 +132,29 @@ The procedure is as follows:
 
 #. Add the initial monitor(s) to your Ceph configuration file. ::
 
-	mon initial members = {hostname}[,{hostname}]
+	mon_initial_members = {hostname}[,{hostname}]
 
    For example::
 
-	mon initial members = node1
+	mon_initial_members = mon-node1
 
 
 #. Add the IP address(es) of the initial monitor(s) to your Ceph configuration
    file and save the file. ::
 
-	mon host = {ip-address}[,{ip-address}]
+	mon_host = {ip-address}[,{ip-address}]
 
    For example::
 
-	mon host = 192.168.0.1
+	mon_host = 192.168.0.1
 
    **Note:** You may use IPv6 addresses instead of IPv4 addresses, but
-   you must set ``ms bind ipv6`` to ``true``. See `Network Configuration
+   you must set ``ms_bind_ipv6`` to ``true``. See `Network Configuration
    Reference`_ for details about network configuration.
 
 #. Create a keyring for your cluster and generate a monitor secret key. ::
 
-	ceph-authtool --create-keyring /tmp/ceph.mon.keyring --gen-key -n mon. --cap mon 'allow *'
+	sudo ceph-authtool --create-keyring /tmp/ceph.mon.keyring --gen-key -n mon. --cap mon 'allow *'
 
 
 #. Generate an administrator keyring, generate a ``client.admin`` user and add
@@ -186,7 +183,7 @@ The procedure is as follows:
 
    For example::
 
-	monmaptool --create --add node1 192.168.0.1 --fsid a7f64266-0894-4f1e-a635-d0aeaca0e993 /tmp/monmap
+	monmaptool --create --add mon-node1 192.168.0.1 --fsid a7f64266-0894-4f1e-a635-d0aeaca0e993 /tmp/monmap
 
 
 #. Create a default data directory (or directories) on the monitor host(s). ::
@@ -195,7 +192,7 @@ The procedure is as follows:
 
    For example::
 
-	sudo -u ceph mkdir /var/lib/ceph/mon/ceph-node1
+	sudo -u ceph mkdir /var/lib/ceph/mon/ceph-mon-node1
 
    See `Monitor Config Reference - Data`_ for details.
 
@@ -205,7 +202,7 @@ The procedure is as follows:
 
    For example::
 
-	sudo -u ceph ceph-mon --mkfs -i node1 --monmap /tmp/monmap --keyring /tmp/ceph.mon.keyring
+	sudo -u ceph ceph-mon --mkfs -i mon-node1 --monmap /tmp/monmap --keyring /tmp/ceph.mon.keyring
 
 
 #. Consider settings for a Ceph configuration file. Common settings include
@@ -213,49 +210,47 @@ The procedure is as follows:
 
 	[global]
 	fsid = {cluster-id}
-	mon initial members = {hostname}[, {hostname}]
-	mon host = {ip-address}[, {ip-address}]
-	public network = {network}[, {network}]
-	cluster network = {network}[, {network}]
-	auth cluster required = cephx
-	auth service required = cephx
-	auth client required = cephx
-	osd journal size = {n}
-	osd pool default size = {n}  # Write an object n times.
-	osd pool default min size = {n} # Allow writing n copies in a degraded state.
-	osd pool default pg num = {n}
-	osd pool default pgp num = {n}
-	osd crush chooseleaf type = {n}
+	mon_initial_members = {hostname}[, {hostname}]
+	mon_host = {ip-address}[, {ip-address}]
+	public_network = {network}[, {network}]
+	cluster_network = {network}[, {network}]
+	auth_cluster required = cephx
+	auth_service required = cephx
+	auth_client required = cephx
+	osd_pool_default_size = {n}  # Write an object n times.
+	osd_pool_default_min_size = {n} # Allow writing n copies in a degraded state.
+	osd_pool_default_pg_num = {n}
+	osd_crush_chooseleaf_type = {n}
 
    In the foregoing example, the ``[global]`` section of the configuration might
    look like this::
 
 	[global]
 	fsid = a7f64266-0894-4f1e-a635-d0aeaca0e993
-	mon initial members = node1
-	mon host = 192.168.0.1
-	public network = 192.168.0.0/24
-	auth cluster required = cephx
-	auth service required = cephx
-	auth client required = cephx
-	osd journal size = 1024
-	osd pool default size = 3
-	osd pool default min size = 2
-	osd pool default pg num = 333
-	osd pool default pgp num = 333
-	osd crush chooseleaf type = 1
+	mon_initial_members = mon-node1
+	mon_host = 192.168.0.1
+	public_network = 192.168.0.0/24
+	auth_cluster_required = cephx
+	auth_service_required = cephx
+	auth_client_required = cephx
+	osd_pool_default_size = 3
+	osd_pool_default_min_size = 2
+	osd_pool_default_pg_num = 333
+	osd_crush_chooseleaf_type = 1
 
 
 #. Start the monitor(s).
 
-   For most distributions, services are started via systemd now::
+   Start the service with systemd::
 
-	sudo systemctl start ceph-mon@node1
+	sudo systemctl start ceph-mon@mon-node1
 
-   For older Debian/CentOS/RHEL, use sysvinit::
+#. Ensure to open firewall ports for ceph-mon.
 
-	sudo /etc/init.d/ceph start mon.node1
-
+   Open the ports with firewalld::
+   
+        sudo firewall-cmd --zone=public --add-service=ceph-mon
+	sudo firewall-cmd --zone=public --add-service=ceph-mon --permanent
 
 #. Verify that the monitor is running. ::
 
@@ -270,8 +265,8 @@ The procedure is as follows:
         health: HEALTH_OK
 
       services:
-        mon: 1 daemons, quorum node1
-        mgr: node1(active)
+        mon: 1 daemons, quorum mon-node1
+        mgr: mon-node1(active)
         osd: 0 osds: 0 up, 0 in
 
       data:
@@ -296,7 +291,7 @@ Adding OSDs
 
 Once you have your initial monitor(s) running, you should add OSDs. Your cluster
 cannot reach an ``active + clean`` state until you have enough OSDs to handle the
-number of copies of an object (e.g., ``osd pool default size = 2`` requires at
+number of copies of an object (e.g., ``osd_pool_default_size = 2`` requires at
 least two OSDs). After bootstrapping your monitor, your cluster has a default
 CRUSH map; however, the CRUSH map doesn't have any Ceph OSD Daemons mapped to
 a Ceph Node.
@@ -310,19 +305,19 @@ for use with Ceph. The ``ceph-volume`` utility creates the OSD ID by
 incrementing the index. Additionally, ``ceph-volume`` will add the new OSD to the
 CRUSH map under the host for you. Execute ``ceph-volume -h`` for CLI details.
 The ``ceph-volume`` utility automates the steps of the `Long Form`_ below. To
-create the first two OSDs with the short form procedure, execute the following
-on  ``node2`` and ``node3``:
+create the first two OSDs with the short form procedure, execute the following for each OSD:
 
-bluestore
-^^^^^^^^^
 #. Create the OSD. ::
 
-	ssh {node-name}
+	copy /var/lib/ceph/bootstrap-osd/ceph.keyring from monitor node (mon-node1) to /var/lib/ceph/bootstrap-osd/ceph.keyring on osd node (osd-node1)
+	ssh {osd node}
 	sudo ceph-volume lvm create --data {data-path}
 
    For example::
 
-	ssh node1
+    	scp -3 root@mon-node1:/var/lib/ceph/bootstrap-osd/ceph.keyring root@osd-node1:/var/lib/ceph/bootstrap-osd/ceph.keyring
+    
+	ssh osd-node1
 	sudo ceph-volume lvm create --data /dev/hdd1
 
 Alternatively, the creation process can be split in two phases (prepare, and
@@ -330,12 +325,12 @@ activate):
 
 #. Prepare the OSD. ::
 
-	ssh {node-name}
+	ssh {osd node}
 	sudo ceph-volume lvm prepare --data {data-path} {data-path}
 
    For example::
 
-	ssh node1
+	ssh osd-node1
 	sudo ceph-volume lvm prepare --data /dev/hdd1
 
    Once prepared, the ``ID`` and ``FSID`` of the prepared OSD are required for
@@ -350,45 +345,6 @@ activate):
    For example::
 
 	sudo ceph-volume lvm activate 0 a7f64266-0894-4f1e-a635-d0aeaca0e993
-
-
-filestore
-^^^^^^^^^
-#. Create the OSD. ::
-
-	ssh {node-name}
-	sudo ceph-volume lvm create --filestore --data {data-path} --journal {journal-path}
-
-   For example::
-
-	ssh node1
-	sudo ceph-volume lvm create --filestore --data /dev/hdd1 --journal /dev/hdd2
-
-Alternatively, the creation process can be split in two phases (prepare, and
-activate):
-
-#. Prepare the OSD. ::
-
-	ssh {node-name}
-	sudo ceph-volume lvm prepare --filestore --data {data-path} --journal {journal-path}
-
-   For example::
-
-	ssh node1
-	sudo ceph-volume lvm prepare --filestore --data /dev/hdd1 --journal /dev/hdd2
-
-   Once prepared, the ``ID`` and ``FSID`` of the prepared OSD are required for
-   activation. These can be obtained by listing OSDs in the current server::
-
-    sudo ceph-volume lvm list
-
-#. Activate the OSD::
-
-	sudo ceph-volume lvm activate --filestore {ID} {FSID}
-
-   For example::
-
-	sudo ceph-volume lvm activate --filestore 0 a7f64266-0894-4f1e-a635-d0aeaca0e993
 
 
 Long Form
@@ -482,7 +438,7 @@ In the below instructions, ``{id}`` is an arbitrary name, such as the hostname o
 
 #. Import the keyring and set caps.::
 
-	ceph auth add mds.{id} osd "allow rwx" mds "allow" mon "allow profile mds" -i /var/lib/ceph/mds/{cluster}-{id}/keyring
+	ceph auth add mds.{id} osd "allow rwx" mds "allow *" mon "allow profile mds" -i /var/lib/ceph/mds/{cluster}-{id}/keyring
 
 #. Add to ceph.conf.::
 
@@ -522,16 +478,15 @@ You should see output that looks something like this::
 
 	# id	weight	type name	up/down	reweight
 	-1	2	root default
-	-2	2		host node1
+	-2	2		host osd-node1
 	0	1			osd.0	up	1
-	-3	1		host node2
+	-3	1		host osd-node2
 	1	1			osd.1	up	1
 
 To add (or remove) additional monitors, see `Add/Remove Monitors`_.
 To add (or remove) additional Ceph OSD Daemons, see `Add/Remove OSDs`_.
 
 
-.. _Installation (ceph-deploy): ../ceph-deploy
 .. _Add/Remove Monitors: ../../rados/operations/add-or-rm-mons
 .. _Add/Remove OSDs: ../../rados/operations/add-or-rm-osds
 .. _Network Configuration Reference: ../../rados/configuration/network-config-ref

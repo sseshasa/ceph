@@ -12,12 +12,12 @@
  *
  */
 
-#ifndef RGW_DMCLOCK_ASYNC_SCHEDULER_H
-#define RGW_DMCLOCK_ASYNC_SCHEDULER_H
+#pragma once
 
 #include "common/async/completion.h"
 
-#include <boost/asio.hpp>
+#include <boost/asio/basic_waitable_timer.hpp>
+#include <boost/asio/io_context.hpp>
 #include "rgw_dmclock_scheduler.h"
 #include "rgw_dmclock_scheduler_ctx.h"
 
@@ -82,12 +82,8 @@ class AsyncScheduler : public md_config_obs_t, public Scheduler {
   using Completion = async::Completion<Signature, async::AsBase<Request>>;
 
   using Clock = ceph::coarse_real_clock;
-#if BOOST_VERSION < 107000
-  using Timer = boost::asio::basic_waitable_timer<Clock>;
-#else
   using Timer = boost::asio::basic_waitable_timer<Clock,
         boost::asio::wait_traits<Clock>, executor_type>;
-#endif
   Timer timer; //< timer for the next scheduled request
 
   CephContext *const cct;
@@ -191,6 +187,11 @@ public:
 
   void request_complete() override {
     --outstanding_requests;
+    if (auto c = counters();
+        c != nullptr) {
+      c->inc(throttle_counters::l_outstanding, -1);
+    }
+
   }
 
 private:
@@ -200,6 +201,7 @@ private:
     if (outstanding_requests++ >= max_requests) {
       if (auto c = counters();
           c != nullptr) {
+        c->inc(throttle_counters::l_outstanding);
         c->inc(throttle_counters::l_throttle);
       }
       return -EAGAIN;
@@ -214,4 +216,3 @@ private:
 };
 
 } // namespace rgw::dmclock
-#endif /* RGW_DMCLOCK_ASYNC_SCHEDULER_H */

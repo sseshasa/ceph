@@ -1,34 +1,39 @@
-import { Component, OnInit } from '@angular/core';
-import { AbstractControl, AsyncValidatorFn, ValidationErrors, Validators } from '@angular/forms';
+import { AfterViewChecked, ChangeDetectorRef, Component, OnInit } from '@angular/core';
+import { AbstractControl, Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import _ from 'lodash';
+import { forkJoin } from 'rxjs';
 
-import { RgwBucketService } from '../../../shared/api/rgw-bucket.service';
-import { RgwSiteService } from '../../../shared/api/rgw-site.service';
-import { RgwUserService } from '../../../shared/api/rgw-user.service';
-import { ActionLabelsI18n, URLVerbs } from '../../../shared/constants/app.constants';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { NotificationType } from '../../../shared/enum/notification-type.enum';
-import { CdFormBuilder } from '../../../shared/forms/cd-form-builder';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { CdValidators } from '../../../shared/forms/cd-validators';
-import { NotificationService } from '../../../shared/services/notification.service';
+import { RgwBucketService } from '~/app/shared/api/rgw-bucket.service';
+import { RgwSiteService } from '~/app/shared/api/rgw-site.service';
+import { RgwUserService } from '~/app/shared/api/rgw-user.service';
+import { ActionLabelsI18n, URLVerbs } from '~/app/shared/constants/app.constants';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { NotificationType } from '~/app/shared/enum/notification-type.enum';
+import { CdForm } from '~/app/shared/forms/cd-form';
+import { CdFormBuilder } from '~/app/shared/forms/cd-form-builder';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { CdValidators } from '~/app/shared/forms/cd-validators';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { NotificationService } from '~/app/shared/services/notification.service';
+import { RgwBucketEncryptionModel } from '../models/rgw-bucket-encryption';
 import { RgwBucketMfaDelete } from '../models/rgw-bucket-mfa-delete';
 import { RgwBucketVersioning } from '../models/rgw-bucket-versioning';
+import { RgwConfigModalComponent } from '../rgw-config-modal/rgw-config-modal.component';
+import { BucketTagModalComponent } from '../bucket-tag-modal/bucket-tag-modal.component';
 
 @Component({
   selector: 'cd-rgw-bucket-form',
   templateUrl: './rgw-bucket-form.component.html',
-  styleUrls: ['./rgw-bucket-form.component.scss']
+  styleUrls: ['./rgw-bucket-form.component.scss'],
+  providers: [RgwBucketEncryptionModel]
 })
-export class RgwBucketFormComponent implements OnInit {
+export class RgwBucketFormComponent extends CdForm implements OnInit, AfterViewChecked {
   bucketForm: CdFormGroup;
   editing = false;
-  error = false;
-  loading = false;
   owners: string[] = null;
+  kmsProviders: string[] = null;
   action: string;
   resource: string;
   zonegroup: string;
@@ -36,6 +41,17 @@ export class RgwBucketFormComponent implements OnInit {
   isVersioningAlreadyEnabled = false;
   isMfaDeleteAlreadyEnabled = false;
   icons = Icons;
+  kmsVaultConfig = false;
+  s3VaultConfig = false;
+  tags: Record<string, string>[] = [];
+  tagConfig = [
+    {
+      attribute: 'key'
+    },
+    {
+      attribute: 'value'
+    }
+  ];
 
   get isVersioningEnabled(): boolean {
     return this.bucketForm.getValue('versioning');
@@ -50,101 +66,160 @@ export class RgwBucketFormComponent implements OnInit {
     private formBuilder: CdFormBuilder,
     private rgwBucketService: RgwBucketService,
     private rgwSiteService: RgwSiteService,
+    private modalService: ModalService,
     private rgwUserService: RgwUserService,
     private notificationService: NotificationService,
-    private i18n: I18n,
-    public actionLabels: ActionLabelsI18n
+    private rgwEncryptionModal: RgwBucketEncryptionModel,
+    public actionLabels: ActionLabelsI18n,
+    private readonly changeDetectorRef: ChangeDetectorRef
   ) {
+    super();
     this.editing = this.router.url.startsWith(`/rgw/bucket/${URLVerbs.EDIT}`);
     this.action = this.editing ? this.actionLabels.EDIT : this.actionLabels.CREATE;
-    this.resource = this.i18n('bucket');
+    this.resource = $localize`bucket`;
     this.createForm();
+  }
+
+  ngAfterViewChecked(): void {
+    this.changeDetectorRef.detectChanges();
   }
 
   createForm() {
     const self = this;
-    const eitherDaysOrYears = CdValidators.custom('eitherDaysOrYears', () => {
+    const lockDaysValidator = CdValidators.custom('lockDays', () => {
       if (!self.bucketForm || !_.get(self.bucketForm.getRawValue(), 'lock_enabled')) {
         return false;
       }
-      const years = self.bucketForm.getValue('lock_retention_period_years');
-      const days = self.bucketForm.getValue('lock_retention_period_days');
-      return (days > 0 && years > 0) || (days === 0 && years === 0);
+      const lockDays = Number(self.bucketForm.getValue('lock_retention_period_days'));
+      return !Number.isInteger(lockDays) || lockDays === 0;
     });
-    const lockPeriodDefinition = [0, [CdValidators.number(false), eitherDaysOrYears]];
     this.bucketForm = this.formBuilder.group({
       id: [null],
-      bid: [null, [Validators.required], this.editing ? [] : [this.bucketNameValidator()]],
+      bid: [
+        null,
+        [Validators.required],
+        this.editing
+          ? []
+          : [CdValidators.bucketName(), CdValidators.bucketExistence(false, this.rgwBucketService)]
+      ],
       owner: [null, [Validators.required]],
+      kms_provider: ['vault'],
       'placement-target': [null, this.editing ? [] : [Validators.required]],
       versioning: [null],
       'mfa-delete': [null],
       'mfa-token-serial': [''],
       'mfa-token-pin': [''],
       lock_enabled: [{ value: false, disabled: this.editing }],
+      encryption_enabled: [null],
+      encryption_type: [
+        null,
+        [
+          CdValidators.requiredIf({
+            encryption_enabled: true
+          })
+        ]
+      ],
+      keyId: [
+        null,
+        [
+          CdValidators.requiredIf({
+            encryption_type: 'aws:kms',
+            encryption_enabled: true
+          })
+        ]
+      ],
       lock_mode: ['COMPLIANCE'],
-      lock_retention_period_days: lockPeriodDefinition,
-      lock_retention_period_years: lockPeriodDefinition
+      lock_retention_period_days: [0, [CdValidators.number(false), lockDaysValidator]]
     });
   }
 
   ngOnInit() {
-    // Get the list of possible owners.
-    this.rgwUserService.enumerate().subscribe((resp: string[]) => {
-      this.owners = resp.sort();
+    const promises = {
+      owners: this.rgwUserService.enumerate()
+    };
+
+    this.kmsProviders = this.rgwEncryptionModal.kmsProviders;
+    this.rgwBucketService.getEncryptionConfig().subscribe((data) => {
+      this.kmsVaultConfig = data[0];
+      this.s3VaultConfig = data[1];
+      if (this.kmsVaultConfig && this.s3VaultConfig) {
+        this.bucketForm.get('encryption_type').setValue('');
+      } else if (this.kmsVaultConfig) {
+        this.bucketForm.get('encryption_type').setValue('aws:kms');
+      } else if (this.s3VaultConfig) {
+        this.bucketForm.get('encryption_type').setValue('AES256');
+      } else {
+        this.bucketForm.get('encryption_type').setValue('');
+      }
     });
 
     if (!this.editing) {
-      // Get placement targets:
-      this.rgwSiteService.getPlacementTargets().subscribe((placementTargets: any) => {
-        this.zonegroup = placementTargets['zonegroup'];
-        _.forEach(placementTargets['placement_targets'], (placementTarget) => {
-          placementTarget['description'] = `${placementTarget['name']} (${this.i18n('pool')}: ${
-            placementTarget['data_pool']
-          })`;
-          this.placementTargets.push(placementTarget);
-        });
-
-        // If there is only 1 placement target, select it by default:
-        if (this.placementTargets.length === 1) {
-          this.bucketForm.get('placement-target').setValue(this.placementTargets[0]['name']);
-        }
-      });
+      promises['getPlacementTargets'] = this.rgwSiteService.get('placement-targets');
     }
 
     // Process route parameters.
     this.route.params.subscribe((params: { bid: string }) => {
-      if (!params.hasOwnProperty('bid')) {
-        return;
+      if (params.hasOwnProperty('bid')) {
+        const bid = decodeURIComponent(params.bid);
+        promises['getBid'] = this.rgwBucketService.get(bid);
       }
-      const bid = decodeURIComponent(params.bid);
-      this.loading = true;
 
-      this.rgwBucketService.get(bid).subscribe((resp: object) => {
-        this.loading = false;
+      forkJoin(promises).subscribe((data: any) => {
+        // Get the list of possible owners.
+        this.owners = (<string[]>data.owners).sort();
 
-        // Get the default values (incl. the values from disabled fields).
-        const defaults = _.clone(this.bucketForm.getRawValue());
+        // Get placement targets:
+        if (data['getPlacementTargets']) {
+          const placementTargets = data['getPlacementTargets'];
+          this.zonegroup = placementTargets['zonegroup'];
+          _.forEach(placementTargets['placement_targets'], (placementTarget) => {
+            placementTarget['description'] = `${placementTarget['name']} (${$localize`pool`}: ${
+              placementTarget['data_pool']
+            })`;
+            this.placementTargets.push(placementTarget);
+          });
 
-        // Get the values displayed in the form. We need to do that to
-        // extract those key/value pairs from the response data, otherwise
-        // the Angular react framework will throw an error if there is no
-        // field for a given key.
-        let value: object = _.pick(resp, _.keys(defaults));
-        value['placement-target'] = resp['placement_rule'];
-        value['versioning'] = resp['versioning'] === RgwBucketVersioning.ENABLED;
-        value['mfa-delete'] = resp['mfa_delete'] === RgwBucketMfaDelete.ENABLED;
-
-        // Append default values.
-        value = _.merge(defaults, value);
-
-        // Update the form.
-        this.bucketForm.setValue(value);
-        if (this.editing) {
-          this.isVersioningAlreadyEnabled = this.isVersioningEnabled;
-          this.isMfaDeleteAlreadyEnabled = this.isMfaDeleteEnabled;
-          this.setMfaDeleteValidators();
+          // If there is only 1 placement target, select it by default:
+          if (this.placementTargets.length === 1) {
+            this.bucketForm.get('placement-target').setValue(this.placementTargets[0]['name']);
+          }
         }
+
+        if (data['getBid']) {
+          const bidResp = data['getBid'];
+          // Get the default values (incl. the values from disabled fields).
+          const defaults = _.clone(this.bucketForm.getRawValue());
+
+          // Get the values displayed in the form. We need to do that to
+          // extract those key/value pairs from the response data, otherwise
+          // the Angular react framework will throw an error if there is no
+          // field for a given key.
+          let value: object = _.pick(bidResp, _.keys(defaults));
+
+          value['lock_retention_period_days'] = this.rgwBucketService.getLockDays(bidResp);
+          value['placement-target'] = bidResp['placement_rule'];
+          value['versioning'] = bidResp['versioning'] === RgwBucketVersioning.ENABLED;
+          value['mfa-delete'] = bidResp['mfa_delete'] === RgwBucketMfaDelete.ENABLED;
+          value['encryption_enabled'] = bidResp['encryption'] === 'Enabled';
+          if (bidResp['tagset']) {
+            for (const [key, value] of Object.entries(bidResp['tagset'])) {
+              this.tags.push({ key: key, value: value.toString() });
+            }
+          }
+          // Append default values.
+          value = _.merge(defaults, value);
+          // Update the form.
+          this.bucketForm.setValue(value);
+          if (this.editing) {
+            this.isVersioningAlreadyEnabled = this.isVersioningEnabled;
+            this.isMfaDeleteAlreadyEnabled = this.isMfaDeleteEnabled;
+            this.setMfaDeleteValidators();
+            if (value['lock_enabled']) {
+              this.bucketForm.controls['versioning'].disable();
+            }
+          }
+        }
+        this.loadingReady();
       });
     });
   }
@@ -155,11 +230,16 @@ export class RgwBucketFormComponent implements OnInit {
 
   submit() {
     // Exit immediately if the form isn't dirty.
+    if (this.bucketForm.getValue('encryption_enabled') == null) {
+      this.bucketForm.get('encryption_enabled').setValue(false);
+      this.bucketForm.get('encryption_type').setValue(null);
+    }
     if (this.bucketForm.pristine) {
       this.goToListView();
       return;
     }
     const values = this.bucketForm.value;
+    const xmlStrTags = this.tagsToXML(this.tags);
     if (this.editing) {
       // Edit
       const versioning = this.getVersioningStatus();
@@ -170,18 +250,21 @@ export class RgwBucketFormComponent implements OnInit {
           values['id'],
           values['owner'],
           versioning,
+          values['encryption_enabled'],
+          values['encryption_type'],
+          values['keyId'],
           mfaDelete,
           values['mfa-token-serial'],
           values['mfa-token-pin'],
           values['lock_mode'],
           values['lock_retention_period_days'],
-          values['lock_retention_period_years']
+          xmlStrTags
         )
         .subscribe(
           () => {
             this.notificationService.show(
               NotificationType.success,
-              this.i18n('Updated Object Gateway bucket "{{bid}}".', values)
+              $localize`Updated Object Gateway bucket '${values.bid}'.`
             );
             this.goToListView();
           },
@@ -201,13 +284,16 @@ export class RgwBucketFormComponent implements OnInit {
           values['lock_enabled'],
           values['lock_mode'],
           values['lock_retention_period_days'],
-          values['lock_retention_period_years']
+          values['encryption_enabled'],
+          values['encryption_type'],
+          values['keyId'],
+          xmlStrTags
         )
         .subscribe(
           () => {
             this.notificationService.show(
               NotificationType.success,
-              this.i18n('Created Object Gateway bucket "{{bid}}"', values)
+              $localize`Created Object Gateway bucket '${values.bid}'`
             );
             this.goToListView();
           },
@@ -217,76 +303,6 @@ export class RgwBucketFormComponent implements OnInit {
           }
         );
     }
-  }
-
-  /**
-   * Validate the bucket name. In general, bucket names should follow domain
-   * name constraints:
-   * - Bucket names must be unique.
-   * - Bucket names cannot be formatted as IP address.
-   * - Bucket names can be between 3 and 63 characters long.
-   * - Bucket names must not contain uppercase characters or underscores.
-   * - Bucket names must start with a lowercase letter or number.
-   * - Bucket names must be a series of one or more labels. Adjacent
-   *   labels are separated by a single period (.). Bucket names can
-   *   contain lowercase letters, numbers, and hyphens. Each label must
-   *   start and end with a lowercase letter or a number.
-   */
-  bucketNameValidator(): AsyncValidatorFn {
-    const rgwBucketService = this.rgwBucketService;
-    return (control: AbstractControl): Promise<ValidationErrors | null> => {
-      return new Promise((resolve) => {
-        // Exit immediately if user has not interacted with the control yet
-        // or the control value is empty.
-        if (control.pristine || control.value === '') {
-          resolve(null);
-          return;
-        }
-        const constraints = [];
-        // - Bucket names cannot be formatted as IP address.
-        constraints.push((name: AbstractControl) => {
-          const validatorFn = CdValidators.ip();
-          return !validatorFn(name);
-        });
-        // - Bucket names can be between 3 and 63 characters long.
-        constraints.push((name: string) => _.inRange(name.length, 3, 64));
-        // - Bucket names must not contain uppercase characters or underscores.
-        // - Bucket names must start with a lowercase letter or number.
-        // - Bucket names must be a series of one or more labels. Adjacent
-        //   labels are separated by a single period (.). Bucket names can
-        //   contain lowercase letters, numbers, and hyphens. Each label must
-        //   start and end with a lowercase letter or a number.
-        constraints.push((name: string) => {
-          const labels = _.split(name, '.');
-          return _.every(labels, (label) => {
-            // Bucket names must not contain uppercase characters or underscores.
-            if (label !== _.toLower(label) || label.includes('_')) {
-              return false;
-            }
-            // Bucket names can contain lowercase letters, numbers, and hyphens.
-            if (!/[0-9a-z-]/.test(label)) {
-              return false;
-            }
-            // Each label must start and end with a lowercase letter or a number.
-            return _.every([0, label.length], (index) => {
-              return /[a-z]/.test(label[index]) || _.isInteger(_.parseInt(label[index]));
-            });
-          });
-        });
-        if (!_.every(constraints, (func: Function) => func(control.value))) {
-          resolve({ bucketNameInvalid: true });
-          return;
-        }
-        // - Bucket names must be unique.
-        rgwBucketService.exists(control.value).subscribe((resp: boolean) => {
-          if (!resp) {
-            resolve(null);
-          } else {
-            resolve({ bucketNameExists: true });
-          }
-        });
-      });
-    };
   }
 
   areMfaCredentialsRequired() {
@@ -319,5 +335,71 @@ export class RgwBucketFormComponent implements OnInit {
 
   getMfaDeleteStatus() {
     return this.isMfaDeleteEnabled ? RgwBucketMfaDelete.ENABLED : RgwBucketMfaDelete.DISABLED;
+  }
+
+  fileUpload(files: FileList, controlName: string) {
+    const file: File = files[0];
+    const reader = new FileReader();
+    reader.addEventListener('load', () => {
+      const control: AbstractControl = this.bucketForm.get(controlName);
+      control.setValue(file);
+      control.markAsDirty();
+      control.markAsTouched();
+      control.updateValueAndValidity();
+    });
+  }
+
+  openConfigModal() {
+    const modalRef = this.modalService.show(RgwConfigModalComponent, null, { size: 'lg' });
+    modalRef.componentInstance.configForm
+      .get('encryptionType')
+      .setValue(this.bucketForm.getValue('encryption_type') || 'AES256');
+  }
+
+  showTagModal(index?: number) {
+    const modalRef = this.modalService.show(BucketTagModalComponent);
+    const modalComponent = modalRef.componentInstance as BucketTagModalComponent;
+    modalComponent.currentKeyTags = this.tags.map((item) => item.key);
+
+    if (_.isNumber(index)) {
+      modalComponent.editMode = true;
+      modalComponent.fillForm(this.tags[index]);
+      modalComponent.storedKey = this.tags[index]['key'];
+    }
+
+    modalComponent.submitAction.subscribe((tag: Record<string, string>) => {
+      this.setTag(tag, index);
+    });
+  }
+
+  deleteTag(index: number) {
+    this.tags.splice(index, 1);
+  }
+
+  private setTag(tag: Record<string, string>, index?: number) {
+    if (_.isNumber(index)) {
+      this.tags[index] = tag;
+    } else {
+      this.tags.push(tag);
+    }
+    this.bucketForm.markAsDirty();
+    this.bucketForm.updateValueAndValidity();
+  }
+
+  private tagsToXML(tags: Record<string, string>[]): string {
+    let xml = '<Tagging><TagSet>';
+    for (const tag of tags) {
+      xml += '<Tag>';
+      for (const key in tag) {
+        if (key === 'key') {
+          xml += `<Key>${tag[key]}</Key>`;
+        } else if (key === 'value') {
+          xml += `<Value>${tag[key]}</Value>`;
+        }
+      }
+      xml += '</Tag>';
+    }
+    xml += '</TagSet></Tagging>';
+    return xml;
   }
 }

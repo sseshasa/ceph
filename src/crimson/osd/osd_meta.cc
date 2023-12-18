@@ -9,8 +9,10 @@
 #include "crimson/os/futurized_collection.h"
 #include "crimson/os/futurized_store.h"
 #include "os/Transaction.h"
+#include "osd/OSDMap.h"
 
-using read_errorator = crimson::os::FuturizedStore::read_errorator;
+using std::string;
+using read_errorator = crimson::os::FuturizedStore::Shard::read_errorator;
 
 void OSDMeta::create(ceph::os::Transaction& t)
 {
@@ -23,14 +25,19 @@ void OSDMeta::store_map(ceph::os::Transaction& t,
   t.write(coll->get_cid(), osdmap_oid(e), 0, m.length(), m);
 }
 
+void OSDMeta::remove_map(ceph::os::Transaction& t, epoch_t e)
+{
+  t.remove(coll->get_cid(), osdmap_oid(e));
+}
+
 seastar::future<bufferlist> OSDMeta::load_map(epoch_t e)
 {
-  return store->read(coll,
-                     osdmap_oid(e), 0, 0,
-                     CEPH_OSD_OP_FLAG_FADVISE_WILLNEED).handle_error(
+  return store.read(coll,
+                    osdmap_oid(e), 0, 0,
+                    CEPH_OSD_OP_FLAG_FADVISE_WILLNEED).handle_error(
     read_errorator::all_same_way([e] {
-      throw std::runtime_error(fmt::format("read gave enoent on {}",
-                                           osdmap_oid(e)));
+      ceph_abort_msg(fmt::format("{} read gave enoent on {}",
+                                 __func__, osdmap_oid(e)));
     }));
 }
 
@@ -42,26 +49,24 @@ void OSDMeta::store_superblock(ceph::os::Transaction& t,
   t.write(coll->get_cid(), superblock_oid(), 0, bl.length(), bl);
 }
 
-seastar::future<OSDSuperblock> OSDMeta::load_superblock()
+OSDMeta::load_superblock_ret OSDMeta::load_superblock()
 {
-  return store->read(coll, superblock_oid(), 0, 0).safe_then(
-    [this] (bufferlist&& bl) {
-      auto p = bl.cbegin();
-      OSDSuperblock superblock;
-      decode(superblock, p);
-      return seastar::make_ready_future<OSDSuperblock>(std::move(superblock));
-    }, read_errorator::all_same_way([] {
-      throw std::runtime_error(fmt::format("read gave enoent on {}",
-                                           superblock_oid()));
-    }));
+  return store.read(
+    coll, superblock_oid(), 0, 0
+  ).safe_then([] (bufferlist&& bl) {
+    auto p = bl.cbegin();
+    OSDSuperblock superblock;
+    decode(superblock, p);
+    return seastar::make_ready_future<OSDSuperblock>(std::move(superblock));
+  });
 }
 
 seastar::future<std::tuple<pg_pool_t,
 			   std::string,
 			   OSDMeta::ec_profile_t>>
 OSDMeta::load_final_pool_info(int64_t pool) {
-  return store->read(coll, final_pool_info_oid(pool),
-                     0, 0).safe_then([this] (bufferlist&& bl) {
+  return store.read(coll, final_pool_info_oid(pool),
+                     0, 0).safe_then([] (bufferlist&& bl) {
     auto p = bl.cbegin();
     pg_pool_t pi;
     string name;
@@ -79,6 +84,36 @@ OSDMeta::load_final_pool_info(int64_t pool) {
     throw std::runtime_error(fmt::format("read gave enoent on {}",
                                          final_pool_info_oid(pool)));
   }));
+}
+
+void OSDMeta::store_final_pool_info(
+  ceph::os::Transaction &t,
+  OSDMap* lastmap,
+  std::map<epoch_t, OSDMap*> &added_map)
+{
+  for (auto [e, map] : added_map) {
+    if (!lastmap) {
+      lastmap = map;
+      continue;
+    }
+    for (auto &[pool_id, pool] : lastmap->get_pools()) {
+      if (!map->have_pg_pool(pool_id)) {
+	ghobject_t obj = final_pool_info_oid(pool_id);
+	bufferlist bl;
+	encode(pool, bl, CEPH_FEATURES_ALL);
+	string name = lastmap->get_pool_name(pool_id);
+	encode(name, bl);
+	std::map<string, string> profile;
+	if (pool.is_erasure()) {
+	  profile = lastmap->get_erasure_code_profile(
+	    pool.erasure_code_profile);
+	}
+	encode(profile, bl);
+	t.write(coll->get_cid(), obj, 0, bl.length(), bl);
+      }
+    }
+    lastmap = map;
+  }
 }
 
 ghobject_t OSDMeta::osdmap_oid(epoch_t epoch)

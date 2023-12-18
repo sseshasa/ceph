@@ -121,7 +121,7 @@ std::ostream& operator<<(std::ostream& os, ScheduleStatus &s) {
 void get_arguments_add(po::options_description *positional,
                        po::options_description *options) {
   add_level_spec_options(options);
-  add_schedule_options(positional);
+  add_schedule_options(positional, true);
 }
 
 int execute_add(const po::variables_map &vm,
@@ -143,6 +143,7 @@ int execute_add(const po::variables_map &vm,
     return r;
   }
 
+  normalize_level_spec_args(&args);
   r = utils::mgr_command(rados, "rbd mirror snapshot schedule add", args,
                          &std::cout, &std::cerr);
   if (r < 0) {
@@ -155,7 +156,7 @@ int execute_add(const po::variables_map &vm,
 void get_arguments_remove(po::options_description *positional,
                           po::options_description *options) {
   add_level_spec_options(options);
-  add_schedule_options(positional);
+  add_schedule_options(positional, false);
 }
 
 int execute_remove(const po::variables_map &vm,
@@ -177,6 +178,7 @@ int execute_remove(const po::variables_map &vm,
     return r;
   }
 
+  normalize_level_spec_args(&args);
   r = utils::mgr_command(rados, "rbd mirror snapshot schedule remove", args,
                          &std::cout, &std::cerr);
   if (r < 0) {
@@ -215,6 +217,7 @@ int execute_list(const po::variables_map &vm,
     return r;
   }
 
+  normalize_level_spec_args(&args);
   std::stringstream out;
   r = utils::mgr_command(rados, "rbd mirror snapshot schedule list", args, &out,
                          &std::cerr);
@@ -279,6 +282,7 @@ int execute_status(const po::variables_map &vm,
     return r;
   }
 
+  normalize_level_spec_args(&args);
   std::stringstream out;
   r = utils::mgr_command(rados, "rbd mirror snapshot schedule status", args,
                          &out, &std::cerr);

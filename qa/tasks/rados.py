@@ -6,7 +6,6 @@ import logging
 import gevent
 from teuthology import misc as teuthology
 
-import six
 
 from teuthology.orchestra import run
 
@@ -153,6 +152,10 @@ def task(ctx, config):
         args.extend(['--enable_dedup'])
     if config.get('low_tier_pool', None):
         args.extend(['--low_tier_pool', config.get('low_tier_pool', None)])
+    if config.get('dedup_chunk_size', False):
+        args.extend(['--dedup_chunk_size', config.get('dedup_chunk_size', None)] )
+    if config.get('dedup_chunk_algo', False):
+        args.extend(['--dedup_chunk_algo', config.get('dedup_chunk_algo', None)])
     if config.get('pool_snaps', False):
         args.extend(['--pool-snaps'])
     if config.get('balance_reads', False):
@@ -194,7 +197,12 @@ def task(ctx, config):
         "append",
         "write",
         "read",
-        "delete"
+        "delete",
+        "set_chunk",
+        "tier_promote",
+        "tier_evict",
+        "tier_promote",
+        "tier_flush"
         ]:
         if field in op_weights:
             weights[field] = op_weights[field]
@@ -231,7 +239,7 @@ def task(ctx, config):
             existing_pools = config.get('pools', [])
             created_pools = []
             for role in config.get('clients', clients):
-                assert isinstance(role, six.string_types)
+                assert isinstance(role, str)
                 PREFIX = 'client.'
                 assert role.startswith(PREFIX)
                 id_ = role[len(PREFIX):]

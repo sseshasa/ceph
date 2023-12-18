@@ -1,29 +1,20 @@
+import { HttpHeaders } from '@angular/common/http';
 import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { AlertModule } from 'ngx-bootstrap/alert';
-import { BsDropdownModule } from 'ngx-bootstrap/dropdown';
-import { ModalModule } from 'ngx-bootstrap/modal';
-import { TabsModule } from 'ngx-bootstrap/tabs';
-import { TooltipModule } from 'ngx-bootstrap/tooltip';
+import { NgbNavModule, NgbTooltipModule } from '@ng-bootstrap/ng-bootstrap';
 import { ToastrModule } from 'ngx-toastr';
 import { BehaviorSubject, of } from 'rxjs';
 
-import {
-  configureTestBed,
-  expectItemTasks,
-  i18nProviders,
-  PermissionHelper
-} from '../../../../testing/unit-test-helper';
-import { RbdService } from '../../../shared/api/rbd.service';
-import { TableActionsComponent } from '../../../shared/datatable/table-actions/table-actions.component';
-import { ViewCacheStatus } from '../../../shared/enum/view-cache-status.enum';
-import { ExecutingTask } from '../../../shared/models/executing-task';
-import { SummaryService } from '../../../shared/services/summary.service';
-import { TaskListService } from '../../../shared/services/task-list.service';
-import { SharedModule } from '../../../shared/shared.module';
+import { RbdService } from '~/app/shared/api/rbd.service';
+import { TableActionsComponent } from '~/app/shared/datatable/table-actions/table-actions.component';
+import { ExecutingTask } from '~/app/shared/models/executing-task';
+import { SummaryService } from '~/app/shared/services/summary.service';
+import { TaskListService } from '~/app/shared/services/task-list.service';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed, expectItemTasks, PermissionHelper } from '~/testing/unit-test-helper';
 import { RbdConfigurationListComponent } from '../rbd-configuration-list/rbd-configuration-list.component';
 import { RbdDetailsComponent } from '../rbd-details/rbd-details.component';
 import { RbdSnapshotListComponent } from '../rbd-snapshot-list/rbd-snapshot-list.component';
@@ -36,6 +27,7 @@ describe('RbdListComponent', () => {
   let component: RbdListComponent;
   let summaryService: SummaryService;
   let rbdService: RbdService;
+  let headers: HttpHeaders;
 
   const refresh = (data: any) => {
     summaryService['summaryDataSource'].next(data);
@@ -45,12 +37,9 @@ describe('RbdListComponent', () => {
     imports: [
       BrowserAnimationsModule,
       SharedModule,
-      BsDropdownModule.forRoot(),
-      TabsModule.forRoot(),
-      ModalModule.forRoot(),
-      TooltipModule.forRoot(),
+      NgbNavModule,
+      NgbTooltipModule,
       ToastrModule.forRoot(),
-      AlertModule.forRoot(),
       RouterTestingModule,
       HttpClientTestingModule
     ],
@@ -61,14 +50,15 @@ describe('RbdListComponent', () => {
       RbdConfigurationListComponent,
       RbdTabsComponent
     ],
-    providers: [TaskListService, i18nProviders]
+    providers: [TaskListService]
   });
 
   beforeEach(() => {
     fixture = TestBed.createComponent(RbdListComponent);
     component = fixture.componentInstance;
-    summaryService = TestBed.get(SummaryService);
-    rbdService = TestBed.get(RbdService);
+    summaryService = TestBed.inject(SummaryService);
+    rbdService = TestBed.inject(RbdService);
+    headers = new HttpHeaders().set('X-Total-Count', '10');
 
     // this is needed because summaryService isn't being reset after each test.
     summaryService['summaryDataSource'] = new BehaviorSubject(null);
@@ -99,7 +89,6 @@ describe('RbdListComponent', () => {
       spyOn(component.table, 'reset');
       summaryService['summaryDataSource'].error(undefined);
       expect(component.table.reset).toHaveBeenCalled();
-      expect(component.viewCacheStatusList).toEqual([{ status: ViewCacheStatus.ValueException }]);
     });
   });
 
@@ -138,7 +127,7 @@ describe('RbdListComponent', () => {
           }
         ]
       });
-      expect(component.getDeleteDisableDesc()).toBe(
+      expect(component.getDeleteDisableDesc(component.selection)).toBe(
         'This RBD has cloned snapshots. Please delete related RBDs before deleting this RBD.'
       );
     });
@@ -217,7 +206,7 @@ describe('RbdListComponent', () => {
       component.images = images;
       refresh({ executing_tasks: [], finished_tasks: [] });
       spyOn(rbdService, 'list').and.callFake(() =>
-        of([{ pool_name: 'rbd', status: 1, value: images }])
+        of([{ pool_name: 'rbd', value: images, headers: headers }])
       );
       fixture.detectChanges();
     });
@@ -256,12 +245,12 @@ describe('RbdListComponent', () => {
 
     it('should show when an existing image is being modified', () => {
       addTask('rbd/edit', 'a');
-      addTask('rbd/delete', 'b');
-      addTask('rbd/flatten', 'c');
-      expect(component.images.length).toBe(3);
       expectItemTasks(component.images[0], 'Updating');
+      addTask('rbd/delete', 'b');
       expectItemTasks(component.images[1], 'Deleting');
+      addTask('rbd/flatten', 'c');
       expectItemTasks(component.images[2], 'Flattening');
+      expect(component.images.length).toBe(3);
     });
   });
 
@@ -273,11 +262,31 @@ describe('RbdListComponent', () => {
 
     expect(tableActions).toEqual({
       'create,update,delete': {
-        actions: ['Create', 'Edit', 'Copy', 'Flatten', 'Delete', 'Move to Trash'],
+        actions: [
+          'Create',
+          'Edit',
+          'Copy',
+          'Flatten',
+          'Resync',
+          'Delete',
+          'Move to Trash',
+          'Remove Scheduling',
+          'Promote',
+          'Demote'
+        ],
         primary: { multiple: 'Create', executing: 'Edit', single: 'Edit', no: 'Create' }
       },
       'create,update': {
-        actions: ['Create', 'Edit', 'Copy', 'Flatten'],
+        actions: [
+          'Create',
+          'Edit',
+          'Copy',
+          'Flatten',
+          'Resync',
+          'Remove Scheduling',
+          'Promote',
+          'Demote'
+        ],
         primary: { multiple: 'Create', executing: 'Edit', single: 'Edit', no: 'Create' }
       },
       'create,delete': {
@@ -289,11 +298,20 @@ describe('RbdListComponent', () => {
         primary: { multiple: 'Create', executing: 'Copy', single: 'Copy', no: 'Create' }
       },
       'update,delete': {
-        actions: ['Edit', 'Flatten', 'Delete', 'Move to Trash'],
+        actions: [
+          'Edit',
+          'Flatten',
+          'Resync',
+          'Delete',
+          'Move to Trash',
+          'Remove Scheduling',
+          'Promote',
+          'Demote'
+        ],
         primary: { multiple: 'Edit', executing: 'Edit', single: 'Edit', no: 'Edit' }
       },
       update: {
-        actions: ['Edit', 'Flatten'],
+        actions: ['Edit', 'Flatten', 'Resync', 'Remove Scheduling', 'Promote', 'Demote'],
         primary: { multiple: 'Edit', executing: 'Edit', single: 'Edit', no: 'Edit' }
       },
       delete: {
@@ -305,5 +323,62 @@ describe('RbdListComponent', () => {
         primary: { multiple: '', executing: '', single: '', no: '' }
       }
     });
+  });
+
+  const getActionDisable = (name: string) =>
+    component.tableActions.find((o) => o.name === name).disable;
+
+  const testActions = (selection: any, expected: { [action: string]: string | boolean }) => {
+    expect(getActionDisable('Edit')(selection)).toBe(expected.edit || false);
+    expect(getActionDisable('Delete')(selection)).toBe(expected.delete || false);
+    expect(getActionDisable('Copy')(selection)).toBe(expected.copy || false);
+    expect(getActionDisable('Flatten')(selection)).toBeTruthy();
+    expect(getActionDisable('Move to Trash')(selection)).toBe(expected.moveTrash || false);
+  };
+
+  it('should test TableActions with valid/invalid image name', () => {
+    component.selection.selected = [
+      {
+        name: 'foobar',
+        pool_name: 'rbd',
+        snapshots: []
+      }
+    ];
+    testActions(component.selection, {});
+
+    component.selection.selected = [
+      {
+        name: 'foo/bar',
+        pool_name: 'rbd',
+        snapshots: []
+      }
+    ];
+    const message = `This RBD image has an invalid name and can't be managed by ceph.`;
+    const expected = {
+      edit: message,
+      delete: message,
+      copy: message,
+      moveTrash: message
+    };
+    testActions(component.selection, expected);
+  });
+
+  it('should disable edit, copy, flatten and move action if RBD is in status `Removing`', () => {
+    component.selection.selected = [
+      {
+        name: 'foobar',
+        pool_name: 'rbd',
+        snapshots: [],
+        source: 'REMOVING'
+      }
+    ];
+
+    const message = `Action not possible for an RBD in status 'Removing'`;
+    const expected = {
+      edit: message,
+      copy: message,
+      moveTrash: message
+    };
+    testActions(component.selection, expected);
   });
 });

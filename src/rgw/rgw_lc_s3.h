@@ -1,8 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef CEPH_RGW_LC_S3_H
-#define CEPH_RGW_LC_S3_H
+#pragma once
 
 #include <map>
 #include <string>
@@ -13,6 +12,7 @@
 #include "rgw_lc.h"
 #include "rgw_xml.h"
 #include "rgw_tag_s3.h"
+
 
 class LCFilter_S3 : public LCFilter
 {
@@ -27,7 +27,7 @@ private:
   bool dm_expiration{false};
 public:
   LCExpiration_S3() {}
-  LCExpiration_S3(string _days, string _date, bool _dm_expiration) : LCExpiration(_days, _date), dm_expiration(_dm_expiration) {}
+  LCExpiration_S3(std::string _days, std::string _date, bool _dm_expiration) : LCExpiration(_days, _date), dm_expiration(_dm_expiration) {}
 
   void dump_xml(Formatter *f) const;
   void decode_xml(XMLObj *obj);
@@ -95,8 +95,6 @@ public:
   RGWLifecycleConfiguration_S3() : RGWLifecycleConfiguration(nullptr) {}
 
   void decode_xml(XMLObj *obj);
-  int rebuild(RGWRados *store, RGWLifecycleConfiguration& dest);
+  int rebuild(RGWLifecycleConfiguration& dest);
   void dump_xml(Formatter *f) const;
 };
-
-#endif

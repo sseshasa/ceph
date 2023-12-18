@@ -36,11 +36,13 @@
 #include "messages/MMonPaxos.h"
 #include "messages/MConfig.h"
 #include "messages/MGetConfig.h"
+#include "messages/MKVData.h"
 
 #include "messages/MMonProbe.h"
 #include "messages/MMonJoin.h"
 #include "messages/MMonElection.h"
 #include "messages/MMonSync.h"
+#include "messages/MMonPing.h"
 #include "messages/MMonScrub.h"
 
 #include "messages/MLog.h"
@@ -83,12 +85,10 @@
 #include "messages/MOSDPGRemove.h"
 #include "messages/MOSDPGInfo.h"
 #include "messages/MOSDPGInfo2.h"
-#include "messages/MOSDPGCreate.h"
 #include "messages/MOSDPGCreate2.h"
 #include "messages/MOSDPGTrim.h"
 #include "messages/MOSDPGLease.h"
 #include "messages/MOSDPGLeaseAck.h"
-#include "messages/MOSDScrub.h"
 #include "messages/MOSDScrub2.h"
 #include "messages/MOSDScrubReserve.h"
 #include "messages/MOSDRepScrub.h"
@@ -110,12 +110,12 @@
 #include "messages/MMonGetVersionReply.h"
 #include "messages/MMonHealth.h"
 #include "messages/MMonHealthChecks.h"
-#include "messages/MMonMetadata.h"
 #include "messages/MAuth.h"
 #include "messages/MAuthReply.h"
 #include "messages/MMonSubscribe.h"
 #include "messages/MMonSubscribeAck.h"
 #include "messages/MMonGlobalID.h"
+#include "messages/MMonUsedPendingKeys.h"
 #include "messages/MClientSession.h"
 #include "messages/MClientReconnect.h"
 #include "messages/MClientRequest.h"
@@ -128,8 +128,9 @@
 #include "messages/MClientLease.h"
 #include "messages/MClientSnap.h"
 #include "messages/MClientQuota.h"
+#include "messages/MClientMetrics.h"
 
-#include "messages/MMDSSlaveRequest.h"
+#include "messages/MMDSPeerRequest.h"
 
 #include "messages/MMDSMap.h"
 #include "messages/MFSMap.h"
@@ -144,6 +145,8 @@
 #include "messages/MMDSOpenIno.h"
 #include "messages/MMDSOpenInoReply.h"
 #include "messages/MMDSSnapUpdate.h"
+#include "messages/MMDSScrub.h"
+#include "messages/MMDSScrubStats.h"
 
 #include "messages/MDirUpdate.h"
 #include "messages/MDiscover.h"
@@ -174,6 +177,8 @@
 #include "messages/MHeartbeat.h"
 
 #include "messages/MMDSTableRequest.h"
+#include "messages/MMDSMetrics.h"
+#include "messages/MMDSPing.h"
 
 //#include "messages/MInodeUpdate.h"
 #include "messages/MCacheExpire.h"
@@ -184,6 +189,7 @@
 #include "messages/MMgrDigest.h"
 #include "messages/MMgrReport.h"
 #include "messages/MMgrOpen.h"
+#include "messages/MMgrUpdate.h"
 #include "messages/MMgrClose.h"
 #include "messages/MMgrConfigure.h"
 #include "messages/MMonMgrReport.h"
@@ -210,6 +216,10 @@
 
 #include "messages/MOSDPGUpdateLogMissing.h"
 #include "messages/MOSDPGUpdateLogMissingReply.h"
+
+#ifdef WITH_BLKIN
+#include "Messenger.h"
+#endif
 
 #define DEBUGLVL  10    // debug level of output
 
@@ -276,7 +286,7 @@ void Message::encode(uint64_t features, int crcflags, bool skip_header_crc)
       snprintf(fn, sizeof(fn), ENCODE_STRINGIFY(ENCODE_DUMP) "/%s__%d.%x",
 	       abi::__cxa_demangle(typeid(*this).name(), 0, 0, &status),
 	       getpid(), i++);
-      int fd = ::open(fn, O_WRONLY|O_TRUNC|O_CREAT|O_CLOEXEC, 0644);
+      int fd = ::open(fn, O_WRONLY|O_TRUNC|O_CREAT|O_CLOEXEC|O_BINARY, 0644);
       if (fd >= 0) {
 	bl.write_fd(fd);
 	::close(fd);
@@ -304,6 +314,10 @@ Message *decode_message(CephContext *cct,
                         ceph::bufferlist& data,
                         Message::ConnectionRef conn)
 {
+#ifdef WITH_SEASTAR
+  // In crimson, conn is independently maintained outside Message.
+  ceph_assert(conn == nullptr);
+#endif
   // verify crc
   if (crcflags & MSG_CRC_HEADER) {
     __u32 front_crc = front.crc32c(0);
@@ -312,7 +326,10 @@ Message *decode_message(CephContext *cct,
     if (front_crc != footer.front_crc) {
       if (cct) {
 	ldout(cct, 0) << "bad crc in front " << front_crc << " != exp " << footer.front_crc
-		      << " from " << conn->get_peer_addr() << dendl;
+#ifndef WITH_SEASTAR
+	              << " from " << conn->get_peer_addr()
+#endif
+	              << dendl;
 	ldout(cct, 20) << " ";
 	front.hexdump(*_dout);
 	*_dout << dendl;
@@ -322,7 +339,10 @@ Message *decode_message(CephContext *cct,
     if (middle_crc != footer.middle_crc) {
       if (cct) {
 	ldout(cct, 0) << "bad crc in middle " << middle_crc << " != exp " << footer.middle_crc
-		      << " from " << conn->get_peer_addr() << dendl;
+#ifndef WITH_SEASTAR
+	              << " from " << conn->get_peer_addr()
+#endif
+	              << dendl;
 	ldout(cct, 20) << " ";
 	middle.hexdump(*_dout);
 	*_dout << dendl;
@@ -336,7 +356,10 @@ Message *decode_message(CephContext *cct,
       if (data_crc != footer.data_crc) {
 	if (cct) {
 	  ldout(cct, 0) << "bad crc in data " << data_crc << " != exp " << footer.data_crc
-			<< " from " << conn->get_peer_addr() << dendl;
+#ifndef WITH_SEASTAR
+	                << " from " << conn->get_peer_addr()
+#endif
+	                << dendl;
 	  ldout(cct, 20) << " ";
 	  data.hexdump(*_dout);
 	  *_dout << dendl;
@@ -395,6 +418,9 @@ Message *decode_message(CephContext *cct,
   case MSG_GET_CONFIG:
     m = make_message<MGetConfig>();
     break;
+  case MSG_KV_DATA:
+    m = make_message<MKVData>();
+    break;
 
   case MSG_MON_PROBE:
     m = make_message<MMonProbe>();
@@ -407,6 +433,9 @@ Message *decode_message(CephContext *cct,
     break;
   case MSG_MON_SYNC:
     m = make_message<MMonSync>();
+    break;
+  case MSG_MON_PING:
+    m = make_message<MMonPing>();
     break;
   case MSG_MON_SCRUB:
     m = make_message<MMonScrub>();
@@ -465,9 +494,6 @@ Message *decode_message(CephContext *cct,
     break;
   case CEPH_MSG_MON_GET_VERSION_REPLY:
     m = make_message<MMonGetVersionReply>();
-    break;
-  case CEPH_MSG_MON_METADATA:
-    m = make_message<MMonMetadata>();
     break;
 
   case MSG_OSD_BOOT:
@@ -554,9 +580,6 @@ Message *decode_message(CephContext *cct,
   case MSG_OSD_PG_INFO2:
     m = make_message<MOSDPGInfo2>();
     break;
-  case MSG_OSD_PG_CREATE:
-    m = make_message<MOSDPGCreate>();
-    break;
   case MSG_OSD_PG_CREATE2:
     m = make_message<MOSDPGCreate2>();
     break;
@@ -570,9 +593,6 @@ Message *decode_message(CephContext *cct,
     m = make_message<MOSDPGLeaseAck>();
     break;
 
-  case MSG_OSD_SCRUB:
-    m = make_message<MOSDScrub>();
-    break;
   case MSG_OSD_SCRUB2:
     m = make_message<MOSDScrub2>();
     break;
@@ -638,6 +658,9 @@ Message *decode_message(CephContext *cct,
   case MSG_MON_GLOBAL_ID:
     m = make_message<MMonGlobalID>();
     break; 
+  case MSG_MON_USED_PENDING_KEYS:
+    m = make_message<MMonUsedPendingKeys>();
+    break; 
 
     // clients
   case CEPH_MSG_MON_SUBSCRIBE:
@@ -682,10 +705,13 @@ Message *decode_message(CephContext *cct,
   case CEPH_MSG_CLIENT_QUOTA:
     m = make_message<MClientQuota>();
     break;
+  case CEPH_MSG_CLIENT_METRICS:
+    m = make_message<MClientMetrics>();
+    break;
 
     // mds
-  case MSG_MDS_SLAVE_REQUEST:
-    m = make_message<MMDSSlaveRequest>();
+  case MSG_MDS_PEER_REQUEST:
+    m = make_message<MMDSPeerRequest>();
     break;
 
   case CEPH_MSG_MDS_MAP:
@@ -748,6 +774,14 @@ Message *decode_message(CephContext *cct,
 
   case MSG_MDS_FRAGMENTNOTIFYACK:
     m = make_message<MMDSFragmentNotifyAck>();
+    break;
+
+  case MSG_MDS_SCRUB:
+    m = make_message<MMDSScrub>();
+    break;
+
+  case MSG_MDS_SCRUB_STATS:
+    m = make_message<MMDSScrubStats>();
     break;
 
   case MSG_MDS_EXPORTDIRDISCOVER:
@@ -829,6 +863,14 @@ Message *decode_message(CephContext *cct,
     m = make_message<MLock>();
     break;
 
+  case MSG_MDS_METRICS:
+    m = make_message<MMDSMetrics>();
+    break;
+
+  case MSG_MDS_PING:
+    m = make_message<MMDSPing>();
+    break;
+
   case MSG_MGR_BEACON:
     m = make_message<MMgrBeacon>();
     break;
@@ -859,6 +901,10 @@ Message *decode_message(CephContext *cct,
 
   case MSG_MGR_OPEN:
     m = make_message<MMgrOpen>();
+    break;
+
+  case MSG_MGR_UPDATE:
+    m = make_message<MMgrUpdate>();
     break;
 
   case MSG_MGR_CLOSE:
@@ -973,12 +1019,12 @@ void Message::decode_trace(ceph::bufferlist::const_iterator &p, bool create)
   const auto msgr = connection->get_messenger();
   const auto endpoint = msgr->get_trace_endpoint();
   if (info.trace_id) {
-    trace.init(get_type_name(), endpoint, &info, true);
+    trace.init(get_type_name().data(), endpoint, &info, true);
     trace.event("decoded trace");
   } else if (create || (msgr->get_myname().is_osd() &&
                         msgr->cct->_conf->osd_blkin_trace_all)) {
     // create a trace even if we didn't get one on the wire
-    trace.init(get_type_name(), endpoint);
+    trace.init(get_type_name().data(), endpoint);
     trace.event("created trace");
   }
   trace.keyval("tid", get_tid());

@@ -14,8 +14,10 @@
 
 #include <boost/program_options/variables_map.hpp>
 #include <boost/program_options/parsers.hpp>
+#include <boost/algorithm/string.hpp>
 #include <boost/scoped_ptr.hpp>
 #include <boost/optional.hpp>
+#include <fstream>
 
 #include <stdlib.h>
 
@@ -27,8 +29,6 @@
 #include "global/global_init.h"
 
 #include "os/ObjectStore.h"
-#include "os/filestore/FileJournal.h"
-#include "os/filestore/FileStore.h"
 #ifdef HAVE_LIBFUSE
 #include "os/FuseStore.h"
 #endif
@@ -46,6 +46,7 @@
 #include "include/compat.h"
 #include "include/util.h"
 
+using namespace std;
 namespace po = boost::program_options;
 
 #ifdef INTERNAL_TEST
@@ -84,6 +85,7 @@ struct action_on_object_t {
 int _action_on_all_objects_in_pg(ObjectStore *store, coll_t coll, action_on_object_t &action, bool debug)
 {
   auto ch = store->open_collection(coll);
+
   unsigned LIST_AT_A_TIME = 100;
   ghobject_t next;
   while (!next.is_max()) {
@@ -102,8 +104,6 @@ int _action_on_all_objects_in_pg(ObjectStore *store, coll_t coll, action_on_obje
     for (vector<ghobject_t>::iterator obj = list.begin();
 	 obj != list.end();
 	 ++obj) {
-      if (obj->is_pgmeta())
-	continue;
       object_info_t oi;
       if (coll != coll_t::meta()) {
         bufferlist attr;
@@ -136,6 +136,7 @@ int action_on_all_objects_in_pg(ObjectStore *store, string pgidstr, action_on_ob
   int r = 0;
   vector<coll_t> colls_to_check;
   vector<coll_t> candidates;
+
   r = store->list_collections(candidates);
   if (r < 0) {
     cerr << "Error listing collections: " << cpp_strerror(r) << std::endl;
@@ -146,6 +147,10 @@ int action_on_all_objects_in_pg(ObjectStore *store, string pgidstr, action_on_ob
        i != candidates.end();
        ++i) {
     spg_t cand_pgid;
+    if (i->is_meta() && pgidstr == "meta") {
+      colls_to_check.push_back(*i);
+      continue;
+    }
     if (!i->is_pg(&cand_pgid))
       continue;
 
@@ -430,7 +435,7 @@ static int get_fd_data(int fd, bufferlist &bl)
   return 0;
 }
 
-int get_log(ObjectStore *fs, __u8 struct_ver,
+int get_log(CephContext *cct, ObjectStore *fs, __u8 struct_ver,
 	    spg_t pgid, const pg_info_t &info,
 	    PGLog::IndexedLog &log, pg_missing_t &missing)
 {
@@ -442,7 +447,7 @@ int get_log(ObjectStore *fs, __u8 struct_ver,
     ostringstream oss;
     ceph_assert(struct_ver > 0);
     PGLog::read_log_and_missing(
-      fs, ch,
+      cct, fs, ch,
       pgid.make_pgmeta_oid(),
       info, log, missing,
       oss,
@@ -606,18 +611,21 @@ int write_pg(ObjectStore::Transaction &t, epoch_t epoch, pg_info_t &info,
   int ret = write_info(t, epoch, info, past_intervals);
   if (ret)
     return ret;
+
   coll_t coll(info.pgid);
   map<string,bufferlist> km;
-
+  const bool require_rollback = !info.pgid.is_no_shard();
   if (!divergent.empty()) {
     ceph_assert(missing.get_items().empty());
     PGLog::write_log_and_missing_wo_missing(
-      t, &km, log, coll, info.pgid.make_pgmeta_oid(), divergent, true);
+      t, &km, log, coll, info.pgid.make_pgmeta_oid(), divergent,
+      require_rollback);
   } else {
     pg_missing_tracker_t tmissing(missing);
     bool rebuilt_missing_set_with_deletes = missing.may_include_deletes;
     PGLog::write_log_and_missing(
-      t, &km, log, coll, info.pgid.make_pgmeta_oid(), tmissing, true,
+      t, &km, log, coll, info.pgid.make_pgmeta_oid(), tmissing,
+      require_rollback,
       &rebuilt_missing_set_with_deletes);
   }
   t.omap_setkeys(coll, info.pgid.make_pgmeta_oid(), km);
@@ -681,7 +689,7 @@ int do_trim_pg_log(ObjectStore *store, const coll_t &coll,
       try {
 	e.decode_with_checksum(bp);
       } catch (const buffer::error &e) {
-	cerr << "Error reading pg log entry: " << e << std::endl;
+	cerr << "Error reading pg log entry: " << e.what() << std::endl;
       }
       if (debug) {
 	cerr << "read entry " << e << std::endl;
@@ -720,6 +728,82 @@ int do_trim_pg_log(ObjectStore *store, const coll_t &coll,
     store->queue_transaction(ch, std::move(t));
     ch->flush();
   }
+
+  // compact the db since we just removed a bunch of data
+  cerr << "Finished trimming, now compacting..." << std::endl;
+  if (!dry_run)
+    store->compact();
+  return 0;
+}
+
+int do_trim_pg_log_dups(ObjectStore *store, const coll_t &coll,
+		   pg_info_t &info, const spg_t &pgid,
+		   epoch_t map_epoch,
+		   PastIntervals &past_intervals)
+{
+  ghobject_t oid = pgid.make_pgmeta_oid();
+  struct stat st;
+  auto ch = store->open_collection(coll);
+  int r = store->stat(ch, oid, &st);
+  ceph_assert(r == 0);
+  ceph_assert(st.st_size == 0);
+
+  const size_t max_dup_entries = g_ceph_context->_conf->osd_pg_log_dups_tracked;
+  ceph_assert(max_dup_entries > 0);
+  const size_t max_chunk_size = g_ceph_context->_conf->osd_pg_log_trim_max;
+  ceph_assert(max_chunk_size > 0);
+
+  cout << "max_dup_entries=" << max_dup_entries
+       << " max_chunk_size=" << max_chunk_size << std::endl;
+  if (dry_run) {
+    cout << "Dry run enabled, so when many chunks are needed,"
+	 << " the trimming will never stop!" << std::endl;
+  }
+
+  set<string> keys_to_keep;
+  size_t num_removed = 0;
+  do {
+    set<string> keys_to_trim;
+    {
+    ObjectMap::ObjectMapIterator p = store->get_omap_iterator(ch, oid);
+    if (!p)
+      break;
+    for (p->seek_to_first(); p->valid(); p->next()) {
+      if (p->key()[0] == '_')
+	continue;
+      if (p->key() == "can_rollback_to")
+	continue;
+      if (p->key() == "divergent_priors")
+	continue;
+      if (p->key() == "rollback_info_trimmed_to")
+	continue;
+      if (p->key() == "may_include_deletes_in_missing")
+	continue;
+      if (p->key().substr(0, 7) == string("missing"))
+	continue;
+      if (p->key().substr(0, 4) != string("dup_"))
+	continue;
+      keys_to_keep.insert(p->key());
+      if (keys_to_keep.size() > max_dup_entries) {
+	auto oldest_to_keep = keys_to_keep.begin();
+      	keys_to_trim.emplace(*oldest_to_keep);
+	keys_to_keep.erase(oldest_to_keep);
+      }
+      if (keys_to_trim.size() >= max_chunk_size) {
+	break;
+      }
+    }
+    } // deconstruct ObjectMapIterator
+    // delete the keys
+    num_removed = keys_to_trim.size();
+    if (!dry_run && !keys_to_trim.empty()) {
+      cout << "Removing keys " << *keys_to_trim.begin() << " - " << *keys_to_trim.rbegin() << std::endl;
+      ObjectStore::Transaction t;
+      t.omap_rmkeys(coll, oid, keys_to_trim);
+      store->queue_transaction(ch, std::move(t));
+      ch->flush();
+    }
+  } while (num_removed == max_chunk_size);
 
   // compact the db since we just removed a bunch of data
   cerr << "Finished trimming, now compacting..." << std::endl;
@@ -802,7 +886,7 @@ int ObjectStoreTool::export_file(ObjectStore *store, coll_t cid, ghobject_t &obj
   }
 
   //Handle attrs for this object
-  map<string,bufferptr> aset;
+  map<string,bufferptr,less<>> aset;
   ret = store->getattrs(ch, obj, aset);
   if (ret) return ret;
   attr_section as(aset);
@@ -992,7 +1076,8 @@ int add_osdmap(ObjectStore *store, metadata_section &ms)
   return get_osdmap(store, ms.map_epoch, ms.osdmap, ms.osdmap_bl);
 }
 
-int ObjectStoreTool::do_export(ObjectStore *fs, coll_t coll, spg_t pgid,
+int ObjectStoreTool::do_export(
+    CephContext *cct, ObjectStore *fs, coll_t coll, spg_t pgid,
     pg_info_t &info, epoch_t map_epoch, __u8 struct_ver,
     const OSDSuperblock& superblock,
     PastIntervals &past_intervals)
@@ -1002,7 +1087,7 @@ int ObjectStoreTool::do_export(ObjectStore *fs, coll_t coll, spg_t pgid,
 
   cerr << "Exporting " << pgid << " info " << info << std::endl;
 
-  int ret = get_log(fs, struct_ver, pgid, info, log, missing);
+  int ret = get_log(cct, fs, struct_ver, pgid, info, log, missing);
   if (ret > 0)
       return ret;
 
@@ -1052,7 +1137,8 @@ int ObjectStoreTool::do_export(ObjectStore *fs, coll_t coll, spg_t pgid,
   return 0;
 }
 
-int dump_data(Formatter *formatter, bufferlist &bl)
+int dump_data(Formatter *formatter, bufferlist &bl,
+              const std::string &dump_data_path)
 {
   auto ebliter = bl.cbegin();
   data_section ds;
@@ -1061,7 +1147,23 @@ int dump_data(Formatter *formatter, bufferlist &bl)
   formatter->open_object_section("data_block");
   formatter->dump_unsigned("offset", ds.offset);
   formatter->dump_unsigned("len", ds.len);
-  // XXX: Add option to dump data like od -cx ?
+  if (!dump_data_path.empty()) {
+    int fd = open(dump_data_path.c_str(), O_WRONLY|O_CREAT|O_LARGEFILE, 0666);
+    if (fd == -1) {
+      std::cerr << "open " << dump_data_path << " failed: "
+                << cpp_strerror(errno) << std::endl;
+    } else {
+      int ret = ds.databl.write_fd(fd, ds.offset);
+      if (ret < 0) {
+        std::cerr << "write " << dump_data_path << " failed: "
+                  << cpp_strerror(ret) << std::endl;
+      } else {
+        formatter->dump_string("file", dump_data_path);
+      }
+      close(fd);
+    }
+  }
+
   formatter->close_section();
   formatter->flush(cout);
   return 0;
@@ -1252,7 +1354,8 @@ int get_omap(ObjectStore *store, coll_t coll, ghobject_t hoid,
 }
 
 int ObjectStoreTool::dump_object(Formatter *formatter,
-				bufferlist &bl)
+                                 bufferlist &bl,
+                                 const std::string &dump_data_dir)
 {
   auto ebliter = bl.cbegin();
   object_begin ob;
@@ -1288,7 +1391,9 @@ int ObjectStoreTool::dump_object(Formatter *formatter,
     switch(type) {
     case TYPE_DATA:
       if (dry_run) break;
-      ret = dump_data(formatter, ebl);
+      ret = dump_data(formatter, ebl,
+                      dump_data_dir.empty() ?
+                          "" : dump_data_dir + "/" + stringify(ob.hoid.hobj));
       if (ret) return ret;
       break;
     case TYPE_ATTRS:
@@ -1525,9 +1630,9 @@ int get_pg_metadata(ObjectStore *store, bufferlist &bl, metadata_section &ms,
     return -EINVAL;
   }
 
-  if (ms.osdmap.get_epoch() < sb.oldest_map) {
+  if (ms.osdmap.get_epoch() < sb.get_oldest_map()) {
     cerr << "PG export's map " << ms.osdmap.get_epoch()
-	 << " is older than OSD's oldest_map " << sb.oldest_map << std::endl;
+	 << " is older than OSD's oldest_map " << sb.get_oldest_map() << std::endl;
     if (!force) {
       cerr << " pass --force to proceed anyway (with incomplete PastIntervals)"
 	   << std::endl;
@@ -1579,7 +1684,8 @@ void filter_divergent_priors(spg_t import_pgid, const OSDMap &curmap,
   }
 }
 
-int ObjectStoreTool::dump_export(Formatter *formatter)
+int ObjectStoreTool::dump_export(Formatter *formatter,
+                                 const std::string &dump_data_dir)
 {
   bufferlist ebl;
   pg_info_t info;
@@ -1646,7 +1752,7 @@ int ObjectStoreTool::dump_export(Formatter *formatter)
 	formatter->open_array_section("objects");
 	objects_started = true;
       }
-      ret = dump_object(formatter, ebl);
+      ret = dump_object(formatter, ebl, dump_data_dir);
       if (ret) return ret;
       break;
     case TYPE_PG_METADATA:
@@ -1739,7 +1845,11 @@ int ObjectStoreTool::do_import(ObjectStore *store, OSDSuperblock& sb,
       && pgb.superblock.cluster_fsid != sb.cluster_fsid) {
     cerr << "Export came from different cluster with fsid "
          << pgb.superblock.cluster_fsid << std::endl;
-    return -EINVAL;
+    if (force) {
+      cerr << "Ignoring this problem due to --force" << std::endl;
+    } else {
+      return -EINVAL;
+    }
   }
 
   if (debug) {
@@ -2139,7 +2249,7 @@ int do_remove_object(ObjectStore *store, coll_t coll,
 int do_list_attrs(ObjectStore *store, coll_t coll, ghobject_t &ghobj)
 {
   auto ch = store->open_collection(coll);
-  map<string,bufferptr> aset;
+  map<string,bufferptr,less<>> aset;
   int r = store->getattrs(ch, ghobj, aset);
   if (r < 0) {
     cerr << "getattrs: " << cpp_strerror(r) << std::endl;
@@ -3001,7 +3111,7 @@ int dup(string srcpath, ObjectStore *src, string dstpath, ObjectStore *dst)
 	ObjectStore::Transaction t;
 	t.touch(cid, oid);
 
-	map<string,bufferptr> attrs;
+	map<string,bufferptr,less<>> attrs;
 	src->getattrs(ch, oid, attrs);
 	if (!attrs.empty()) {
 	  t.setattrs(cid, oid, attrs);
@@ -3071,6 +3181,136 @@ int dup(string srcpath, ObjectStore *src, string dstpath, ObjectStore *dst)
   return r;
 }
 
+
+const int ceph_entity_name_type(const string name)
+{
+  if (name == "mds") return CEPH_ENTITY_TYPE_MDS;
+  if (name == "osd") return CEPH_ENTITY_TYPE_OSD;
+  if (name == "mon") return CEPH_ENTITY_TYPE_MON;
+  if (name == "client") return CEPH_ENTITY_TYPE_CLIENT;
+  if (name == "mgr") return CEPH_ENTITY_TYPE_MGR;
+  if (name == "auth") return CEPH_ENTITY_TYPE_AUTH;
+  return -1;
+}
+
+eversion_t get_eversion_from_str(const string& s) {
+  eversion_t e;
+  vector<string> result;
+  boost::split(result, s, boost::is_any_of("'"));
+  if (result.size() != 2) {
+    cerr << "eversion_t: invalid format: '" << s << "'" << std::endl;
+    return e;
+  }
+  e.epoch   = atoi(result[0].c_str());
+  e.version = atoi(result[1].c_str());
+  return e;
+}
+
+osd_reqid_t get_reqid_from_str(const string& s) {
+  osd_reqid_t reqid;
+
+  vector<string> result;
+  boost::split(result, s, boost::is_any_of(".:"));
+  if (result.size() != 4) {
+    cerr << "reqid: invalid format " << s << std::endl;
+    return osd_reqid_t();
+  }
+  reqid.name._type = ceph_entity_name_type(result[0]);
+  reqid.name._num = atoi(result[1].c_str());
+
+  reqid.inc = atoi(result[2].c_str());
+  reqid.tid = atoi(result[3].c_str());
+  return reqid;
+}
+
+void do_dups_inject_transction(ObjectStore *store, spg_t r_pgid, map<string,bufferlist> *new_dups)
+{
+  ObjectStore::Transaction t;
+  coll_t coll(r_pgid);
+  cerr << "injecting dups into pgid:" << r_pgid << " num of dups:" << new_dups->size() << std::endl;
+  t.omap_setkeys(coll, r_pgid.make_pgmeta_oid(), (*new_dups));
+  auto ch = store->open_collection(coll);
+  store->queue_transaction(ch, std::move(t));
+  new_dups->clear();
+}
+
+int do_dups_inject_object(ObjectStore *store, spg_t r_pgid, json_spirit::mObject &in_json_obj,
+                          map<string,bufferlist> *new_dups, bool debug) {
+  std::map<std::string, json_spirit::mValue>::const_iterator it = in_json_obj.find("generate");
+  int32_t generate = 0;
+  if (it != in_json_obj.end()) {
+    generate = atoi(it->second.get_str().c_str());
+  }
+
+  it = in_json_obj.find("reqid");
+  if (it == in_json_obj.end()) {
+    return 1;
+  }
+  osd_reqid_t reqid(get_reqid_from_str(it->second.get_str()));
+  it = in_json_obj.find("version");
+  if (it == in_json_obj.end()) {
+    return 1;
+  }
+  eversion_t version(get_eversion_from_str(it->second.get_str()));
+  it = in_json_obj.find("user_version");
+  if (it == in_json_obj.end()) {
+    return 1;
+  }
+  version_t user_version = atoi(it->second.get_str().c_str());
+  it = in_json_obj.find("return_code");
+  if (it == in_json_obj.end()) {
+    return 1;
+  }
+  int32_t return_code = atoi(it->second.get_str().c_str());
+  if (generate) {
+    for(auto i = 0; i < generate; ++i) {
+      version.version++;
+      if (debug) {
+        cout << "generate dups reqid " << reqid << " v=" << version << std::endl;
+      }
+      pg_log_dup_t tmp(version, user_version, reqid, return_code);
+      bufferlist bl;
+      encode(tmp, bl);
+      (*new_dups)[tmp.get_key_name()] = std::move(bl);
+      if ( new_dups->size() > 50000 ) {
+        do_dups_inject_transction(store, r_pgid, new_dups);
+	cout << "inject of " << i << " dups into pgid:" << r_pgid << " done..." << std::endl;
+      }
+    }
+    return 0;
+  } else {
+    pg_log_dup_t tmp(version, user_version, reqid, return_code);
+    if (debug) {
+      cout << "adding dup: " << tmp << "into key:" << tmp.get_key_name() << std::endl;
+    }
+    bufferlist bl;
+    encode(tmp, bl);
+    (*new_dups)[tmp.get_key_name()] = std::move(bl);
+  }
+  return 0;
+}
+
+void do_dups_inject_from_json(ObjectStore *store, spg_t r_pgid, json_spirit::mValue &inJson, bool debug)
+{
+  map<string,bufferlist> new_dups;
+  const vector<json_spirit::mValue>& o = inJson.get_array();
+  for (const auto& obj : o) {
+    if (obj.type() == json_spirit::obj_type) {
+      json_spirit::mObject Mobj = obj.get_obj();
+      do_dups_inject_object(store, r_pgid, Mobj, &new_dups, debug);
+    } else {
+      throw std::runtime_error("JSON array/object not allowed type:" + std::to_string(obj.type()));
+      return;
+    }
+  }
+  if (new_dups.size() > 0) {
+    do_dups_inject_transction(store, r_pgid, &new_dups);
+  }
+
+
+  return ;
+}
+
 void usage(po::options_description &desc)
 {
     cerr << std::endl;
@@ -3107,91 +3347,11 @@ bool ends_with(const string& check, const string& ending)
     return check.size() >= ending.size() && check.rfind(ending) == (check.size() - ending.size());
 }
 
-// Based on FileStore::dump_journal(), set-up enough to only dump
-int mydump_journal(Formatter *f, string journalpath, bool m_journal_dio)
-{
-  int r;
-
-  if (!journalpath.length())
-    return -EINVAL;
-
-  FileJournal *journal = new FileJournal(g_ceph_context, uuid_d(), NULL, NULL,
-					 journalpath.c_str(), m_journal_dio);
-  r = journal->_fdump(*f, false);
-  delete journal;
-  return r;
-}
-
-int apply_layout_settings(ObjectStore *os, const OSDSuperblock &superblock,
-			  const string &pool_name, const spg_t &pgid, bool dry_run,
-                          int target_level)
-{
-  int r = 0;
-
-  FileStore *fs = dynamic_cast<FileStore*>(os);
-  if (!fs) {
-    cerr << "Nothing to do for non-filestore backend" << std::endl;
-    return 0; // making this return success makes testing easier
-  }
-
-  OSDMap curmap;
-  bufferlist bl;
-  r = get_osdmap(os, superblock.current_epoch, curmap, bl);
-  if (r) {
-    cerr << "Can't find local OSDMap: " << cpp_strerror(r) << std::endl;
-    return r;
-  }
-
-  int64_t poolid = -1;
-  if (pool_name.length()) {
-    poolid = curmap.lookup_pg_pool_name(pool_name);
-    if (poolid < 0) {
-      cerr << "Couldn't find pool " << pool_name << ": " << cpp_strerror(poolid)
-	   << std::endl;
-      return poolid;
-    }
-  }
-
-  vector<coll_t> collections, filtered_colls;
-  r = os->list_collections(collections);
-  if (r < 0) {
-    cerr << "Error listing collections: " << cpp_strerror(r) << std::endl;
-    return r;
-  }
-
-  for (auto const &coll : collections) {
-    spg_t coll_pgid;
-    if (coll.is_pg(&coll_pgid) &&
-	((poolid >= 0 && coll_pgid.pool() == (uint64_t)poolid) ||
-	 coll_pgid == pgid)) {
-      filtered_colls.push_back(coll);
-    }
-  }
-
-  size_t done = 0, total = filtered_colls.size();
-  for (auto const &coll : filtered_colls) {
-    if (dry_run) {
-      cerr << "Would apply layout settings to " << coll << std::endl;
-    } else {
-      cerr << "Finished " << done << "/" << total << " collections" << "\r";
-      r = fs->apply_layout_settings(coll, target_level);
-      if (r < 0) {
-	cerr << "Error applying layout settings to " << coll << std::endl;
-	return r;
-      }
-    }
-    ++done;
-  }
-
-  cerr << "Finished " << total << "/" << total << " collections" << "\r" << std::endl;
-  return r;
-}
-
 int main(int argc, char **argv)
 {
   string dpath, jpath, pgidstr, op, file, mountpoint, mon_store_path, object;
   string target_data_path, fsid;
-  string objcmd, arg1, arg2, type, format, argnspace, pool, rmtypestr;
+  string objcmd, arg1, arg2, type, format, argnspace, pool, rmtypestr, dump_data_dir;
   boost::optional<std::string> nspace;
   spg_t pgid;
   unsigned epoch = 0;
@@ -3205,18 +3365,18 @@ int main(int argc, char **argv)
   desc.add_options()
     ("help", "produce help message")
     ("type", po::value<string>(&type),
-     "Arg is one of [bluestore (default), filestore, memstore]")
+     "Arg is one of [bluestore (default), memstore]")
     ("data-path", po::value<string>(&dpath),
      "path to object store, mandatory")
     ("journal-path", po::value<string>(&jpath),
      "path to journal, use if tool can't find it")
     ("pgid", po::value<string>(&pgidstr),
-     "PG id, mandatory for info, log, remove, export, export-remove, mark-complete, trim-pg-log, and mandatory for apply-layout-settings if --pool is not specified")
+     "PG id, mandatory for info, log, remove, export, export-remove, mark-complete, trim-pg-log, trim-pg-log-dups")
     ("pool", po::value<string>(&pool),
-     "Pool name, mandatory for apply-layout-settings if --pgid is not specified")
+     "Pool name")
     ("op", po::value<string>(&op),
-     "Arg is one of [info, log, remove, mkfs, fsck, repair, fuse, dup, export, export-remove, import, list, list-slow-omap, fix-lost, list-pgs, dump-journal, dump-super, meta-list, "
-     "get-osdmap, set-osdmap, get-inc-osdmap, set-inc-osdmap, mark-complete, reset-last-complete, apply-layout-settings, update-mon-db, dump-export, trim-pg-log]")
+     "Arg is one of [info, log, remove, mkfs, fsck, repair, fuse, dup, export, export-remove, import, list, list-slow-omap, fix-lost, list-pgs, dump-super, meta-list, "
+     "get-osdmap, set-osdmap, get-inc-osdmap, set-inc-osdmap, mark-complete, reset-last-complete, update-mon-db, dump-export, trim-pg-log, trim-pg-log-dups statfs]")
     ("epoch", po::value<unsigned>(&epoch),
      "epoch# for get-osdmap and get-inc-osdmap, the current epoch in use if not specified")
     ("file", po::value<string>(&file),
@@ -3244,6 +3404,8 @@ int main(int argc, char **argv)
     ("rmtype", po::value<string>(&rmtypestr), "Specify corrupting object removal 'snapmap' or 'nosnapmap' - TESTING USE ONLY")
     ("slow-omap-threshold", po::value<unsigned>(&slow_threshold),
       "Threshold (in seconds) to consider omap listing slow (for op=list-slow-omap)")
+    ("dump-data-dir", po::value<string>(&dump_data_dir),
+     "Directory to dump object data (for op=dump-export)")
     ;
 
   po::options_description positional("Positional options");
@@ -3350,39 +3512,17 @@ int main(int argc, char **argv)
     }
     ::close(fd);
   }
-
   if (!vm.count("type") && type == "") {
     type = "bluestore";
   }
   if (!vm.count("data-path") &&
-     op != "dump-export" &&
-     !(op == "dump-journal" && type == "filestore")) {
+     op != "dump-export") {
     cerr << "Must provide --data-path" << std::endl;
     usage(desc);
     return 1;
   }
-  if (type == "filestore" && !vm.count("journal-path")) {
-    jpath = dpath + "/journal";
-  }
   if (!vm.count("op") && !vm.count("object")) {
     cerr << "Must provide --op or object command..." << std::endl;
-    usage(desc);
-    return 1;
-  }
-  if (op != "list" && op != "apply-layout-settings" &&
-      vm.count("op") && vm.count("object")) {
-    cerr << "Can't specify both --op and object command syntax" << std::endl;
-    usage(desc);
-    return 1;
-  }
-  if (op == "apply-layout-settings" && !(vm.count("pool") ^ vm.count("pgid"))) {
-    cerr << "apply-layout-settings requires either --pool or --pgid"
-	 << std::endl;
-    usage(desc);
-    return 1;
-  }
-  if (op != "list" && op != "apply-layout-settings" && vm.count("object") && !vm.count("objcmd")) {
-    cerr << "Invalid syntax, missing command" << std::endl;
     usage(desc);
     return 1;
   }
@@ -3404,7 +3544,7 @@ int main(int argc, char **argv)
     } else {
       file_fd = open(file.c_str(), O_WRONLY|O_CREAT|O_TRUNC, 0666);
     }
-  } else if (op == "import" || op == "dump-export" || op == "set-osdmap" || op == "set-inc-osdmap") {
+  } else if (op == "import" || op == "dump-export" || op == "set-osdmap" || op == "set-inc-osdmap" || op == "pg-log-inject-dups") {
     if (!vm.count("file") || file == "-") {
       if (isatty(STDIN_FILENO)) {
         cerr << "stdin is a tty and no --file filename specified" << std::endl;
@@ -3460,20 +3600,8 @@ int main(int argc, char **argv)
     return 1;
   }
 
-  // Special handling for filestore journal, so we can dump it without mounting
-  if (op == "dump-journal" && type == "filestore") {
-    int ret = mydump_journal(formatter, jpath, g_conf()->journal_dio);
-    if (ret < 0) {
-      cerr << "journal-path: " << jpath << ": "
-	   << cpp_strerror(ret) << std::endl;
-      return 1;
-    }
-    formatter->flush(cout);
-    return 0;
-  }
-
   if (op == "dump-export") {
-    int ret = tool.dump_export(formatter);
+    int ret = tool.dump_export(formatter, dump_data_dir);
     if (ret < 0) {
       cerr << "dump-export: "
 	   << cpp_strerror(ret) << std::endl;
@@ -3490,27 +3618,13 @@ int main(int argc, char **argv)
     return 1;
   }
 
-  if (pgidstr.length() && !pgid.parse(pgidstr.c_str())) {
+  if (pgidstr.length() && pgidstr != "meta" && !pgid.parse(pgidstr.c_str())) {
     cerr << "Invalid pgid '" << pgidstr << "' specified" << std::endl;
     return 1;
   }
 
-  //Verify that the journal-path really exists
-  if (type == "filestore") {
-    if (::stat(jpath.c_str(), &st) == -1) {
-      string err = string("journal-path: ") + jpath;
-      perror(err.c_str());
-      return 1;
-    }
-    if (S_ISDIR(st.st_mode)) {
-      cerr << "journal-path: " << jpath << ": "
-	   << cpp_strerror(EISDIR) << std::endl;
-      return 1;
-    }
-  }
-
-  ObjectStore *fs = ObjectStore::create(g_ceph_context, type, dpath, jpath, flags);
-  if (fs == NULL) {
+  std::unique_ptr<ObjectStore> fs = ObjectStore::create(g_ceph_context, type, dpath, jpath, flags);
+  if (!fs) {
     cerr << "Unable to create store of type " << type << std::endl;
     return 1;
   }
@@ -3573,14 +3687,14 @@ int main(int argc, char **argv)
       target_type = string(bl.c_str(), bl.length() - 1);  // drop \n
     }
     ::close(fd);
-    ObjectStore *targetfs = ObjectStore::create(
+    unique_ptr<ObjectStore> targetfs = ObjectStore::create(
       g_ceph_context, target_type,
       target_data_path, "", 0);
-    if (targetfs == NULL) {
+    if (!targetfs) {
       cerr << "Unable to open store of type " << target_type << std::endl;
       return 1;
     }
-    int r = dup(dpath, fs, target_data_path, targetfs);
+    int r = dup(dpath, fs.get(), target_data_path, targetfs.get());
     if (r < 0) {
       cerr << "dup failed: " << cpp_strerror(r) << std::endl;
       return 1;
@@ -3600,9 +3714,10 @@ int main(int argc, char **argv)
 
   if (op == "fuse") {
 #ifdef HAVE_LIBFUSE
-    FuseStore fuse(fs, mountpoint);
+    FuseStore fuse(fs.get(), mountpoint);
     cout << "mounting fuse at " << mountpoint << " ..." << std::endl;
     int r = fuse.main();
+    fs->umount();
     if (r < 0) {
       cerr << "failed to mount fuse: " << cpp_strerror(r) << std::endl;
       return 1;
@@ -3655,23 +3770,6 @@ int main(int argc, char **argv)
     }
   }
 
-  if (op == "apply-layout-settings") {
-    int target_level = 0;
-    // Single positional argument with apply-layout-settings
-    // for target_level.
-    if (vm.count("object") && isdigit(object[0])) {
-      target_level = atoi(object.c_str());
-    // This requires --arg1 to be specified since
-    // this is the third positional argument and normally
-    // used with object operations.
-    } else if (vm.count("arg1") && isdigit(arg1[0])) {
-      target_level = atoi(arg1.c_str());
-    }
-    ceph_assert(superblock != nullptr);
-    ret = apply_layout_settings(fs, *superblock, pool, pgid, dry_run, target_level);
-    goto out;
-  }
-
   if (op != "list" && vm.count("object")) {
     // Special case: Create pgmeta_oid if empty string specified
     // This can't conflict with any actual object names.
@@ -3686,10 +3784,12 @@ int main(int argc, char **argv)
         if (vm.count("objcmd") && (objcmd == "remove-clone-metadata"))
 	  head = true;
 	lookup_ghobject lookup(object, nspace, head);
-	if (pgidstr.length())
-	  ret = action_on_all_objects_in_exact_pg(fs, coll_t(pgid), lookup, debug);
+	if (pgidstr == "meta")
+	  ret = action_on_all_objects_in_exact_pg(fs.get(), coll_t::meta(), lookup, debug);
+	else if (pgidstr.length())
+	  ret = action_on_all_objects_in_exact_pg(fs.get(), coll_t(pgid), lookup, debug);
 	else
-	  ret = action_on_all_objects(fs, lookup, debug);
+	  ret = action_on_all_objects(fs.get(), lookup, debug);
 	if (ret) {
 	  throw std::runtime_error("Internal error");
 	} else {
@@ -3782,7 +3882,8 @@ int main(int argc, char **argv)
   if ((op == "info" || op == "log" || op == "remove" || op == "export"
       || op == "export-remove" || op == "mark-complete"
       || op == "reset-last-complete"
-      || op == "trim-pg-log") &&
+      || op == "trim-pg-log"
+      || op == "pg-log-inject-dups") &&
       pgidstr.length() == 0) {
     cerr << "Must provide pgid" << std::endl;
     usage(desc);
@@ -3793,7 +3894,7 @@ int main(int argc, char **argv)
   if (op == "import") {
     ceph_assert(superblock != nullptr);
     try {
-      ret = tool.do_import(fs, *superblock, force, pgidstr);
+      ret = tool.do_import(fs.get(), *superblock, force, pgidstr);
     }
     catch (const buffer::error &e) {
       cerr << "do_import threw exception error " << e.what() << std::endl;
@@ -3825,7 +3926,7 @@ int main(int argc, char **argv)
       ceph_assert(superblock != nullptr);
       epoch = superblock->current_epoch;
     }
-    ret = get_osdmap(fs, epoch, osdmap, bl);
+    ret = get_osdmap(fs.get(), epoch, osdmap, bl);
     if (ret) {
       cerr << "Failed to get osdmap#" << epoch << ": "
 	   << cpp_strerror(ret) << std::endl;
@@ -3844,7 +3945,7 @@ int main(int argc, char **argv)
     if (ret < 0) {
       cerr << "Failed to read osdmap " << cpp_strerror(ret) << std::endl;
     } else {
-      ret = set_osdmap(fs, epoch, bl, force);
+      ret = set_osdmap(fs.get(), epoch, bl, force);
     }
     goto out;
   } else if (op == "get-inc-osdmap") {
@@ -3853,7 +3954,7 @@ int main(int argc, char **argv)
       ceph_assert(superblock != nullptr);
       epoch = superblock->current_epoch;
     }
-    ret = get_inc_osdmap(fs, epoch, bl);
+    ret = get_inc_osdmap(fs.get(), epoch, bl);
     if (ret < 0) {
       cerr << "Failed to get incremental osdmap# " << epoch << ": "
 	   << cpp_strerror(ret) << std::endl;
@@ -3873,7 +3974,7 @@ int main(int argc, char **argv)
       cerr << "Failed to read incremental osdmap  " << cpp_strerror(ret) << std::endl;
       goto out;
     } else {
-      ret = set_inc_osdmap(fs, epoch, bl, force);
+      ret = set_inc_osdmap(fs.get(), epoch, bl, force);
     }
     goto out;
   } else if (op == "update-mon-db") {
@@ -3893,7 +3994,7 @@ int main(int argc, char **argv)
       ret = -EINVAL;
       goto out;
     }
-    ret = initiate_new_remove_pg(fs, pgid);
+    ret = initiate_new_remove_pg(fs.get(), pgid);
     if (ret < 0) {
       cerr << "PG '" << pgid << "' not found" << std::endl;
       goto out;
@@ -3906,14 +4007,14 @@ int main(int argc, char **argv)
     boost::scoped_ptr<action_on_object_t> action;
     action.reset(new do_fix_lost());
     if (pgidstr.length())
-      ret = action_on_all_objects_in_exact_pg(fs, coll_t(pgid), *action, debug);
+      ret = action_on_all_objects_in_exact_pg(fs.get(), coll_t(pgid), *action, debug);
     else
-      ret = action_on_all_objects(fs, *action, debug);
+      ret = action_on_all_objects(fs.get(), *action, debug);
     goto out;
   }
 
   if (op == "list") {
-    ret = do_list(fs, pgidstr, object, nspace, formatter, debug,
+    ret = do_list(fs.get(), pgidstr, object, nspace, formatter, debug,
                   human_readable, head);
     if (ret < 0) {
       cerr << "do_list failed: " << cpp_strerror(ret) << std::endl;
@@ -3921,7 +4022,7 @@ int main(int argc, char **argv)
     goto out;
   }
   if (op == "list-slow-omap") {
-    ret = do_list_slow(fs, pgidstr, object, slow_threshold, formatter, debug,
+    ret = do_list_slow(fs.get(), pgidstr, object, slow_threshold, formatter, debug,
                   human_readable);
     if (ret < 0) {
       cerr << "do_list failed: " << cpp_strerror(ret) << std::endl;
@@ -3939,8 +4040,23 @@ int main(int argc, char **argv)
     goto out;
   }
 
+  if (op == "statfs") {
+      store_statfs_t statsbuf;
+      ret = fs->statfs(&statsbuf);
+      if (ret < 0) {
+        cerr << "error from statfs: " << cpp_strerror(ret) << std::endl;
+	goto out;
+      }
+      formatter->open_object_section("statfs");
+      statsbuf.dump(formatter);
+      formatter->close_section();
+      formatter->flush(cout);
+      cout << std::endl;
+      goto out;
+  }
+
   if (op == "meta-list") {
-    ret = do_meta(fs, object, formatter, debug, human_readable);
+    ret = do_meta(fs.get(), object, formatter, debug, human_readable);
     if (ret < 0) {
       cerr << "do_meta failed: " << cpp_strerror(ret) << std::endl;
     }
@@ -3994,9 +4110,9 @@ int main(int argc, char **argv)
 
   // If not an object command nor any of the ops handled below, then output this usage
   // before complaining about a bad pgid
-  if (!vm.count("objcmd") && op != "export" && op != "export-remove" && op != "info" && op != "log" && op != "mark-complete" && op != "trim-pg-log") {
-    cerr << "Must provide --op (info, log, remove, mkfs, fsck, repair, export, export-remove, import, list, fix-lost, list-pgs, dump-journal, dump-super, meta-list, "
-      "get-osdmap, set-osdmap, get-inc-osdmap, set-inc-osdmap, mark-complete, reset-last-complete, dump-export, trim-pg-log)"
+  if (!vm.count("objcmd") && op != "export" && op != "export-remove" && op != "info" && op != "log" && op != "mark-complete" && op != "trim-pg-log" && op != "trim-pg-log-dups" && op != "pg-log-inject-dups") {
+    cerr << "Must provide --op (info, log, remove, mkfs, fsck, repair, export, export-remove, import, list, fix-lost, list-pgs, dump-super, meta-list, "
+      "get-osdmap, set-osdmap, get-inc-osdmap, set-inc-osdmap, mark-complete, reset-last-complete, dump-export, trim-pg-log, trim-pg-log-dups statfs)"
 	 << std::endl;
     usage(desc);
     ret = 1;
@@ -4017,13 +4133,13 @@ int main(int argc, char **argv)
           type = NOSNAPMAP;
         else if (rmtypestr == "snapmap")
           type = SNAPMAP;
-        ret = do_remove_object(fs, coll, ghobj, all, force, type);
+        ret = do_remove_object(fs.get(), coll, ghobj, all, force, type);
         goto out;
       } else if (objcmd == "list-attrs") {
-        ret = do_list_attrs(fs, coll, ghobj);
+        ret = do_list_attrs(fs.get(), coll, ghobj);
         goto out;
       } else if (objcmd == "list-omap") {
-        ret = do_list_omap(fs, coll, ghobj);
+        ret = do_list_omap(fs.get(), coll, ghobj);
         goto out;
       } else if (objcmd == "get-bytes" || objcmd == "set-bytes") {
         if (objcmd == "get-bytes") {
@@ -4038,7 +4154,7 @@ int main(int argc, char **argv)
               goto out;
             }
           }
-          ret = do_get_bytes(fs, coll, ghobj, fd);
+          ret = do_get_bytes(fs.get(), coll, ghobj, fd);
           if (fd != STDOUT_FILENO)
             close(fd);
         } else {
@@ -4059,7 +4175,7 @@ int main(int argc, char **argv)
               goto out;
             }
           }
-          ret = do_set_bytes(fs, coll, ghobj, fd);
+          ret = do_set_bytes(fs.get(), coll, ghobj, fd);
           if (fd != STDIN_FILENO)
             close(fd);
         }
@@ -4070,7 +4186,7 @@ int main(int argc, char **argv)
           ret = 1;
           goto out;
         }
-	ret = do_get_attr(fs, coll, ghobj, arg1);
+	ret = do_get_attr(fs.get(), coll, ghobj, arg1);
         goto out;
       } else if (objcmd == "set-attr") {
 	if (vm.count("arg1") == 0) {
@@ -4095,7 +4211,7 @@ int main(int argc, char **argv)
 	    goto out;
 	  }
 	}
-	ret = do_set_attr(fs, coll, ghobj, arg1, fd);
+	ret = do_set_attr(fs.get(), coll, ghobj, arg1, fd);
 	if (fd != STDIN_FILENO)
 	  close(fd);
         goto out;
@@ -4105,7 +4221,7 @@ int main(int argc, char **argv)
           ret = 1;
           goto out;
         }
-	ret = do_rm_attr(fs, coll, ghobj, arg1);
+	ret = do_rm_attr(fs.get(), coll, ghobj, arg1);
         goto out;
       } else if (objcmd == "get-omap") {
 	if (vm.count("arg1") == 0) {
@@ -4113,7 +4229,7 @@ int main(int argc, char **argv)
           ret = 1;
           goto out;
         }
-	ret = do_get_omap(fs, coll, ghobj, arg1);
+	ret = do_get_omap(fs.get(), coll, ghobj, arg1);
         goto out;
       } else if (objcmd == "set-omap") {
 	if (vm.count("arg1") == 0) {
@@ -4138,7 +4254,7 @@ int main(int argc, char **argv)
 	    goto out;
 	  }
 	}
-	ret = do_set_omap(fs, coll, ghobj, arg1, fd);
+	ret = do_set_omap(fs.get(), coll, ghobj, arg1, fd);
 	if (fd != STDIN_FILENO)
 	  close(fd);
         goto out;
@@ -4148,7 +4264,7 @@ int main(int argc, char **argv)
           ret = 1;
           goto out;
         }
-	ret = do_rm_omap(fs, coll, ghobj, arg1);
+	ret = do_rm_omap(fs.get(), coll, ghobj, arg1);
         goto out;
       } else if (objcmd == "get-omaphdr") {
 	if (vm.count("arg1")) {
@@ -4156,7 +4272,7 @@ int main(int argc, char **argv)
           ret = 1;
           goto out;
         }
-	ret = do_get_omaphdr(fs, coll, ghobj);
+	ret = do_get_omaphdr(fs.get(), coll, ghobj);
         goto out;
       } else if (objcmd == "set-omaphdr") {
         // Extra arg
@@ -4182,7 +4298,7 @@ int main(int argc, char **argv)
 	    goto out;
 	  }
 	}
-	ret = do_set_omaphdr(fs, coll, ghobj, fd);
+	ret = do_set_omaphdr(fs.get(), coll, ghobj, fd);
 	if (fd != STDIN_FILENO)
 	  close(fd);
         goto out;
@@ -4193,7 +4309,7 @@ int main(int argc, char **argv)
 	  ret = 1;
 	  goto out;
 	}
-	ret = print_obj_info(fs, coll, ghobj, formatter);
+	ret = print_obj_info(fs.get(), coll, ghobj, formatter);
 	goto out;
       } else if (objcmd == "corrupt-info") {   // Undocumented testing feature
 	// There should not be any other arguments
@@ -4202,7 +4318,7 @@ int main(int argc, char **argv)
           ret = 1;
           goto out;
         }
-        ret = corrupt_info(fs, coll, ghobj, formatter);
+        ret = corrupt_info(fs.get(), coll, ghobj, formatter);
         goto out;
       } else if (objcmd == "set-size" || objcmd == "corrupt-size") {
 	// Undocumented testing feature
@@ -4219,10 +4335,10 @@ int main(int argc, char **argv)
 	  goto out;
 	}
 	uint64_t size = atoll(arg1.c_str());
-	ret = set_size(fs, coll, ghobj, size, formatter, corrupt);
+	ret = set_size(fs.get(), coll, ghobj, size, formatter, corrupt);
 	goto out;
       } else if (objcmd == "clear-data-digest") {
-        ret = clear_data_digest(fs, coll, ghobj);
+        ret = clear_data_digest(fs.get(), coll, ghobj);
         goto out;
       } else if (objcmd == "clear-snapset") {
         // UNDOCUMENTED: For testing zap SnapSet
@@ -4232,7 +4348,7 @@ int main(int argc, char **argv)
 	  ret = 1;
 	  goto out;
 	}
-        ret = clear_snapset(fs, coll, ghobj, arg1);
+        ret = clear_snapset(fs.get(), coll, ghobj, arg1);
         goto out;
       } else if (objcmd == "remove-clone-metadata") {
         // Extra arg
@@ -4252,7 +4368,7 @@ int main(int argc, char **argv)
 	  goto out;
 	}
         snapid_t cloneid = atoi(arg1.c_str());
-	ret = remove_clone(fs, coll, ghobj, cloneid, force);
+	ret = remove_clone(fs.get(), coll, ghobj, cloneid, force);
 	goto out;
       }
       cerr << "Unknown object command '" << objcmd << "'" << std::endl;
@@ -4262,7 +4378,7 @@ int main(int argc, char **argv)
     }
 
     map_epoch = 0;
-    ret = PG::peek_map_epoch(fs, pgid, &map_epoch);
+    ret = PG::peek_map_epoch(fs.get(), pgid, &map_epoch);
     if (ret < 0)
       cerr << "peek_map_epoch reports error" << std::endl;
     if (debug)
@@ -4271,7 +4387,7 @@ int main(int argc, char **argv)
     pg_info_t info(pgid);
     PastIntervals past_intervals;
     __u8 struct_ver;
-    ret = PG::read_info(fs, pgid, coll, info, past_intervals, struct_ver);
+    ret = PG::read_info(fs.get(), pgid, coll, info, past_intervals, struct_ver);
     if (ret < 0) {
       cerr << "read_info error " << cpp_strerror(ret) << std::endl;
       goto out;
@@ -4286,11 +4402,11 @@ int main(int argc, char **argv)
 
     if (op == "export" || op == "export-remove") {
       ceph_assert(superblock != nullptr);
-      ret = tool.do_export(fs, coll, pgid, info, map_epoch, struct_ver, *superblock, past_intervals);
+      ret = tool.do_export(cct.get(), fs.get(), coll, pgid, info, map_epoch, struct_ver, *superblock, past_intervals);
       if (ret == 0) {
         cerr << "Export successful" << std::endl;
         if (op == "export-remove") {
-          ret = initiate_new_remove_pg(fs, pgid);
+          ret = initiate_new_remove_pg(fs.get(), pgid);
           // Export succeeded, so pgid is there
           ceph_assert(ret == 0);
           cerr << "Remove successful" << std::endl;
@@ -4305,7 +4421,7 @@ int main(int argc, char **argv)
     } else if (op == "log") {
       PGLog::IndexedLog log;
       pg_missing_t missing;
-      ret = get_log(fs, struct_ver, pgid, info, log, missing);
+      ret = get_log(cct.get(), fs.get(), struct_ver, pgid, info, log, missing);
       if (ret < 0)
           goto out;
 
@@ -4341,13 +4457,22 @@ int main(int argc, char **argv)
       }
       cout << "Marking complete succeeded" << std::endl;
     } else if (op == "trim-pg-log") {
-      ret = do_trim_pg_log(fs, coll, info, pgid,
+      ret = do_trim_pg_log(fs.get(), coll, info, pgid,
 			   map_epoch, past_intervals);
       if (ret < 0) {
 	cerr << "Error trimming pg log: " << cpp_strerror(ret) << std::endl;
 	goto out;
       }
       cout << "Finished trimming pg log" << std::endl;
+      goto out;
+    } else if (op == "trim-pg-log-dups") {
+      ret = do_trim_pg_log_dups(fs.get(), coll, info, pgid,
+			   map_epoch, past_intervals);
+      if (ret < 0) {
+	cerr << "Error trimming pg log dups: " << cpp_strerror(ret) << std::endl;
+	goto out;
+      }
+      cout << "Finished trimming pg log dups" << std::endl;
       goto out;
     } else if (op == "reset-last-complete") {
       if (!force) {
@@ -4381,6 +4506,34 @@ int main(int argc, char **argv)
       }
       cout << "Reseting last_complete succeeded" << std::endl;
    
+    } else if (op == "pg-log-inject-dups") {
+        if (!vm.count("file") || file == "-") {
+          cerr << "Must provide file containing JSON dups entries" << std::endl;
+          ret = 1;
+          goto out;
+        }
+        if (debug)
+          cerr << "opening file " << file << std::endl;
+
+        ifstream json_file_stream(file , std::ifstream::in);
+        if (!json_file_stream.is_open()) {
+          cerr << "unable to open file " << file << std::endl;
+          ret = -1;
+          goto out;
+        }
+        json_spirit::mValue result;
+        try {
+          if (!json_spirit::read(json_file_stream, result))
+            throw std::runtime_error("unparseable JSON " + file);
+          if (result.type() != json_spirit::array_type) {
+            cerr << "result is not an array_type - type=" << result.type() << std::endl;
+            throw std::runtime_error("not JSON array_type " + file);
+          }
+          do_dups_inject_from_json(fs.get(), pgid, result, debug);
+        } catch (const std::runtime_error &e) {
+          cerr << e.what() << std::endl;;
+          return -1;
+        }
     } else {
       ceph_assert(!"Should have already checked for valid --op");
     }
@@ -4393,7 +4546,7 @@ out:
   if (debug) {
     ostringstream ostr;
     Formatter* f = Formatter::create("json-pretty", "json-pretty", "json-pretty");
-    cct->get_perfcounters_collection()->dump_formatted(f, false);
+    cct->get_perfcounters_collection()->dump_formatted(f, false, false);
     ostr << "ceph-objectstore-tool ";
     f->flush(ostr);
     delete f;

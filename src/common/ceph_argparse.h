@@ -27,25 +27,40 @@
 #include <vector>
 
 #include "common/entity_name.h"
+#include "include/encoding.h"
 
 /////////////////////// Types ///////////////////////
 class CephInitParameters
 {
 public:
   explicit CephInitParameters(uint32_t module_type_);
-  std::list<std::string> get_conf_files() const;
 
   uint32_t module_type;
   EntityName name;
   bool no_config_file = false;
+
+  void encode(ceph::buffer::list& bl) const {
+    ENCODE_START(1, 1, bl);
+    encode(module_type, bl);
+    encode(name, bl);
+    encode(no_config_file, bl);
+    ENCODE_FINISH(bl);
+  }
+  void decode(ceph::buffer::list::const_iterator& bl) {
+    DECODE_START(1, bl);
+    decode(module_type, bl);
+    decode(name, bl);
+    decode(no_config_file, bl);
+    DECODE_FINISH(bl);
+  }
 };
+WRITE_CLASS_ENCODER(CephInitParameters)
 
 /////////////////////// Functions ///////////////////////
 extern void string_to_vec(std::vector<std::string>& args, std::string argstr);
 extern void clear_g_str_vec();
-extern void env_to_vec(std::vector<const char*>& args, const char *name=NULL);
-extern void argv_to_vec(int argc, const char **argv,
-                 std::vector<const char*>& args);
+extern void env_to_vec(std::vector<const char*>& args, const char *name=nullptr);
+extern std::vector<const char*> argv_to_vec(int argc, const char* const * argv);
 extern void vec_to_argv(const char *argv0, std::vector<const char*>& args,
 			int *argc, const char ***argv);
 

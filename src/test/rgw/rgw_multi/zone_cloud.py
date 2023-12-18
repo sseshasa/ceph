@@ -11,12 +11,8 @@ import datetime
 import re
 
 from nose.tools import eq_ as eq
-try:
-    from itertools import izip_longest as zip_longest  # type: ignore
-except ImportError:
-    from itertools import zip_longest
-
-from six.moves.urllib.parse import urlparse
+from itertools import zip_longest # type: ignore
+from urllib.parse import urlparse
 
 from .multisite import *
 from .tools import *
@@ -261,6 +257,9 @@ class CloudZone(Zone):
     def has_buckets(self):
         return False
 
+    def has_roles(self):
+        return False
+
     class Conn(ZoneConn):
         def __init__(self, zone, credentials):
             super(CloudZone.Conn, self).__init__(zone, credentials)
@@ -301,6 +300,9 @@ class CloudZone(Zone):
             log.info('success, bucket identical: bucket=%s zones={%s, %s}', bucket_name, self.name, zone_conn.name)
 
             return True
+
+        def create_role(self, path, rolename, policy_document, tag_list):
+            assert False
 
     def get_conn(self, credentials):
         return self.Conn(self, credentials)

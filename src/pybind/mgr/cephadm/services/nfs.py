@@ -1,213 +1,331 @@
+import errno
+import ipaddress
 import logging
+import os
+import subprocess
+import tempfile
+from typing import Dict, Tuple, Any, List, cast, Optional
 
-import rados
-from typing import Dict, Optional, Tuple, Any, List, cast
+from mgr_module import HandleCommandResult
+from mgr_module import NFS_POOL_NAME as POOL_NAME
 
-from ceph.deployment.service_spec import NFSServiceSpec
+from ceph.deployment.service_spec import ServiceSpec, NFSServiceSpec
 
-import orchestrator
-from orchestrator import OrchestratorError
+from orchestrator import DaemonDescription
 
-import cephadm
-from .. import utils
+from cephadm.services.cephadmservice import AuthEntity, CephadmDaemonDeploySpec, CephService
 
-from .cephadmservice import CephadmService
 logger = logging.getLogger(__name__)
 
 
-class NFSService(CephadmService):
-    def _generate_nfs_config(self, daemon_type, daemon_id, host):
-        # type: (str, str, str) -> Tuple[Dict[str, Any], List[str]]
-        deps = []  # type: List[str]
+class NFSService(CephService):
+    TYPE = 'nfs'
 
-        # find the matching NFSServiceSpec
-        # TODO: find the spec and pass via _create_daemon instead ??
-        dd = orchestrator.DaemonDescription()
-        dd.daemon_type = daemon_type
-        dd.daemon_id = daemon_id
-        dd.hostname = host
+    def ranked(self) -> bool:
+        return True
 
-        service_name = dd.service_name()
-        specs = self.mgr.spec_store.find(service_name)
+    def fence(self, daemon_id: str) -> None:
+        logger.info(f'Fencing old nfs.{daemon_id}')
+        ret, out, err = self.mgr.mon_command({
+            'prefix': 'auth rm',
+            'entity': f'client.nfs.{daemon_id}',
+        })
 
-        if not specs:
-            raise OrchestratorError('Cannot find service spec %s' % (service_name))
-        elif len(specs) > 1:
-            raise OrchestratorError('Found multiple service specs for %s' % (service_name))
-        else:
-            # cast to keep mypy happy
-            spec = cast(NFSServiceSpec, specs[0])
+        # TODO: block/fence this entity (in case it is still running somewhere)
 
-        nfs = NFSGanesha(self.mgr, daemon_id, spec)
+    def fence_old_ranks(self,
+                        spec: ServiceSpec,
+                        rank_map: Dict[int, Dict[int, Optional[str]]],
+                        num_ranks: int) -> None:
+        for rank, m in list(rank_map.items()):
+            if rank >= num_ranks:
+                for daemon_id in m.values():
+                    if daemon_id is not None:
+                        self.fence(daemon_id)
+                del rank_map[rank]
+                nodeid = f'{spec.service_name()}.{rank}'
+                self.mgr.log.info(f'Removing {nodeid} from the ganesha grace table')
+                self.run_grace_tool(cast(NFSServiceSpec, spec), 'remove', nodeid)
+                self.mgr.spec_store.save_rank_map(spec.service_name(), rank_map)
+            else:
+                max_gen = max(m.keys())
+                for gen, daemon_id in list(m.items()):
+                    if gen < max_gen:
+                        if daemon_id is not None:
+                            self.fence(daemon_id)
+                        del rank_map[rank][gen]
+                        self.mgr.spec_store.save_rank_map(spec.service_name(), rank_map)
 
-        # create the keyring
-        entity = nfs.get_keyring_entity()
-        keyring = nfs.get_or_create_keyring(entity=entity)
+    def config(self, spec: NFSServiceSpec) -> None:  # type: ignore
+        from nfs.cluster import create_ganesha_pool
 
-        # update the caps after get-or-create, the keyring might already exist!
-        nfs.update_keyring_caps(entity=entity)
+        assert self.TYPE == spec.service_type
+        create_ganesha_pool(self.mgr)
+
+    def prepare_create(self, daemon_spec: CephadmDaemonDeploySpec) -> CephadmDaemonDeploySpec:
+        assert self.TYPE == daemon_spec.daemon_type
+        daemon_spec.final_config, daemon_spec.deps = self.generate_config(daemon_spec)
+        return daemon_spec
+
+    def generate_config(self, daemon_spec: CephadmDaemonDeploySpec) -> Tuple[Dict[str, Any], List[str]]:
+        assert self.TYPE == daemon_spec.daemon_type
+
+        daemon_type = daemon_spec.daemon_type
+        daemon_id = daemon_spec.daemon_id
+        host = daemon_spec.host
+        spec = cast(NFSServiceSpec, self.mgr.spec_store[daemon_spec.service_name].spec)
+
+        deps: List[str] = []
+
+        nodeid = f'{daemon_spec.service_name}.{daemon_spec.rank}'
+
+        # create the RADOS recovery pool keyring
+        rados_user = f'{daemon_type}.{daemon_id}'
+        rados_keyring = self.create_keyring(daemon_spec)
+
+        # ensure rank is known to ganesha
+        self.mgr.log.info(f'Ensuring {nodeid} is in the ganesha grace table')
+        self.run_grace_tool(spec, 'add', nodeid)
 
         # create the rados config object
-        nfs.create_rados_config_obj()
+        self.create_rados_config_obj(spec)
 
-        # generate the cephadm config
-        cephadm_config = nfs.get_cephadm_config()
-        cephadm_config.update(
-                self.mgr._get_config_and_keyring(
+        # create the RGW keyring
+        rgw_user = f'{rados_user}-rgw'
+        rgw_keyring = self.create_rgw_keyring(daemon_spec)
+        if spec.virtual_ip:
+            bind_addr = spec.virtual_ip
+        else:
+            bind_addr = daemon_spec.ip if daemon_spec.ip else ''
+        if not bind_addr:
+            logger.warning(f'Bind address in {daemon_type}.{daemon_id}\'s ganesha conf is defaulting to empty')
+        else:
+            logger.debug("using haproxy bind address: %r", bind_addr)
+
+        # generate the ganesha config
+        def get_ganesha_conf() -> str:
+            context: Dict[str, Any] = {
+                "user": rados_user,
+                "nodeid": nodeid,
+                "pool": POOL_NAME,
+                "namespace": spec.service_id,
+                "rgw_user": rgw_user,
+                "url": f'rados://{POOL_NAME}/{spec.service_id}/{spec.rados_config_name()}',
+                # fall back to default NFS port if not present in daemon_spec
+                "port": daemon_spec.ports[0] if daemon_spec.ports else 2049,
+                "bind_addr": bind_addr,
+                "haproxy_hosts": [],
+            }
+            if spec.enable_haproxy_protocol:
+                context["haproxy_hosts"] = self._haproxy_hosts()
+                logger.debug("selected haproxy_hosts: %r", context["haproxy_hosts"])
+            return self.mgr.template.render('services/nfs/ganesha.conf.j2', context)
+
+        # generate the cephadm config json
+        def get_cephadm_config() -> Dict[str, Any]:
+            config: Dict[str, Any] = {}
+            config['pool'] = POOL_NAME
+            config['namespace'] = spec.service_id
+            config['userid'] = rados_user
+            config['extra_args'] = ['-N', 'NIV_EVENT']
+            config['files'] = {
+                'ganesha.conf': get_ganesha_conf(),
+            }
+            config.update(
+                self.get_config_and_keyring(
                     daemon_type, daemon_id,
-                    keyring=keyring))
+                    keyring=rados_keyring,
+                    host=host
+                )
+            )
+            config['rgw'] = {
+                'cluster': 'ceph',
+                'user': rgw_user,
+                'keyring': rgw_keyring,
+            }
+            logger.debug('Generated cephadm config-json: %s' % config)
+            return config
 
-        return cephadm_config, deps
+        return get_cephadm_config(), deps
 
-    def config(self, spec):
-        self.mgr._check_pool_exists(spec.pool, spec.service_name())
+    def create_rados_config_obj(self,
+                                spec: NFSServiceSpec,
+                                clobber: bool = False) -> None:
+        objname = spec.rados_config_name()
+        cmd = [
+            'rados',
+            '-n', f"mgr.{self.mgr.get_mgr_id()}",
+            '-k', str(self.mgr.get_ceph_option('keyring')),
+            '-p', POOL_NAME,
+            '--namespace', cast(str, spec.service_id),
+        ]
+        result = subprocess.run(
+            cmd + ['get', objname, '-'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=10)
+        if not result.returncode and not clobber:
+            logger.info('Rados config object exists: %s' % objname)
+        else:
+            logger.info('Creating rados config object: %s' % objname)
+            result = subprocess.run(
+                cmd + ['put', objname, '-'],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=10)
+            if result.returncode:
+                self.mgr.log.warning(
+                    f'Unable to create rados config object {objname}: {result.stderr.decode("utf-8")}'
+                )
+                raise RuntimeError(result.stderr.decode("utf-8"))
 
-        logger.info('Saving service %s spec with placement %s' % (
-            spec.service_name(), spec.placement.pretty_str()))
-        self.mgr.spec_store.save(spec)
+    def create_keyring(self, daemon_spec: CephadmDaemonDeploySpec) -> str:
+        daemon_id = daemon_spec.daemon_id
+        spec = cast(NFSServiceSpec, self.mgr.spec_store[daemon_spec.service_name].spec)
+        entity: AuthEntity = self.get_auth_entity(daemon_id)
 
-    def create(self, daemon_id, host, spec):
-        return self.mgr._create_daemon('nfs', daemon_id, host)
+        osd_caps = 'allow rw pool=%s namespace=%s' % (POOL_NAME, spec.service_id)
 
+        logger.info('Creating key for %s' % entity)
+        keyring = self.get_keyring_with_caps(entity,
+                                             ['mon', 'allow r',
+                                              'osd', osd_caps])
 
-class NFSGanesha(object):
-    def __init__(self,
-                 mgr,
-                 daemon_id,
-                 spec):
-        # type: (cephadm.CephadmOrchestrator, str, NFSServiceSpec) -> None
-        assert spec.service_id and daemon_id.startswith(spec.service_id)
-        self.mgr = mgr
-        self.daemon_id = daemon_id
-        self.spec = spec
-
-    def get_daemon_name(self):
-        # type: () -> str
-        return '%s.%s' % (self.spec.service_type, self.daemon_id)
-
-    def get_rados_user(self):
-        # type: () -> str
-        return '%s.%s' % (self.spec.service_type, self.daemon_id)
-
-    def get_keyring_entity(self):
-        # type: () -> str
-        return utils.name_to_config_section(self.get_rados_user())
-
-    def get_or_create_keyring(self, entity=None):
-        # type: (Optional[str]) -> str
-        if not entity:
-            entity = self.get_keyring_entity()
-
-        logger.info('Create keyring: %s' % entity)
-        ret, keyring, err = self.mgr.mon_command({
-            'prefix': 'auth get-or-create',
-            'entity': entity,
-        })
-
-        if ret != 0:
-            raise OrchestratorError(
-                    'Unable to create keyring %s: %s %s' \
-                            % (entity, ret, err))
         return keyring
 
-    def update_keyring_caps(self, entity=None):
-        # type: (Optional[str]) -> None
-        if not entity:
-            entity = self.get_keyring_entity()
+    def create_rgw_keyring(self, daemon_spec: CephadmDaemonDeploySpec) -> str:
+        daemon_id = daemon_spec.daemon_id
+        entity: AuthEntity = self.get_auth_entity(f'{daemon_id}-rgw')
 
-        osd_caps='allow rw pool=%s' % (self.spec.pool)
-        if self.spec.namespace:
-            osd_caps='%s namespace=%s' % (osd_caps, self.spec.namespace)
+        logger.info('Creating key for %s' % entity)
+        keyring = self.get_keyring_with_caps(entity,
+                                             ['mon', 'allow r',
+                                              'osd', 'allow rwx tag rgw *=*'])
 
-        logger.info('Updating keyring caps: %s' % entity)
-        ret, out, err = self.mgr.mon_command({
-            'prefix': 'auth caps',
+        return keyring
+
+    def run_grace_tool(self,
+                       spec: NFSServiceSpec,
+                       action: str,
+                       nodeid: str) -> None:
+        # write a temp keyring and referencing config file.  this is a kludge
+        # because the ganesha-grace-tool can only authenticate as a client (and
+        # not a mgr).  Also, it doesn't allow you to pass a keyring location via
+        # the command line, nor does it parse the CEPH_ARGS env var.
+        tmp_id = f'mgr.nfs.grace.{spec.service_name()}'
+        entity = AuthEntity(f'client.{tmp_id}')
+        keyring = self.get_keyring_with_caps(
+            entity,
+            ['mon', 'allow r', 'osd', f'allow rwx pool {POOL_NAME}']
+        )
+        tmp_keyring = tempfile.NamedTemporaryFile(mode='w', prefix='mgr-grace-keyring')
+        os.fchmod(tmp_keyring.fileno(), 0o600)
+        tmp_keyring.write(keyring)
+        tmp_keyring.flush()
+        tmp_conf = tempfile.NamedTemporaryFile(mode='w', prefix='mgr-grace-conf')
+        tmp_conf.write(self.mgr.get_minimal_ceph_conf())
+        tmp_conf.write(f'\tkeyring = {tmp_keyring.name}\n')
+        tmp_conf.flush()
+        try:
+            cmd: List[str] = [
+                'ganesha-rados-grace',
+                '--cephconf', tmp_conf.name,
+                '--userid', tmp_id,
+                '--pool', POOL_NAME,
+                '--ns', cast(str, spec.service_id),
+                action, nodeid,
+            ]
+            self.mgr.log.debug(cmd)
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    timeout=10)
+            if result.returncode:
+                self.mgr.log.warning(
+                    f'ganesha-rados-grace tool failed: {result.stderr.decode("utf-8")}'
+                )
+                raise RuntimeError(f'grace tool failed: {result.stderr.decode("utf-8")}')
+
+        finally:
+            self.mgr.check_mon_command({
+                'prefix': 'auth rm',
+                'entity': entity,
+            })
+
+    def remove_rgw_keyring(self, daemon: DaemonDescription) -> None:
+        assert daemon.daemon_id is not None
+        daemon_id: str = daemon.daemon_id
+        entity: AuthEntity = self.get_auth_entity(f'{daemon_id}-rgw')
+
+        logger.info(f'Removing key for {entity}')
+        self.mgr.check_mon_command({
+            'prefix': 'auth rm',
             'entity': entity,
-            'caps': ['mon', 'allow r',
-                     'osd', osd_caps,
-                     'mds', 'allow rw'],
         })
 
-        if ret != 0:
-            raise OrchestratorError(
-                    'Unable to update keyring caps %s: %s %s' \
-                            % (entity, ret, err))
+    def post_remove(self, daemon: DaemonDescription, is_failed_deploy: bool) -> None:
+        super().post_remove(daemon, is_failed_deploy=is_failed_deploy)
+        self.remove_rgw_keyring(daemon)
 
-    def create_rados_config_obj(self, clobber=False):
-        # type: (Optional[bool]) -> None
-        obj = self.spec.rados_config_name()
+    def ok_to_stop(self,
+                   daemon_ids: List[str],
+                   force: bool = False,
+                   known: Optional[List[str]] = None) -> HandleCommandResult:
+        # if only 1 nfs, alert user (this is not passable with --force)
+        warn, warn_message = self._enough_daemons_to_stop(self.TYPE, daemon_ids, 'NFS', 1, True)
+        if warn:
+            return HandleCommandResult(-errno.EBUSY, '', warn_message)
 
-        with self.mgr.rados.open_ioctx(self.spec.pool) as ioctx:
-            if self.spec.namespace:
-                ioctx.set_namespace(self.spec.namespace)
+        # if reached here, there is > 1 nfs daemon.
+        if force:
+            return HandleCommandResult(0, warn_message, '')
 
-            exists = True
-            try:
-                ioctx.stat(obj)
-            except rados.ObjectNotFound as e:
-                exists = False
+        # if reached here, > 1 nfs daemon and no force flag.
+        # Provide warning
+        warn_message = "WARNING: Removing NFS daemons can cause clients to lose connectivity. "
+        return HandleCommandResult(-errno.EBUSY, '', warn_message)
 
-            if exists and not clobber:
-                # Assume an existing config
-                logger.info('Rados config object exists: %s' % obj)
-            else:
-                # Create an empty config object
-                logger.info('Creating rados config object: %s' % obj)
-                ioctx.write_full(obj, ''.encode('utf-8'))
+    def purge(self, service_name: str) -> None:
+        if service_name not in self.mgr.spec_store:
+            return
+        spec = cast(NFSServiceSpec, self.mgr.spec_store[service_name].spec)
 
-    def get_ganesha_conf(self):
-        # type: () -> str
-        return '''# generated by cephadm
-NFS_CORE_PARAM {{
-        Enable_NLM = false;
-        Enable_RQUOTA = false;
-        Protocols = 4;
-}}
+        logger.info(f'Removing grace file for {service_name}')
+        cmd = [
+            'rados',
+            '-n', f"mgr.{self.mgr.get_mgr_id()}",
+            '-k', str(self.mgr.get_ceph_option('keyring')),
+            '-p', POOL_NAME,
+            '--namespace', cast(str, spec.service_id),
+            'rm', 'grace',
+        ]
+        subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10
+        )
 
-CACHEINODE {{
-        Dir_Chunk = 0;
-        NParts = 1;
-        Cache_Size = 1;
-}}
-
-EXPORT_DEFAULTS {{
-        Attr_Expiration_Time = 0;
-}}
-
-NFSv4 {{
-        Delegations = false;
-        RecoveryBackend = 'rados_cluster';
-        Minor_Versions = 1, 2;
-}}
-
-RADOS_KV {{
-        UserId = "{user}";
-        nodeid = "{nodeid}";
-        pool = "{pool}";
-        namespace = "{namespace}";
-}}
-
-RADOS_URLS {{
-        UserId = "{user}";
-        watch_url = "{url}";
-}}
-
-%url    {url}
-'''.format(user=self.get_rados_user(),
-           nodeid=self.get_daemon_name(),
-           pool=self.spec.pool,
-           namespace=self.spec.namespace if self.spec.namespace else '',
-           url=self.spec.rados_config_location())
-
-    def get_cephadm_config(self):
-        # type: () -> Dict
-        config = {'pool' : self.spec.pool} # type: Dict
-        if self.spec.namespace:
-            config['namespace'] = self.spec.namespace
-        config['userid'] = self.get_rados_user()
-        config['extra_args'] = ['-N', 'NIV_EVENT']
-        config['files'] = {
-            'ganesha.conf' : self.get_ganesha_conf(),
-        }
-        logger.debug('Generated cephadm config-json: %s' % config)
-        return config
+    def _haproxy_hosts(self) -> List[str]:
+        # NB: Ideally, we would limit the list to IPs on hosts running
+        # haproxy/ingress only, but due to the nature of cephadm today
+        # we'd "only know the set of haproxy hosts after they've been
+        # deployed" (quoth @adk7398). As it is today we limit the list
+        # of hosts we know are managed by cephadm. That ought to be
+        # good enough to prevent acceping haproxy protocol messages
+        # from "rouge" systems that are not under our control. At
+        # least until we learn otherwise.
+        cluster_ips: List[str] = []
+        for host in self.mgr.inventory.keys():
+            default_addr = self.mgr.inventory.get_addr(host)
+            cluster_ips.append(default_addr)
+            nets = self.mgr.cache.networks.get(host)
+            if not nets:
+                continue
+            for subnet, iface in nets.items():
+                ip_subnet = ipaddress.ip_network(subnet)
+                if ipaddress.ip_address(default_addr) in ip_subnet:
+                    continue  # already present
+                if ip_subnet.is_loopback or ip_subnet.is_link_local:
+                    continue  # ignore special subnets
+                addrs: List[str] = sum((addr_list for addr_list in iface.values()), [])
+                if addrs:
+                    # one address per interface/subnet is enough
+                    cluster_ips.append(addrs[0])
+        return cluster_ips

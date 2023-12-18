@@ -2,7 +2,7 @@
   <div *ngFor="let option of options; let last = last">
     <div class="form-group row pt-2"
          *ngIf="option.type === 'bool'">
-      <label class="col-form-label col-6"
+      <label class="cd-col-form-label"
              [for]="option.name">
         <b>{{ option.text }}</b>
         <br>
@@ -13,7 +13,7 @@
         </span>
       </label>
 
-      <div class="col-6">
+      <div class="cd-col-form-input">
         <div class="custom-control custom-checkbox">
           <input class="custom-control-input"
                  type="checkbox"
@@ -27,7 +27,7 @@
 
     <div class="form-group row pt-2"
          *ngIf="option.type !== 'bool'">
-      <label class="col-6 col-form-label"
+      <label class="cd-col-form-label"
              [for]="option.name">{{ option.text }}
         <br>
         <span class="text-muted">
@@ -36,7 +36,7 @@
             {{ option.long_desc }}</cd-helper>
         </span>
       </label>
-      <div class="col-6">
+      <div class="cd-col-form-input">
         <div class="input-group">
           <input class="form-control"
                  [type]="option.additionalTypeInfo.inputType"
@@ -44,18 +44,16 @@
                  [placeholder]="option.additionalTypeInfo.humanReadable"
                  [formControlName]="option.name"
                  [step]="getStep(option.type, optionsForm.getValue(option.name))">
-          <div class="input-group-append"
-               *ngIf="optionsFormShowReset">
-            <button class="btn btn-light"
-                    type="button"
-                    data-toggle="button"
-                    title="Remove the custom configuration value. The default configuration will be inherited and used instead."
-                    (click)="resetValue(option.name)"
-                    i18n-title>
-              <i [ngClass]="[icons.erase]"
-                 aria-hidden="true"></i>
-            </button>
-          </div>
+          <button class="btn btn-light"
+                  type="button"
+                  data-toggle="button"
+                  title="Remove the custom configuration value. The default configuration will be inherited and used instead."
+                  (click)="resetValue(option.name)"
+                  i18n-title
+                  *ngIf="optionsFormShowReset">
+            <i [ngClass]="[icons.erase]"
+               aria-hidden="true"></i>
+          </button>
         </div>
         <span class="invalid-feedback"
               *ngIf="optionsForm.showError(option.name, optionsFormDir, 'pattern')">

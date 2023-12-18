@@ -315,6 +315,13 @@ void ProtocolV1::write_event() {
     auto start = ceph::mono_clock::now();
     bool more;
     do {
+      if (connection->is_queued()) {
+	if (r = connection->_try_send(); r!= 0) {
+	  // either fails to send or not all queued buffer is sent
+	  break;
+	}
+      }
+
       ceph::buffer::list data;
       Message *m = _get_next_outgoing(&data);
       if (!m) {
@@ -662,7 +669,7 @@ CtPtr ProtocolV1::throttle_message() {
                    << "/" << connection->policy.throttler_messages->get_max()
                    << dendl;
     if (!connection->policy.throttler_messages->get_or_fail()) {
-      ldout(cct, 10) << __func__ << " wants 1 message from policy throttle "
+      ldout(cct, 1) << __func__ << " wants 1 message from policy throttle "
                      << connection->policy.throttler_messages->get_current()
                      << "/" << connection->policy.throttler_messages->get_max()
                      << " failed, just wait." << dendl;
@@ -693,7 +700,7 @@ CtPtr ProtocolV1::throttle_bytes() {
                      << connection->policy.throttler_bytes->get_current() << "/"
                      << connection->policy.throttler_bytes->get_max() << dendl;
       if (!connection->policy.throttler_bytes->get_or_fail(cur_msg_size)) {
-        ldout(cct, 10) << __func__ << " wants " << cur_msg_size
+        ldout(cct, 1) << __func__ << " wants " << cur_msg_size
                        << " bytes from policy throttler "
                        << connection->policy.throttler_bytes->get_current()
                        << "/" << connection->policy.throttler_bytes->get_max()
@@ -720,7 +727,7 @@ CtPtr ProtocolV1::throttle_dispatch_queue() {
   if (cur_msg_size) {
     if (!connection->dispatch_queue->dispatch_throttler.get_or_fail(
             cur_msg_size)) {
-      ldout(cct, 10)
+      ldout(cct, 1)
           << __func__ << " wants " << cur_msg_size
           << " bytes from dispatch throttle "
           << connection->dispatch_queue->dispatch_throttler.get_current() << "/"
@@ -1996,7 +2003,8 @@ CtPtr ProtocolV1::handle_connect_message_2() {
   // require signatures for cephx?
   if (connect_msg.authorizer_protocol == CEPH_AUTH_CEPHX) {
     if (connection->peer_type == CEPH_ENTITY_TYPE_OSD ||
-        connection->peer_type == CEPH_ENTITY_TYPE_MDS) {
+        connection->peer_type == CEPH_ENTITY_TYPE_MDS ||
+        connection->peer_type == CEPH_ENTITY_TYPE_MGR) {
       if (cct->_conf->cephx_require_signatures ||
           cct->_conf->cephx_cluster_require_signatures) {
         ldout(cct, 10)
@@ -2004,6 +2012,14 @@ CtPtr ProtocolV1::handle_connect_message_2() {
             << " using cephx, requiring MSG_AUTH feature bit for cluster"
             << dendl;
         connection->policy.features_required |= CEPH_FEATURE_MSG_AUTH;
+      }
+      if (cct->_conf->cephx_require_version >= 2 ||
+          cct->_conf->cephx_cluster_require_version >= 2) {
+        ldout(cct, 10)
+            << __func__
+            << " using cephx, requiring cephx v2 feature bit for cluster"
+            << dendl;
+        connection->policy.features_required |= CEPH_FEATUREMASK_CEPHX_V2;
       }
     } else {
       if (cct->_conf->cephx_require_signatures ||
@@ -2013,6 +2029,14 @@ CtPtr ProtocolV1::handle_connect_message_2() {
             << " using cephx, requiring MSG_AUTH feature bit for service"
             << dendl;
         connection->policy.features_required |= CEPH_FEATURE_MSG_AUTH;
+      }
+      if (cct->_conf->cephx_require_version >= 2 ||
+          cct->_conf->cephx_service_require_version >= 2) {
+        ldout(cct, 10)
+            << __func__
+            << " using cephx, requiring cephx v2 feature bit for service"
+            << dendl;
+        connection->policy.features_required |= CEPH_FEATUREMASK_CEPHX_V2;
       }
     }
   }
@@ -2029,6 +2053,10 @@ CtPtr ProtocolV1::handle_connect_message_2() {
   ceph::buffer::list auth_bl_copy = authorizer_buf;
   auto am = auth_meta;
   am->auth_method = connect_msg.authorizer_protocol;
+  if (!HAVE_FEATURE((uint64_t)connect_msg.features, CEPHX_V2)) {
+    // peer doesn't support it and we won't get here if we require it
+    am->skip_authorizer_challenge = true;
+  }
   connection->lock.unlock();
   ldout(cct,10) << __func__ << " authorizor_protocol "
 		<< connect_msg.authorizer_protocol
@@ -2386,6 +2414,7 @@ CtPtr ProtocolV1::replace(const AsyncConnectionRef& existing,
               existing->worker->references--;
               new_worker->references++;
               existing->logger = new_worker->get_perf_counter();
+              existing->labeled_logger = new_worker->get_labeled_perf_counter();
               existing->worker = new_worker;
               existing->center = new_center;
               if (existing->delay_state)

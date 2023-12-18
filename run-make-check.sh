@@ -20,6 +20,8 @@
 
 source src/script/run-make.sh
 
+set -e
+
 function run() {
     # to prevent OSD EMFILE death on tests, make sure ulimit >= 1024
     $DRY_RUN ulimit -n $(ulimit -Hn)
@@ -30,12 +32,27 @@ function run() {
 
     # increase the aio-max-nr, which is by default 65536. we could reach this
     # limit while running seastar tests and bluestore tests.
-    $DRY_RUN sudo /sbin/sysctl -q -w fs.aio-max-nr=$((65536 * 16))
+    local m=16
+    local procs="$(($(get_processors) * 2))"
+    if [ "${procs}" -gt $m ]; then
+        m="${procs}"
+    fi
+    local aiomax="$((65536 * procs))"
+    if [ "$(/sbin/sysctl -n fs.aio-max-nr )" -lt "${aiomax}" ]; then
+        $DRY_RUN sudo /sbin/sysctl -q -w fs.aio-max-nr="${aiomax}"
+    fi
 
     CHECK_MAKEOPTS=${CHECK_MAKEOPTS:-$DEFAULT_MAKEOPTS}
-    if ! $DRY_RUN ctest $CHECK_MAKEOPTS --output-on-failure; then
-        rm -fr ${TMPDIR:-/tmp}/ceph-asok.*
-        return 1
+    if in_jenkins; then
+        if ! ctest $CHECK_MAKEOPTS --no-compress-output --output-on-failure --test-output-size-failed 1024000 -T Test; then
+            # do not return failure, as the jenkins publisher will take care of this
+            rm -fr ${TMPDIR:-/tmp}/ceph-asok.*
+        fi
+    else
+        if ! $DRY_RUN ctest $CHECK_MAKEOPTS --output-on-failure; then
+            rm -fr ${TMPDIR:-/tmp}/ceph-asok.*
+            return 1
+        fi
     fi
 }
 
@@ -52,15 +69,15 @@ function main() {
         echo "Please fix 'hostname --fqdn', otherwise 'make check' will fail"
         return 1
     fi
+    # uses run-make.sh to install-deps
     FOR_MAKE_CHECK=1 prepare
-    # Init defaults after deps are installed.
-    local cmake_opts=" -DWITH_PYTHON3=3 -DWITH_GTEST_PARALLEL=ON -DWITH_FIO=ON -DWITH_CEPHFS_SHELL=ON -DWITH_SPDK=ON -DENABLE_GIT_VERSION=OFF"
-    if [ $WITH_SEASTAR ]; then
-        cmake_opts+=" -DWITH_SEASTAR=ON"
-    fi
-    configure $cmake_opts $@
-    build tests && echo "make check: successful run on $(git rev-parse HEAD)"
-    run
+    configure "$@"
+    in_jenkins && echo "CI_DEBUG: Running 'build tests'"
+    build tests
+    echo "make check: successful build on $(git rev-parse HEAD)"
+    FOR_MAKE_CHECK=1 run
 }
 
-main "$@"
+if [ "$0" = "$BASH_SOURCE" ]; then
+    main "$@"
+fi

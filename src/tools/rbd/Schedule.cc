@@ -95,8 +95,6 @@ int get_level_spec_args(const po::variables_map &vm,
 
     if (vm.count(at::POOL_NAME)) {
       pool_name = vm[at::POOL_NAME].as<std::string>();
-    } else if (pool_name.empty()) {
-      pool_name = utils::get_default_pool_name();
     }
 
     if (vm.count(at::NAMESPACE_NAME)) {
@@ -118,8 +116,6 @@ int get_level_spec_args(const po::variables_map &vm,
 
     if (vm.count(at::POOL_NAME)) {
       pool_name = vm[at::POOL_NAME].as<std::string>();
-    } else {
-      pool_name = utils::get_default_pool_name();
     }
 
     namespace_name = vm[at::NAMESPACE_NAME].as<std::string>();
@@ -142,11 +138,33 @@ int get_level_spec_args(const po::variables_map &vm,
   return 0;
 }
 
-void add_schedule_options(po::options_description *positional) {
+void normalize_level_spec_args(std::map<std::string, std::string> *args) {
+  std::map<std::string, std::string> raw_args;
+  std::swap(raw_args, *args);
+
+  auto default_pool_name = utils::get_default_pool_name();
+  for (auto [key, value] : raw_args) {
+    if (key == "level_spec" && !value.empty() && value[0] == '/') {
+      value = default_pool_name + value;
+    }
+
+    (*args)[key] = value;
+  }
+}
+
+void add_schedule_options(po::options_description *positional,
+                          bool mandatory) {
+  if (mandatory) {
+    positional->add_options()
+      ("interval", "schedule interval");
+  } else {
+    positional->add_options()
+      ("interval", po::value<std::string>()->default_value(""),
+       "schedule interval");
+  }
   positional->add_options()
-    ("interval", "schedule interval");
-  positional->add_options()
-    ("start-time", "schedule start time");
+    ("start-time", po::value<std::string>()->default_value(""),
+     "schedule start time");
 }
 
 int get_schedule_args(const po::variables_map &vm, bool mandatory,

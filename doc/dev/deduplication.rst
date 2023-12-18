@@ -89,176 +89,338 @@ scheme between replication and erasure coding depending on
 its usage and each pool can be placed in a different storage
 location depending on the required performance.
 
-Manifest Object: 
-Metadata objects are stored in the
-base pool, which contains metadata for data deduplication.
+Regarding how to use, please see ``osd_internals/manifest.rst``
 
-::
-  
-        struct object_manifest_t {
-                enum {
-                        TYPE_NONE = 0,
-                        TYPE_REDIRECT = 1,
-                        TYPE_CHUNKED = 2,
-                };
-                uint8_t type;  // redirect, chunked, ...
-                hobject_t redirect_target;
-                std::map<uint64_t, chunk_info_t> chunk_map;
+Usage Patterns
+==============
+
+Each Ceph interface layer presents unique opportunities and costs for
+deduplication and tiering in general.
+
+RadosGW
+-------
+
+S3 big data workloads seem like a good opportunity for deduplication.  These
+objects tend to be write once, read mostly objects which don't see partial
+overwrites.  As such, it makes sense to fingerprint and dedup up front.
+
+Unlike cephfs and rbd, radosgw has a system for storing
+explicit metadata in the head object of a logical s3 object for
+locating the remaining pieces.  As such, radosgw could use the
+refcounting machinery (``osd_internals/refcount.rst``) directly without
+needing direct support from rados for manifests.
+
+RBD/Cephfs
+----------
+
+RBD and CephFS both use deterministic naming schemes to partition
+block devices/file data over rados objects.  As such, the redirection
+metadata would need to be included as part of rados, presumably
+transparently.
+
+Moreover, unlike radosgw, rbd/cephfs rados objects can see overwrites.
+For those objects, we don't really want to perform dedup, and we don't
+want to pay a write latency penalty in the hot path to do so anyway.
+As such, performing tiering and dedup on cold objects in the background
+is likely to be preferred.
+   
+One important wrinkle, however, is that both rbd and cephfs workloads
+often feature usage of snapshots.  This means that the rados manifest
+support needs robust support for snapshots.
+
+RADOS Machinery
+===============
+
+For more information on rados redirect/chunk/dedup support, see ``osd_internals/manifest.rst``.
+For more information on rados refcount support, see ``osd_internals/refcount.rst``.
+
+Status and Future Work
+======================
+
+At the moment, there exists some preliminary support for manifest
+objects within the OSD as well as a dedup tool.
+
+RadosGW data warehouse workloads probably represent the largest
+opportunity for this feature, so the first priority is probably to add
+direct support for fingerprinting and redirects into the refcount pool
+to radosgw.
+
+Aside from radosgw, completing work on manifest object support in the
+OSD particularly as it relates to snapshots would be the next step for
+rbd and cephfs workloads.
+
+How to use deduplication
+========================
+
+ * This feature is highly experimental and is subject to change or removal.
+
+Ceph provides deduplication using RADOS machinery.
+Below we explain how to perform deduplication. 
+
+Prerequisite
+------------
+
+If the Ceph cluster is started from Ceph mainline, users need to check
+``ceph-test`` package which is including ceph-dedup-tool is installed.
+
+Deatiled Instructions
+---------------------
+
+Users can use ceph-dedup-tool with ``estimate``, ``sample-dedup``, 
+``chunk-scrub``, and ``chunk-repair`` operations. To provide better
+convenience for users, we have enabled necessary operations through
+ceph-dedup-tool, and we recommend using the following operations freely
+by using any types of scripts.
+
+
+1. Estimate space saving ratio of a target pool using ``ceph-dedup-tool``.
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code:: bash
+
+    ceph-dedup-tool --op estimate
+      --pool [BASE_POOL]
+      --chunk-size [CHUNK_SIZE]
+      --chunk-algorithm [fixed|fastcdc]
+      --fingerprint-algorithm [sha1|sha256|sha512]
+      --max-thread [THREAD_COUNT]
+
+This CLI command will show how much storage space can be saved when deduplication
+is applied on the pool. If the amount of the saved space is higher than user's expectation,
+the pool probably is worth performing deduplication. 
+Users should specify the ``BASE_POOL``, within which the object targeted for deduplication 
+is stored. The users also need to run ceph-dedup-tool multiple time
+with varying ``chunk_size`` to find the optimal chunk size. Note that the
+optimal value probably differs in the content of each object in case of fastcdc
+chunk algorithm (not fixed).
+
+Example output:
+
+.. code:: bash
+
+    {
+      "chunk_algo": "fastcdc",
+      "chunk_sizes": [
+        {
+          "target_chunk_size": 8192,
+          "dedup_bytes_ratio": 0.4897049
+          "dedup_object_ratio": 34.567315
+          "chunk_size_average": 64439,
+          "chunk_size_stddev": 33620
         }
+      ],
+      "summary": {
+        "examined_objects": 95,
+        "examined_bytes": 214968649
+      }
+    }
+
+The above is an example output when executing ``estimate``. ``target_chunk_size`` is the same as
+``chunk_size`` given by the user. ``dedup_bytes_ratio`` shows how many bytes are redundant from 
+examined bytes. For instance, 1 - ``dedup_bytes_ratio`` means the percentage of saved storage space.
+``dedup_object_ratio`` is the generated chunk objects / ``examined_objects``. ``chunk_size_average`` 
+means that the divided chunk size on average when performing CDC---this may differnet from ``target_chunk_size``
+because CDC genarates different chunk-boundary depending on the content. ``chunk_size_stddev``
+represents the standard deviation of the chunk size. 
 
 
-A chunk Object: 
-Chunk objects are stored in the chunk pool. Chunk object contains chunk data 
-and its reference count information.
+2. Create chunk pool. 
+^^^^^^^^^^^^^^^^^^^^^
 
+.. code:: bash
 
-Although chunk objects and manifest objects have a different purpose 
-from existing objects, they can be handled the same way as 
-original objects. Therefore, to support existing features such as replication,
-no additional operations for dedup are needed.
+  ceph osd pool create [CHUNK_POOL]
+    
 
-Usage
-=====
+3. Run dedup command (there are two ways).
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-To set up deduplication pools, you must have two pools. One will act as the 
-base pool and the other will act as the chunk pool. The base pool need to be
-configured with fingerprint_algorithm option as follows.
-
-::
-
-  ceph osd pool set $BASE_POOL fingerprint_algorithm sha1|sha256|sha512 
-  --yes-i-really-mean-it
-
-1. Create objects ::
-
-        - rados -p base_pool put foo ./foo
-
-        - rados -p chunk_pool put foo-chunk ./foo-chunk
-
-2. Make a manifest object ::
-
-        - rados -p base_pool set-chunk foo $START_OFFSET $END_OFFSET --target-pool 
-        chunk_pool foo-chunk $START_OFFSET --with-reference
-
-
-Interface
-=========
-
-* set-redirect 
-
-  set redirection between a base_object in the base_pool and a target_object 
-  in the target_pool.
-  A redirected object will forward all operations from the client to the 
-  target_object. ::
+- **sample-dedup**
   
-        rados -p base_pool set-redirect <base_object> --target-pool <target_pool> 
-         <target_object>
+.. code:: bash
 
-* set-chunk 
+    ceph-dedup-tool --op sample-dedup
+      --pool [BASE_POOL]
+      --chunk-pool [CHUNK_POOL]
+      --chunk-size [CHUNK_SIZE]
+      --chunk-algorithm [fastcdc]
+      --fingerprint-algorithm [sha1|sha256|sha512]
+      --chunk-dedup-threshold [THRESHOLD]
+      --max-thread [THREAD_COUNT]
+      --sampling-ratio [SAMPLE_RATIO]
+      --wakeup-period [WAKEUP_PERIOD]
+      --loop 
+      --snap
 
-  set chunk-offset in a source_object to make a link between it and a 
-  target_object. ::
-  
-        rados -p base_pool set-chunk <source_object> <offset> <length> --target-pool 
-         <caspool> <target_object> <taget-offset> 
+The ``sample-dedup`` comamnd spawns threads specified by ``THREAD_COUNT`` to deduplicate objects on
+the ``BASE_POOL``. According to sampling-ratio---do a full search if ``SAMPLE_RATIO`` is 100, the threads selectively
+perform deduplication if the chunk is redundant over ``THRESHOLD`` times during iteration.
+If --loop is set, the theads will wakeup after ``WAKEUP_PERIOD``. If not, the threads will exit after one iteration.
 
-* tier-promote 
+Example output:
 
-  promote the object (including chunks). ::
+.. code:: bash
 
-        rados -p base_pool tier-promote <obj-name> 
+   $ bin/ceph df
+   --- RAW STORAGE ---
+   CLASS     SIZE    AVAIL     USED  RAW USED  %RAW USED
+   ssd    303 GiB  294 GiB  9.0 GiB   9.0 GiB       2.99
+   TOTAL  303 GiB  294 GiB  9.0 GiB   9.0 GiB       2.99
 
-* unset-manifest
+   --- POOLS ---
+   POOL   ID  PGS   STORED  OBJECTS     USED  %USED  MAX AVAIL
+   .mgr    1    1  577 KiB        2  1.7 MiB      0     97 GiB
+   base    2   32  2.0 GiB      517  6.0 GiB   2.02     97 GiB
+   chunk   3   32   0  B          0    0   B      0     97 GiB
 
-  unset manifest option from the object that has manifest. ::
+   $ bin/ceph-dedup-tool --op sample-dedup --pool base --chunk-pool chunk
+     --fingerprint-algorithm sha1 --chunk-algorithm fastcdc --loop --sampling-ratio 100
+     --chunk-dedup-threshold 2 --chunk-size 8192 --max-thread 4 --wakeup-period 60
 
-        rados -p base_pool unset-manifest <obj-name>
+   $ bin/ceph df
+   --- RAW STORAGE ---
+   CLASS     SIZE    AVAIL     USED  RAW USED  %RAW USED
+   ssd    303 GiB  298 GiB  5.4 GiB   5.4 GiB       1.80
+   TOTAL  303 GiB  298 GiB  5.4 GiB   5.4 GiB       1.80
 
-* tier-flush
+   --- POOLS ---
+   POOL   ID  PGS   STORED  OBJECTS     USED  %USED  MAX AVAIL
+   .mgr    1    1  577 KiB        2  1.7 MiB      0     98 GiB
+   base    2   32  452 MiB      262  1.3 GiB   0.50     98 GiB
+   chunk   3   32  258 MiB   25.91k  938 MiB   0.31     98 GiB
 
-  flush the object that has chunks to the chunk pool. ::
+- **object dedup**
 
-        rados -p base_pool tier-flush <obj-name>
+.. code:: bash
 
-Dedup tool
-==========
+    ceph-dedup-tool --op object-dedup
+      --pool [BASE_POOL]
+      --object [OID]
+      --chunk-pool [CHUNK_POOL]
+      --fingerprint-algorithm [sha1|sha256|sha512]
+      --dedup-cdc-chunk-size [CHUNK_SIZE]
 
-Dedup tool has two features: finding optimal chunk offset for dedup chunking 
-and fixing the reference count.
+The ``object-dedup`` command triggers deduplication on the RADOS object specified by ``OID``.
+All parameters shown above must be specified. ``CHUNK_SIZE`` should be taken from
+the results of step 1 above.
+Note that when this command is executed, ``fastcdc`` will be set by default and other parameters
+such as ``fingerprint-algorithm`` and ``CHUNK_SIZE`` will be set as defaults for the pool.
+Deduplicated objects will appear in the chunk pool. If the object is mutated over time, user needs to re-run
+``object-dedup`` because chunk-boundary should be recalculated based on updated contents.
+The user needs to specify ``snap`` if the target object is snapshotted. After deduplication is done, the target
+object size in ``BASE_POOL`` is zero (evicted) and chunks objects are genereated---these appear in ``CHUNK_POOL``.
 
-* find optimal chunk offset
+4. Read/write I/Os
+^^^^^^^^^^^^^^^^^^
 
-  a. fixed chunk  
+After step 3, the users don't need to consider anything about I/Os. Deduplicated objects are
+completely compatible with existing RADOS operations.
 
-    To find out a fixed chunk length, you need to run following command many 
-    times while changing the chunk_size. ::
 
-            ceph-dedup-tool --op estimate --pool $POOL --chunk-size chunk_size  
-              --chunk-algorithm fixed --fingerprint-algorithm sha1|sha256|sha512
+5. Run scrub to fix reference count 
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-  b. rabin chunk(Rabin-karp algorithm) 
+Reference mismatches can on rare occasions occur to false positives when handling reference counts for
+deduplicated RADOS objects. These mismatches will be fixed by periodically scrubbing the pool:
 
-    As you know, Rabin-karp algorithm is string-searching algorithm based
-    on a rolling-hash. But rolling-hash is not enough to do deduplication because 
-    we don't know the chunk boundary. So, we need content-based slicing using 
-    a rolling hash for content-defined chunking.
-    The current implementation uses the simplest approach: look for chunk boundaries 
-    by inspecting the rolling hash for pattern(like the
-    lower N bits are all zeroes). 
-      
-    - Usage
+.. code:: bash
 
-      Users who want to use deduplication need to find an ideal chunk offset.
-      To find out ideal chunk offset, Users should discover
-      the optimal configuration for their data workload via ceph-dedup-tool.
-      And then, this chunking information will be used for object chunking through
-      set-chunk api. ::
+    ceph-dedup-tool --op chunk-scrub
+      --chunk-pool [CHUNK_POOL]
+      --pool [POOL]
+      --max-thread [THREAD_COUNT]
 
-              ceph-dedup-tool --op estimate --pool $POOL --min-chunk min_size  
-                --chunk-algorithm rabin --fingerprint-algorithm rabin
+The ``chunk-scrub`` command identifies reference mismatches between a
+metadata object and a chunk object. The ``chunk-pool`` parameter tells
+where the target chunk objects are located to the ceph-dedup-tool.
 
-      ceph-dedup-tool has many options to utilize rabin chunk.
-      These are options for rabin chunk. ::
+Example output:
 
-              --mod-prime <uint64_t>
-              --rabin-prime <uint64_t>
-              --pow <uint64_t>
-              --chunk-mask-bit <uint32_t>
-              --window-size <uint32_t>
-              --min-chunk <uint32_t>
-              --max-chunk <uint64_t>
+A reference mismatch is intentionally created by inserting a reference (dummy-obj) into a chunk object (2ac67f70d3dd187f8f332bb1391f61d4e5c9baae) by using chunk-get-ref.
 
-      Users need to refer following equation to use above options for rabin chunk. ::
+.. code:: bash
 
-              rabin_hash = 
-                (rabin_hash * rabin_prime + new_byte - old_byte * pow) % (mod_prime)
+    $ bin/ceph-dedup-tool --op dump-chunk-refs --chunk-pool chunk --object 2ac67f70d3dd187f8f332bb1391f61d4e5c9baae
+    {
+      "type": "by_object",
+      "count": 2,
+    	"refs": [
+        {
+          "oid": "testfile2",
+        	"key": "",
+        	"snapid": -2,
+        	"hash": 2905889452,
+        	"max": 0,
+        	"pool": 2,
+        	"namespace": ""
+      	},
+        {
+          "oid": "dummy-obj",
+          "key": "",
+          "snapid": -2,
+          "hash": 1203585162,
+          "max": 0,
+          "pool": 2,
+          "namespace": ""
+        }
+      ]
+    }
 
-  c. Fixed chunk vs content-defined chunk
+    $ bin/ceph-dedup-tool --op chunk-scrub --chunk-pool chunk --max-thread 10
+    10 seconds is set as report period by default
+    join
+    join
+    2ac67f70d3dd187f8f332bb1391f61d4e5c9baae
+    --done--
+    2ac67f70d3dd187f8f332bb1391f61d4e5c9baae ref 10:5102bde2:::dummy-obj:head: referencing pool does not exist
+    --done--
+     Total object : 1
+     Examined object : 1
+     Damaged object : 1
 
-    Content-defined chunking may or not be optimal solution.
-    For example,
+6. Repair a mismatched chunk reference
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-    Data chunk A : abcdefgabcdefgabcdefg
+If any reference mismatches occur after the ``chunk-scrub``, it is
+recommended to perform the ``chunk-repair`` operation to fix reference
+mismatches. The ``chunk-repair`` operation helps in resolving the
+reference mismatch and restoring consistency.
 
-    Let's think about Data chunk A's deduplication. Ideal chunk offset is
-    from 1 to 7 (abcdefg). So, if we use fixed chunk, 7 is optimal chunk length.
-    But, in the case of content-based slicing, the optimal chunk length
-    could not be found (dedup ratio will not be 100%).
-    Because we need to find optimal parameter such
-    as boundary bit, window size and prime value. This is as easy as fixed chunk.
-    But, content defined chunking is very effective in the following case.
+.. code:: bash
 
-    Data chunk B : abcdefgabcdefgabcdefg
+    ceph-dedup-tool --op chunk-repair
+      --chunk-pool [CHUNK_POOL_NAME]
+      --object [CHUNK_OID]
+      --target-ref [TARGET_OID]
+      --target-ref-pool-id [TARGET_POOL_ID]
 
-    Data chunk C : Tabcdefgabcdefgabcdefg
-      
+``chunk-repair`` fixes the ``target-ref``, which is a wrong reference of
+an ``object``. To fix it correctly, the users must enter the correct
+``TARGET_OID`` and ``TARGET_POOL_ID``.
 
-* fix reference count
-  
-  The key idea behind of reference counting for dedup is false-positive, which means 
-  (manifest object (no ref), chunk object(has ref)) happen instead of 
-  (manifest object (has ref), chunk 1(no ref)).
-  To fix such inconsistency, ceph-dedup-tool supports chunk_scrub. ::
+.. code:: bash
 
-          ceph-dedup-tool --op chunk_scrub --chunk_pool $CHUNK_POOL
+    $ bin/ceph-dedup-tool --op chunk-repair --chunk-pool chunk --object 2ac67f70d3dd187f8f332bb1391f61d4e5c9baae --target-ref dummy-obj --target-ref-pool-id 10
+    2ac67f70d3dd187f8f332bb1391f61d4e5c9baae has 1 references for dummy-obj
+    dummy-obj has 0 references for 2ac67f70d3dd187f8f332bb1391f61d4e5c9baae
+     fix dangling reference from 1 to 0
 
+    $ bin/ceph-dedup-tool --op dump-chunk-refs --chunk-pool chunk --object 2ac67f70d3dd187f8f332bb1391f61d4e5c9baae
+    {
+      "type": "by_object",
+      "count": 1,
+      "refs": [
+        {
+          "oid": "testfile2",
+          "key": "",
+          "snapid": -2,
+          "hash": 2905889452,
+          "max": 0,
+          "pool": 2,
+          "namespace": ""
+        }
+      ]
+    }
+
+
+ 

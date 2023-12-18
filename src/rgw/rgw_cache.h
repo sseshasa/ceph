@@ -1,8 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef CEPH_RGWCACHE_H
-#define CEPH_RGWCACHE_H
+#pragma once
 
 #include <string>
 #include <map>
@@ -17,7 +16,7 @@
 
 enum {
   UPDATE_OBJ,
-  REMOVE_OBJ,
+  INVALIDATE_OBJ,
 };
 
 #define CACHE_FLAG_DATA           0x01
@@ -45,7 +44,7 @@ struct ObjectMetaInfo {
     DECODE_FINISH(bl);
   }
   void dump(Formatter *f) const;
-  static void generate_test_instances(list<ObjectMetaInfo*>& o);
+  static void generate_test_instances(std::list<ObjectMetaInfo*>& o);
 };
 WRITE_CLASS_ENCODER(ObjectMetaInfo)
 
@@ -54,8 +53,8 @@ struct ObjectCacheInfo {
   uint32_t flags = 0;
   uint64_t epoch = 0;
   bufferlist data;
-  map<string, bufferlist> xattrs;
-  map<string, bufferlist> rm_xattrs;
+  std::map<std::string, bufferlist> xattrs;
+  std::map<std::string, bufferlist> rm_xattrs;
   ObjectMetaInfo meta;
   obj_version version = {};
   ceph::coarse_mono_time time_added;
@@ -90,7 +89,7 @@ struct ObjectCacheInfo {
     DECODE_FINISH(bl);
   }
   void dump(Formatter *f) const;
-  static void generate_test_instances(list<ObjectCacheInfo*>& o);
+  static void generate_test_instances(std::list<ObjectCacheInfo*>& o);
 };
 WRITE_CLASS_ENCODER(ObjectCacheInfo)
 
@@ -99,7 +98,7 @@ struct RGWCacheNotifyInfo {
   rgw_raw_obj obj;
   ObjectCacheInfo obj_info;
   off_t ofs;
-  string ns;
+  std::string ns;
 
   RGWCacheNotifyInfo() : op(0), ofs(0) {}
 
@@ -122,55 +121,60 @@ struct RGWCacheNotifyInfo {
     DECODE_FINISH(ibl);
   }
   void dump(Formatter *f) const;
-  static void generate_test_instances(list<RGWCacheNotifyInfo*>& o);
+  static void generate_test_instances(std::list<RGWCacheNotifyInfo*>& o);
 };
 WRITE_CLASS_ENCODER(RGWCacheNotifyInfo)
+inline std::ostream& operator <<(std::ostream& m, const RGWCacheNotifyInfo& cni) {
+  return m << "[op: " << cni.op << ", obj: " << cni.obj
+	   << ", ofs" << cni.ofs << ", ns" << cni.ns << "]";
+}
+
 
 class RGWChainedCache {
 public:
   virtual ~RGWChainedCache() {}
-  virtual void chain_cb(const string& key, void *data) = 0;
-  virtual void invalidate(const string& key) = 0;
+  virtual void chain_cb(const std::string& key, void *data) = 0;
+  virtual void invalidate(const std::string& key) = 0;
   virtual void invalidate_all() = 0;
   virtual void unregistered() {}
 
   struct Entry {
     RGWChainedCache *cache;
-    const string& key;
+    const std::string& key;
     void *data;
 
-    Entry(RGWChainedCache *_c, const string& _k, void *_d) : cache(_c), key(_k), data(_d) {}
+    Entry(RGWChainedCache *_c, const std::string& _k, void *_d) : cache(_c), key(_k), data(_d) {}
   };
 };
 
 
 struct ObjectCacheEntry {
   ObjectCacheInfo info;
-  std::list<string>::iterator lru_iter;
+  std::list<std::string>::iterator lru_iter;
   uint64_t lru_promotion_ts;
   uint64_t gen;
-  std::vector<pair<RGWChainedCache *, string> > chained_entries;
+  std::vector<std::pair<RGWChainedCache *, std::string> > chained_entries;
 
   ObjectCacheEntry() : lru_promotion_ts(0), gen(0) {}
 };
 
 class ObjectCache {
-  std::unordered_map<string, ObjectCacheEntry> cache_map;
-  std::list<string> lru;
+  std::unordered_map<std::string, ObjectCacheEntry> cache_map;
+  std::list<std::string> lru;
   unsigned long lru_size;
   unsigned long lru_counter;
   unsigned long lru_window;
   ceph::shared_mutex lock = ceph::make_shared_mutex("ObjectCache");
   CephContext *cct;
 
-  vector<RGWChainedCache *> chained_cache;
+  std::vector<RGWChainedCache *> chained_cache;
 
   bool enabled;
   ceph::timespan expiry;
 
-  void touch_lru(const string& name, ObjectCacheEntry& entry,
-		 std::list<string>::iterator& lru_iter);
-  void remove_lru(const string& name, std::list<string>::iterator& lru_iter);
+  void touch_lru(const DoutPrefixProvider *dpp, const std::string& name, ObjectCacheEntry& entry,
+		 std::list<std::string>::iterator& lru_iter);
+  void remove_lru(const std::string& name, std::list<std::string>::iterator& lru_iter);
   void invalidate_lru(ObjectCacheEntry& entry);
 
   void do_invalidate_all();
@@ -178,10 +182,10 @@ class ObjectCache {
 public:
   ObjectCache() : lru_size(0), lru_counter(0), lru_window(0), cct(NULL), enabled(false) { }
   ~ObjectCache();
-  int get(const std::string& name, ObjectCacheInfo& bl, uint32_t mask, rgw_cache_entry_info *cache_info);
-  std::optional<ObjectCacheInfo> get(const std::string& name) {
+  int get(const DoutPrefixProvider *dpp, const std::string& name, ObjectCacheInfo& bl, uint32_t mask, rgw_cache_entry_info *cache_info);
+  std::optional<ObjectCacheInfo> get(const DoutPrefixProvider *dpp, const std::string& name) {
     std::optional<ObjectCacheInfo> info{std::in_place};
-    auto r = get(name, *info, 0, nullptr);
+    auto r = get(dpp, name, *info, 0, nullptr);
     return r < 0 ? std::nullopt : info;
   }
 
@@ -198,15 +202,16 @@ public:
     }
   }
 
-  void put(const std::string& name, ObjectCacheInfo& bl, rgw_cache_entry_info *cache_info);
-  bool remove(const std::string& name);
+  void put(const DoutPrefixProvider *dpp, const std::string& name, ObjectCacheInfo& bl, rgw_cache_entry_info *cache_info);
+  bool invalidate_remove(const DoutPrefixProvider *dpp, const std::string& name);
   void set_ctx(CephContext *_cct) {
     cct = _cct;
     lru_window = cct->_conf->rgw_cache_lru_size / 2;
     expiry = std::chrono::seconds(cct->_conf.get_val<uint64_t>(
 						"rgw_cache_expiry_interval"));
   }
-  bool chain_cache_entry(std::initializer_list<rgw_cache_entry_info*> cache_info_entries,
+  bool chain_cache_entry(const DoutPrefixProvider *dpp,
+                         std::initializer_list<rgw_cache_entry_info*> cache_info_entries,
 			 RGWChainedCache::Entry *chained_entry);
 
   void set_enabled(bool status);
@@ -215,5 +220,3 @@ public:
   void unchain_cache(RGWChainedCache *cache);
   void invalidate_all();
 };
-
-#endif

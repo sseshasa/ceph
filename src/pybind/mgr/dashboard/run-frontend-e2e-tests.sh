@@ -2,29 +2,59 @@
 
 set -e
 
+CLUSTERS=("1" "2")
+
+ceph() {
+    ${FULL_PATH_BUILD_DIR}/../src/mrun 1 ceph $@
+}
+
+ceph2() {
+    ${FULL_PATH_BUILD_DIR}/../src/mrun 2 ceph $@
+}
+
+ceph_all() {
+    ceph $@
+    ceph2 $@
+}
+
 start_ceph() {
     cd $FULL_PATH_BUILD_DIR
 
-    MGR=2 RGW=1 ../src/vstart.sh -n -d
-    sleep 10
+    for cluster in ${CLUSTERS[@]}; do
+        export CEPH_OUT_CLIENT_DIR=${FULL_PATH_BUILD_DIR}/run/${cluster}/out/client
+        MGR=2 RGW=1 ../src/mstart.sh $cluster -n -d
+    done
+
+    set -x
 
     # Create an Object Gateway User
-    ./bin/radosgw-admin user create --uid=dev --display-name=Developer --system
-    # Set the user-id
-    ./bin/ceph dashboard set-rgw-api-user-id dev
-    # Obtain and set access and secret key for the previously created user. $() is safer than backticks `..`
-    ./bin/ceph dashboard set-rgw-api-access-key $(./bin/radosgw-admin user info --uid=dev | jq -r .keys[0].access_key)
-    ./bin/ceph dashboard set-rgw-api-secret-key $(./bin/radosgw-admin user info --uid=dev | jq -r .keys[0].secret_key)
-    # Set SSL verify to False
-    ./bin/ceph dashboard set-rgw-api-ssl-verify False
+    ceph_all dashboard set-rgw-credentials
 
-    CYPRESS_BASE_URL=$(./bin/ceph mgr services | jq -r .dashboard)
+    # Set SSL verify to False
+    ceph_all dashboard set-rgw-api-ssl-verify False
+
+    CYPRESS_BASE_URL=$(ceph mgr services | jq -r .dashboard)
+    CYPRESS_CEPH2_URL=$(ceph2 mgr services | jq -r .dashboard)
+
+    # start rbd-mirror daemon in the cluster
+    KEY=$(ceph auth get client.admin --format=json | jq -r .[0].key)
+    MON_CLUSTER_1=$(grep "mon host" ${FULL_PATH_BUILD_DIR}/run/1/ceph.conf | awk '{print $4}')
+    ${FULL_PATH_BUILD_DIR}/bin/rbd-mirror --mon_host $MON_CLUSTER_1 --key $KEY -c ${FULL_PATH_BUILD_DIR}/run/1/ceph.conf
+
+    set +x
 }
 
 stop() {
     if [ "$REMOTE" == "false" ]; then
         cd ${FULL_PATH_BUILD_DIR}
-        ../src/stop.sh
+        for cluster in ${CLUSTERS[@]}; do
+            ../src/mstop.sh $cluster
+        done
+        pids=$(pgrep rbd-mirror)
+        if [ -n "$pids" ]; then
+            echo Killing rbd-mirror processes: $pids
+            kill -9 $pids
+        fi
     fi
     exit $1
 }
@@ -40,10 +70,11 @@ check_device_available() {
 
         case "$DEVICE" in
             chrome)
-                [ -x "$(command -v google-chrome)" ] || [ -x "$(command -v google-chrome-stable)" ] ] || failed=true
+                [ -x "$(command -v chrome)" ] || [ -x "$(command -v google-chrome)" ] ||
+                [ -x "$(command -v google-chrome-stable)" ] || failed=true
                 ;;
             chromium)
-                [ -x "$(command -v chromium)" ] || failed=true
+                [ -x "$(command -v chromium)" ] || [ -x "$(command -v chromium-browser)" ] || failed=true
                 ;;
         esac
     fi
@@ -56,6 +87,7 @@ check_device_available() {
 }
 
 : ${CYPRESS_BASE_URL:=''}
+: ${CYPRESS_CEPH2_URL:=''}
 : ${CYPRESS_LOGIN_PWD:=''}
 : ${CYPRESS_LOGIN_USER:=''}
 : ${DEVICE:="chrome"}
@@ -78,11 +110,11 @@ DASH_DIR=`pwd`
 cd ../../../../${BUILD_DIR}
 FULL_PATH_BUILD_DIR=`pwd`
 
-[[ "$(command -v npm)" == '' ]] && . ${FULL_PATH_BUILD_DIR}/src/pybind/mgr/dashboard/node-env/bin/activate
+[[ "$(command -v npm)" == '' ]] && . ${FULL_PATH_BUILD_DIR}/src/pybind/mgr/dashboard/frontend/node-env/bin/activate
 
 : ${CYPRESS_CACHE_FOLDER:="${FULL_PATH_BUILD_DIR}/src/pybind/mgr/dashboard/cypress"}
 
-export CYPRESS_BASE_URL CYPRESS_CACHE_FOLDER CYPRESS_LOGIN_USER CYPRESS_LOGIN_PWD NO_COLOR
+export CYPRESS_BASE_URL CYPRESS_CACHE_FOLDER CYPRESS_LOGIN_USER CYPRESS_LOGIN_PWD NO_COLOR CYPRESS_CEPH2_URL
 
 check_device_available
 
@@ -92,18 +124,23 @@ fi
 
 cd $DASH_DIR/frontend
 
+# Remove existing XML results
+rm -f cypress/reports/results-*.xml || true
+
 case "$DEVICE" in
     docker)
         failed=0
+        CYPRESS_VERSION=$(cat package.json | grep '"cypress"' | grep -o "[0-9]\.[0-9]\.[0-9]")
         docker run \
             -v $(pwd):/e2e \
             -w /e2e \
             --env CYPRESS_BASE_URL \
             --env CYPRESS_LOGIN_USER \
             --env CYPRESS_LOGIN_PWD \
+            --env CYPRESS_CEPH2_URL \
             --name=e2e \
             --network=host \
-            cypress/included:4.4.0 || failed=1
+            cypress/included:${CYPRESS_VERSION} || failed=1
         stop $failed
         ;;
     *)

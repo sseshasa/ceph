@@ -355,9 +355,10 @@ void SnapshotRemoveRequest<I>::handle_remove_object_map(int r) {
 template <typename I>
 void SnapshotRemoveRequest<I>::remove_image_state() {
   I &image_ctx = this->m_image_ctx;
-  auto type = cls::rbd::get_snap_namespace_type(m_snap_namespace);
 
-  if (type != cls::rbd::SNAPSHOT_NAMESPACE_TYPE_MIRROR) {
+  const auto* info = std::get_if<cls::rbd::MirrorSnapshotNamespace>(
+    &m_snap_namespace);
+  if (info == nullptr || info->is_orphan()) {
     release_snap_id();
     return;
   }
@@ -481,7 +482,7 @@ int SnapshotRemoveRequest<I>::scan_for_parents(
   ceph_assert(ceph_mutex_is_locked(image_ctx.image_lock));
 
   if (pspec.pool_id != -1) {
-    map<uint64_t, SnapInfo>::iterator it;
+    std::map<uint64_t, SnapInfo>::iterator it;
     for (it = image_ctx.snap_info.begin();
          it != image_ctx.snap_info.end(); ++it) {
       // skip our snap id (if checking base image, CEPH_NOSNAP won't match)

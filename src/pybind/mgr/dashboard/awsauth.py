@@ -32,19 +32,10 @@
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import hmac
-
-from hashlib import sha1 as sha
-
-py3k = False
-try:
-    from urlparse import urlparse, unquote
-    from base64 import encodestring
-except ImportError:
-    py3k = True
-    from urllib.parse import urlparse, unquote
-    from base64 import encodebytes as encodestring
-
+from base64 import encodebytes as encodestring
 from email.utils import formatdate
+from hashlib import sha1 as sha
+from urllib.parse import unquote, urlparse
 
 from requests.auth import AuthBase
 
@@ -78,33 +69,19 @@ class S3Auth(AuthBase):
                 localtime=False,
                 usegmt=True)
         signature = self.get_signature(r)
-        if py3k:
-            signature = signature.decode('utf-8')
+        signature = signature.decode('utf-8')
         r.headers['Authorization'] = 'AWS %s:%s' % (self.access_key, signature)
         return r
 
     def get_signature(self, r):
         canonical_string = self.get_canonical_string(
             r.url, r.headers, r.method)
-        if py3k:
-            key = self.secret_key.encode('utf-8')
-            msg = canonical_string.encode('utf-8')
-        else:
-            key = self.secret_key  # type: ignore
-            msg = canonical_string
+        key = self.secret_key.encode('utf-8')
+        msg = canonical_string.encode('utf-8')
         h = hmac.new(key, msg, digestmod=sha)
         return encodestring(h.digest()).strip()
 
-    def get_canonical_string(self, url, headers, method):
-        parsedurl = urlparse(url)
-        objectkey = parsedurl.path[1:]
-        query_args = sorted(parsedurl.query.split('&'))
-
-        bucket = parsedurl.netloc[:-len(self.service_base_url)]
-        if len(bucket) > 1:
-            # remove last dot
-            bucket = bucket[:-1]
-
+    def get_interesting_headers(self, headers):
         interesting_headers = {
             'content-md5': '',
             'content-type': '',
@@ -121,12 +98,21 @@ class S3Auth(AuthBase):
                 interesting_headers[lk] = headers[key].strip()
 
         # If x-amz-date is used it supersedes the date header.
-        if not py3k:
-            if 'x-amz-date' in interesting_headers:
-                interesting_headers['date'] = ''
-        else:
-            if 'x-amz-date' in interesting_headers:
-                interesting_headers['date'] = ''
+        if 'x-amz-date' in interesting_headers:
+            interesting_headers['date'] = ''
+        return interesting_headers
+
+    def get_canonical_string(self, url, headers, method):
+        parsedurl = urlparse(url)
+        objectkey = parsedurl.path[1:]
+        query_args = sorted(parsedurl.query.split('&'))
+
+        bucket = parsedurl.netloc[:-len(self.service_base_url)]
+        if len(bucket) > 1:
+            # remove last dot
+            bucket = bucket[:-1]
+
+        interesting_headers = self.get_interesting_headers(headers)
 
         buf = '%s\n' % method
         for key in sorted(interesting_headers.keys()):

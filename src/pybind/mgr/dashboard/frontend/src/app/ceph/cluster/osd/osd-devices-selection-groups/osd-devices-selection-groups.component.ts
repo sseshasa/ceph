@@ -1,12 +1,13 @@
 import { Component, EventEmitter, Input, OnChanges, OnInit, Output } from '@angular/core';
-import { I18n } from '@ngx-translate/i18n-polyfill';
+import { Router } from '@angular/router';
 
-import * as _ from 'lodash';
+import _ from 'lodash';
 
-import { BsModalService, ModalOptions } from 'ngx-bootstrap/modal';
-import { Icons } from '../../../../shared/enum/icons.enum';
-import { CdTableColumnFiltersChange } from '../../../../shared/models/cd-table-column-filters-change';
-import { InventoryDevice } from '../../inventory/inventory-devices/inventory-device.model';
+import { InventoryDevice } from '~/app/ceph/cluster/inventory/inventory-devices/inventory-device.model';
+import { OsdService } from '~/app/shared/api/osd.service';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { CdTableColumnFiltersChange } from '~/app/shared/models/cd-table-column-filters-change';
+import { ModalService } from '~/app/shared/services/modal.service';
 import { OsdDevicesSelectionModalComponent } from '../osd-devices-selection-modal/osd-devices-selection-modal.component';
 import { DevicesSelectionChangeEvent } from './devices-selection-change-event.interface';
 import { DevicesSelectionClearEvent } from './devices-selection-clear-event.interface';
@@ -38,18 +39,35 @@ export class OsdDevicesSelectionGroupsComponent implements OnInit, OnChanges {
   icons = Icons;
   devices: InventoryDevice[] = [];
   capacity = 0;
-  appliedFilters: any[] = [];
+  appliedFilters = new Array();
+  expansionCanSelect = false;
+  isOsdPage: boolean;
 
   addButtonTooltip: String;
   tooltips = {
-    noAvailDevices: this.i18n('No available devices'),
-    addPrimaryFirst: this.i18n('Please add primary devices first'),
-    addByFilters: this.i18n('Add devices by using filters')
+    noAvailDevices: $localize`No available devices`,
+    addPrimaryFirst: $localize`Please add primary devices first`,
+    addByFilters: $localize`Add devices by using filters`
   };
 
-  constructor(private bsModalService: BsModalService, private i18n: I18n) {}
+  constructor(
+    private modalService: ModalService,
+    public osdService: OsdService,
+    private router: Router
+  ) {
+    this.isOsdPage = this.router.url.includes('/osd');
+  }
 
   ngOnInit() {
+    if (!this.isOsdPage) {
+      this.osdService?.osdDevices[this.type]
+        ? (this.devices = this.osdService.osdDevices[this.type])
+        : (this.devices = []);
+      this.capacity = _.sumBy(this.devices, 'sys_api.size');
+      this.osdService?.osdDevices
+        ? (this.expansionCanSelect = this.osdService?.osdDevices['disableSelect'])
+        : (this.expansionCanSelect = false);
+    }
     this.updateAddButtonTooltip();
   }
 
@@ -58,25 +76,35 @@ export class OsdDevicesSelectionGroupsComponent implements OnInit, OnChanges {
   }
 
   showSelectionModal() {
-    let filterColumns = ['human_readable_type', 'sys_api.vendor', 'sys_api.model', 'sys_api.size'];
-    if (this.type === 'data') {
-      filterColumns = ['hostname', ...filterColumns];
-    }
-    const options: ModalOptions = {
-      class: 'modal-xl',
-      initialState: {
-        hostname: this.hostname,
-        deviceType: this.name,
-        devices: this.availDevices,
-        filterColumns: filterColumns
-      }
+    const filterColumns = [
+      'hostname',
+      'human_readable_type',
+      'sys_api.vendor',
+      'sys_api.model',
+      'sys_api.size'
+    ];
+    const diskType = this.name === 'Primary' ? 'hdd' : 'ssd';
+    const initialState = {
+      hostname: this.hostname,
+      deviceType: this.name,
+      diskType: diskType,
+      devices: this.availDevices,
+      filterColumns: filterColumns
     };
-    const modalRef = this.bsModalService.show(OsdDevicesSelectionModalComponent, options);
-    modalRef.content.submitAction.subscribe((result: CdTableColumnFiltersChange) => {
+    const modalRef = this.modalService.show(OsdDevicesSelectionModalComponent, initialState, {
+      size: 'xl'
+    });
+    modalRef.componentInstance.submitAction.subscribe((result: CdTableColumnFiltersChange) => {
       this.devices = result.data;
       this.capacity = _.sumBy(this.devices, 'sys_api.size');
       this.appliedFilters = result.filters;
       const event = _.assign({ type: this.type }, result);
+      if (!this.isOsdPage) {
+        this.osdService.osdDevices[this.type] = this.devices;
+        this.osdService.osdDevices['disableSelect'] =
+          this.canSelect || this.devices.length === this.availDevices.length;
+        this.osdService.osdDevices[this.type]['capacity'] = this.capacity;
+      }
       this.selected.emit(event);
     });
   }
@@ -97,6 +125,11 @@ export class OsdDevicesSelectionGroupsComponent implements OnInit, OnChanges {
   }
 
   clearDevices() {
+    if (!this.isOsdPage) {
+      this.expansionCanSelect = false;
+      this.osdService.osdDevices['disableSelect'] = false;
+      this.osdService.osdDevices = [];
+    }
     const event = {
       type: this.type,
       clearedDevices: [...this.devices]

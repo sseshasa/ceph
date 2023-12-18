@@ -1,7 +1,6 @@
 """
 A RESTful API for Ceph
 """
-from __future__ import absolute_import
 
 import os
 import json
@@ -11,7 +10,6 @@ import inspect
 import tempfile
 import threading
 import traceback
-import six
 import socket
 import fcntl
 
@@ -22,11 +20,11 @@ from uuid import uuid4
 from pecan import jsonify, make_app
 from OpenSSL import crypto
 from pecan.rest import RestController
-from six import iteritems
 from werkzeug.serving import make_server, make_ssl_devcert
 
 from .hooks import ErrorHook
-from mgr_module import MgrModule, CommandResult
+from mgr_module import MgrModule, CommandResult, NotifyType
+from mgr_util import build_url
 
 
 class CannotServe(Exception):
@@ -198,6 +196,7 @@ class Module(MgrModule):
         {'name': 'server_addr'},
         {'name': 'server_port'},
         {'name': 'key_file'},
+        {'name': 'enable_auth', 'type': 'bool', 'default': True},
     ]
 
     COMMANDS = [
@@ -228,6 +227,8 @@ class Module(MgrModule):
         },
     ]
 
+    NOTIFY_TYPES = [NotifyType.command]
+
     def __init__(self, *args, **kwargs):
         super(Module, self).__init__(*args, **kwargs)
         context.instance = self
@@ -236,7 +237,7 @@ class Module(MgrModule):
         self.requests_lock = threading.RLock()
 
         self.keys = {}
-        self.disable_auth = False
+        self.enable_auth = True
 
         self.server = None
 
@@ -251,7 +252,7 @@ class Module(MgrModule):
                 self._serve()
                 self.server.socket.close()
             except CannotServe as cs:
-                self.log.warn("server not running: %s", cs)
+                self.log.warning("server not running: %s", cs)
             except:
                 self.log.error(str(traceback.format_exc()))
 
@@ -263,7 +264,7 @@ class Module(MgrModule):
     def refresh_keys(self):
         self.keys = {}
         rawkeys = self.get_store_prefix('keys/') or {}
-        for k, v in six.iteritems(rawkeys):
+        for k, v in rawkeys.items():
             self.keys[k[5:]] = v  # strip of keys/ prefix
 
     def _serve(self):
@@ -302,6 +303,8 @@ class Module(MgrModule):
         else:
             pkey_fname = self.get_localized_module_option('key_file')
 
+        self.enable_auth = self.get_localized_module_option('enable_auth', True)
+        
         if not cert_fname or not pkey_fname:
             raise CannotServe('no certificate configured')
         if not os.path.isfile(cert_fname):
@@ -311,10 +314,8 @@ class Module(MgrModule):
 
         # Publish the URI that others may use to access the service we're
         # about to start serving
-        self.set_uri("https://{0}:{1}/".format(
-            socket.gethostname() if server_addr == "::" else server_addr,
-            server_port
-        ))
+        addr = self.get_mgr_ip() if server_addr == "::" else server_addr
+        self.set_uri(build_url(scheme='https', host=addr, port=server_port, path='/'))
 
         # Create the HTTPS werkzeug server serving pecan app
         self.server = make_server(
@@ -361,15 +362,15 @@ class Module(MgrModule):
             self.log.error(str(traceback.format_exc()))
 
 
-    def notify(self, notify_type, tag):
+    def notify(self, notify_type: NotifyType, tag: str):
         try:
             self._notify(notify_type, tag)
         except:
             self.log.error(str(traceback.format_exc()))
 
 
-    def _notify(self, notify_type, tag):
-        if notify_type != "command":
+    def _notify(self, notify_type: NotifyType, tag):
+        if notify_type != NotifyType.command:
             self.log.debug("Unhandled notification type '%s'", notify_type)
             return
         # we can safely skip all the sequential commands
@@ -384,6 +385,9 @@ class Module(MgrModule):
         except StopIteration:
             # the command was not issued by me
             pass
+
+    def config_notify(self):
+        self.enable_auth = self.get_localized_module_option('enable_auth', True)
 
 
     def create_self_signed_cert(self):
@@ -409,7 +413,7 @@ class Module(MgrModule):
 
 
     def handle_command(self, inbuf, command):
-        self.log.warn("Handling command: '%s'" % str(command))
+        self.log.warning("Handling command: '%s'" % str(command))
         if command['prefix'] == "restful create-key":
             if command['key_name'] in self.keys:
                 return 0, self.keys[command['key_name']], ""
@@ -519,8 +523,7 @@ class Module(MgrModule):
         for pool_id, pool in pools.items():
             pool_osds = None
             for rule in [r for r in crush_rules if r['rule_id'] == pool['crush_rule']]:
-                if rule['min_size'] <= pool['size'] <= rule['max_size']:
-                    pool_osds = common.crush_rule_osds(crush['buckets'], rule)
+                pool_osds = common.crush_rule_osds(crush['buckets'], rule)
 
             osds_by_pool[pool_id] = pool_osds
 

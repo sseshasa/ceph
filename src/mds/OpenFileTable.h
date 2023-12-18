@@ -24,6 +24,8 @@ class CDir;
 class CInode;
 class MDSRank;
 
+struct ObjectOperation;
+
 class OpenFileTable
 {
 public:
@@ -40,7 +42,6 @@ public:
 
   void commit(MDSContext *c, uint64_t log_seq, int op_prio);
   uint64_t get_committed_log_seq() const { return committed_log_seq; }
-  uint64_t get_committing_log_seq() const { return committing_log_seq; }
   bool is_any_committing() const { return num_pending_commit > 0; }
 
   void load(MDSContext *c);
@@ -49,9 +50,6 @@ public:
     ceph_assert(!load_done);
     waiting_for_load.push_back(c);
   }
-
-  bool get_ancestors(inodeno_t ino, vector<inode_backpointer_t>& ancestors,
-		     mds_rank_t& auth_hint);
 
   bool prefetch_inodes();
   bool is_prefetched() const { return prefetch_state == DONE; }
@@ -62,7 +60,7 @@ public:
 
   bool should_log_open(CInode *in);
 
-  void note_destroyed_inos(uint64_t seq, const vector<inodeno_t>& inos);
+  void note_destroyed_inos(uint64_t seq, const std::vector<inodeno_t>& inos);
   void trim_destroyed_inos(uint64_t seq);
 
 protected:
@@ -84,8 +82,8 @@ protected:
   void _journal_finish(int r, uint64_t log_seq, MDSContext *fin,
 		       std::map<unsigned, std::vector<ObjectOperation> >& ops);
 
-  void get_ref(CInode *in);
-  void put_ref(CInode *in);
+  void get_ref(CInode *in, frag_t fg=-1U);
+  void put_ref(CInode *in, frag_t fg=-1U);
 
   object_t get_object_name(unsigned idx) const;
 
@@ -95,8 +93,8 @@ protected:
     journal_state = JOURNAL_NONE;
     loaded_journals.clear();
     loaded_anchor_map.clear();
-    loaded_dirfrags.clear();
   }
+  void _read_omap_values(const std::string& key, unsigned idx, bool first);
   void _load_finish(int op_r, int header_r, int values_r,
 		    unsigned idx, bool first, bool more,
                     bufferlist &header_bl,
@@ -107,6 +105,10 @@ protected:
   void _prefetch_inodes();
   void _prefetch_dirfrags();
 
+  void _get_ancestors(const Anchor& parent,
+		      std::vector<inode_backpointer_t>& ancestors,
+		      mds_rank_t& auth_hint);
+
   MDSRank *mds;
 
   version_t omap_version = 0;
@@ -114,8 +116,7 @@ protected:
   unsigned omap_num_objs = 0;
   std::vector<unsigned> omap_num_items;
 
-  map<inodeno_t, OpenedAnchor> anchor_map;
-  set<dirfrag_t> dirfrags;
+  std::map<inodeno_t, OpenedAnchor> anchor_map;
 
   std::map<inodeno_t, int> dirty_items; // ino -> dirty state
 
@@ -130,8 +131,7 @@ protected:
   int journal_state = 0;
 
   std::vector<std::map<std::string, bufferlist> > loaded_journals;
-  map<inodeno_t, RecoveredAnchor> loaded_anchor_map;
-  set<dirfrag_t> loaded_dirfrags;
+  std::map<inodeno_t, RecoveredAnchor> loaded_anchor_map;
   MDSContext::vec waiting_for_load;
   bool load_done = false;
 
@@ -145,7 +145,7 @@ protected:
   unsigned num_opening_inodes = 0;
   MDSContext::vec waiting_for_prefetch;
 
-  std::map<uint64_t, vector<inodeno_t> > logseg_destroyed_inos;
+  std::map<uint64_t, std::vector<inodeno_t> > logseg_destroyed_inos;
   std::set<inodeno_t> destroyed_inos_set;
 
   std::unique_ptr<PerfCounters> logger;

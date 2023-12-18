@@ -1,5 +1,6 @@
 set(CURSES_NEED_NCURSES TRUE)
-find_package(Curses REQUIRED)
+# libcurses may not be available on some platforms (e.g. Windows).
+find_package(Curses)
 
 set(rbd_srcs
   rbd.cc
@@ -19,6 +20,7 @@ set(rbd_srcs
   action/Device.cc
   action/Diff.cc
   action/DiskUsage.cc
+  action/Encryption.cc
   action/Export.cc
   action/Feature.cc
   action/Flatten.cc
@@ -40,6 +42,7 @@ set(rbd_srcs
   action/Nbd.cc
   action/ObjectMap.cc
   action/Perf.cc
+  action/PersistentCache.cc
   action/Pool.cc
   action/Remove.cc
   action/Rename.cc
@@ -49,20 +52,44 @@ set(rbd_srcs
   action/Status.cc
   action/TrashPurgeSchedule.cc
   action/Trash.cc
-  action/Watch.cc)
+  action/Ubbd.cc
+  action/Watch.cc
+  action/Wnbd.cc)
+if(WIN32)
+  list(APPEND rbd_srcs ../../common/win32/code_page.rc)
+endif()
 
 add_executable(rbd ${rbd_srcs}
   $<TARGET_OBJECTS:common_texttable_obj>)
 set_target_properties(rbd PROPERTIES OUTPUT_NAME rbd)
-target_link_libraries(rbd librbd librados
-  cls_journal_client cls_rbd_client
+target_link_libraries(rbd
+  cls_journal_client
+  cls_rbd_client
   rbd_types
+  librbd
   journal
-  ceph-common global ${CURSES_LIBRARIES}
+  libneorados
+  librados
+  ceph-common global
   ${BLKID_LIBRARIES} ${CMAKE_DL_LIBS})
+if(CURSES_FOUND)
+  target_compile_definitions(rbd PRIVATE HAVE_CURSES)
+  target_link_libraries(rbd ${CURSES_LIBRARIES})
+endif()
 if(WITH_KRBD)
-  target_link_libraries(rbd 
+  target_link_libraries(rbd
     krbd)
+endif()
+if(WITH_RBD_UBBD)
+  target_link_directories(rbd
+    PRIVATE ${CMAKE_BINARY_DIR}/src/ubbd/lib/)
+  target_include_directories(rbd
+    PRIVATE ${CMAKE_BINARY_DIR}/src/ubbd/include)
+  target_include_directories(rbd
+    PRIVATE ${CMAKE_BINARY_DIR}/src/ubbd/include/ubbd-headers/)
+  target_link_libraries(rbd
+    ubbd)
+  add_dependencies(rbd ubbd_ext)
 endif()
 
 install(TARGETS rbd DESTINATION bin)

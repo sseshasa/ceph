@@ -18,7 +18,7 @@
 #include "msg/Message.h"
 
 
-class MClientCapRelease : public SafeMessage {
+class MClientCapRelease final : public SafeMessage {
  public:
   std::string_view get_type_name() const override { return "client_cap_release";}
   void print(std::ostream& out) const override {
@@ -52,6 +52,8 @@ class MClientCapRelease : public SafeMessage {
 private:
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 
   static constexpr int HEAD_VERSION = 2;
   static constexpr int COMPAT_VERSION = 1;
@@ -61,7 +63,7 @@ private:
   {
     memset(&head, 0, sizeof(head));
   }
-  ~MClientCapRelease() override {}
+  ~MClientCapRelease() final {}
 };
 
 #endif

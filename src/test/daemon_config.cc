@@ -28,7 +28,7 @@
 #include <boost/lexical_cast.hpp>
 
 
-using std::string;
+using namespace std;
 
 TEST(DaemonConfig, SimpleSet) {
   int ret;
@@ -131,8 +131,7 @@ TEST(DaemonConfig, ArgV) {
   const char *argv[] = { "foo", "--log-graylog-port", "22",
 			 "--key", "my-key", NULL };
   size_t argc = (sizeof(argv) / sizeof(argv[0])) - 1;
-  vector<const char*> args;
-  argv_to_vec(argc, argv, args);
+  auto args = argv_to_vec(argc, argv);
   g_ceph_context->_conf.parse_argv(args);
   g_ceph_context->_conf.apply_changes(nullptr);
 
@@ -153,14 +152,14 @@ TEST(DaemonConfig, ArgV) {
 
 TEST(DaemonConfig, InjectArgs) {
   int ret;
-  std::string injection("--log-graylog-port 56 --leveldb-max-open-files 42");
+  std::string injection("--log-graylog-port 56 --log_max_new 42");
   ret = g_ceph_context->_conf.injectargs(injection, &cout);
   ASSERT_EQ(0, ret);
 
   char buf[128];
   char *tmp = buf;
   memset(buf, 0, sizeof(buf));
-  ret = g_ceph_context->_conf.get_val("leveldb_max_open_files", &tmp, sizeof(buf));
+  ret = g_ceph_context->_conf.get_val("log_max_new", &tmp, sizeof(buf));
   ASSERT_EQ(0, ret);
   ASSERT_EQ(string("42"), string(buf));
 
@@ -246,7 +245,7 @@ TEST(DaemonConfig, InjectArgsBooleans) {
   ASSERT_EQ(string("false"), string(buf));
 
   // Turn on log_to_syslog
-  injection = "--log-graylog-port=1 --log_to_syslog=true --leveldb-max-open-files 40";
+  injection = "--log-graylog-port=1 --log_to_syslog=true --log_max_new 40";
   ret = g_ceph_context->_conf.injectargs(injection, &cout);
   ASSERT_EQ(0, ret);
 
@@ -257,7 +256,7 @@ TEST(DaemonConfig, InjectArgsBooleans) {
   ASSERT_EQ(string("true"), string(buf));
 
   // parse error
-  injection = "--log-graylog-port 1 --log_to_syslog=falsey --leveldb-max-open-files 42";
+  injection = "--log-graylog-port 1 --log_to_syslog=falsey --log_max_new 42";
   ret = g_ceph_context->_conf.injectargs(injection, &cout);
   ASSERT_EQ(-EINVAL, ret);
 
@@ -269,7 +268,7 @@ TEST(DaemonConfig, InjectArgsBooleans) {
 
   // debug-ms should still become 42...
   memset(buf, 0, sizeof(buf));
-  ret = g_ceph_context->_conf.get_val("leveldb_max_open_files", &tmp, sizeof(buf));
+  ret = g_ceph_context->_conf.get_val("log_max_new", &tmp, sizeof(buf));
   ASSERT_EQ(0, ret);
   ASSERT_EQ(string("42"), string(buf));
 }

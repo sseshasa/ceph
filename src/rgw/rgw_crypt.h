@@ -1,18 +1,19 @@
-// -*- mode:C; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab ft=cpp
 
 /**
  * Crypto filters for Put/Post/Get operations.
  */
 
-#ifndef CEPH_RGW_CRYPT_H
-#define CEPH_RGW_CRYPT_H
+#pragma once
+
+#include <string_view>
 
 #include <rgw/rgw_op.h>
 #include <rgw/rgw_rest.h>
 #include <rgw/rgw_rest_s3.h>
 #include "rgw_putobj.h"
-#include <boost/utility/string_view.hpp>
+#include "common/async/yield_context.h"
 
 /**
  * \brief Interface for block encryption methods
@@ -55,7 +56,8 @@ public:
                        off_t in_ofs,
                        size_t size,
                        bufferlist& output,
-                       off_t stream_offset) = 0;
+                       off_t stream_offset,
+                       optional_yield y) = 0;
 
   /**
    * Decrypts data.
@@ -75,11 +77,13 @@ public:
                        off_t in_ofs,
                        size_t size,
                        bufferlist& output,
-                       off_t stream_offset) = 0;
+                       off_t stream_offset,
+                       optional_yield y) = 0;
 };
 
 static const size_t AES_256_KEYSIZE = 256 / 8;
-bool AES_256_ECB_encrypt(CephContext* cct,
+bool AES_256_ECB_encrypt(const DoutPrefixProvider* dpp,
+                         CephContext* cct,
                          const uint8_t* key,
                          size_t key_size,
                          const uint8_t* data_in,
@@ -87,8 +91,8 @@ bool AES_256_ECB_encrypt(CephContext* cct,
                          size_t data_size);
 
 class RGWGetObj_BlockDecrypt : public RGWGetObj_Filter {
+  const DoutPrefixProvider *dpp;
   CephContext* cct;
-
   std::unique_ptr<BlockCrypt> crypt; /**< already configured stateless BlockCrypt
                                           for operations when enough data is accumulated */
   off_t enc_begin_skip; /**< amount of data to skip from beginning of received data */
@@ -96,15 +100,18 @@ class RGWGetObj_BlockDecrypt : public RGWGetObj_Filter {
   off_t end; /**< stream offset of last byte that is requested */
   bufferlist cache; /**< stores extra data that could not (yet) be processed by BlockCrypt */
   size_t block_size; /**< snapshot of \ref BlockCrypt.get_block_size() */
+  optional_yield y;
+  std::vector<size_t> parts_len; /**< size of parts of multipart object, parsed from manifest */
 
   int process(bufferlist& cipher, size_t part_ofs, size_t size);
 
-protected:
-  std::vector<size_t> parts_len; /**< size of parts of multipart object, parsed from manifest */
 public:
-  RGWGetObj_BlockDecrypt(CephContext* cct,
+  RGWGetObj_BlockDecrypt(const DoutPrefixProvider *dpp,
+                         CephContext* cct,
                          RGWGetObj_Filter* next,
-                         std::unique_ptr<BlockCrypt> crypt);
+                         std::unique_ptr<BlockCrypt> crypt,
+                         std::vector<size_t> parts_len,
+                         optional_yield y);
   virtual ~RGWGetObj_BlockDecrypt();
 
   virtual int fixup_range(off_t& bl_ofs,
@@ -114,39 +121,61 @@ public:
                           off_t bl_len) override;
   virtual int flush() override;
 
-  int read_manifest(bufferlist& manifest_bl);
+  static int read_manifest_parts(const DoutPrefixProvider *dpp,
+                                 const bufferlist& manifest_bl,
+                                 std::vector<size_t>& parts_len);
 }; /* RGWGetObj_BlockDecrypt */
 
 
 class RGWPutObj_BlockEncrypt : public rgw::putobj::Pipe
 {
+  const DoutPrefixProvider *dpp;
   CephContext* cct;
   std::unique_ptr<BlockCrypt> crypt; /**< already configured stateless BlockCrypt
                                           for operations when enough data is accumulated */
   bufferlist cache; /**< stores extra data that could not (yet) be processed by BlockCrypt */
   const size_t block_size; /**< snapshot of \ref BlockCrypt.get_block_size() */
+  optional_yield y;
 public:
-  RGWPutObj_BlockEncrypt(CephContext* cct,
-                         rgw::putobj::DataProcessor *next,
-                         std::unique_ptr<BlockCrypt> crypt);
+  RGWPutObj_BlockEncrypt(const DoutPrefixProvider *dpp,
+                         CephContext* cct,
+                         rgw::sal::DataProcessor *next,
+                         std::unique_ptr<BlockCrypt> crypt,
+                         optional_yield y);
 
   int process(bufferlist&& data, uint64_t logical_offset) override;
 }; /* RGWPutObj_BlockEncrypt */
 
 
-int rgw_s3_prepare_encrypt(struct req_state* s,
-                           std::map<std::string, ceph::bufferlist>& attrs,
-                           std::map<std::string,
-                                    RGWPostObj_ObjStore::post_form_part,
-                                    const ltstr_nocase>* parts,
-                           std::unique_ptr<BlockCrypt>* block_crypt,
-                           std::map<std::string,
-                                    std::string>& crypt_http_responses);
-
-int rgw_s3_prepare_decrypt(struct req_state* s,
+int rgw_s3_prepare_encrypt(req_state* s, optional_yield y,
                            std::map<std::string, ceph::bufferlist>& attrs,
                            std::unique_ptr<BlockCrypt>* block_crypt,
                            std::map<std::string,
                                     std::string>& crypt_http_responses);
 
-#endif
+int rgw_s3_prepare_decrypt(req_state* s, optional_yield y,
+                           std::map<std::string, ceph::bufferlist>& attrs,
+                           std::unique_ptr<BlockCrypt>* block_crypt,
+                           std::map<std::string,
+                                    std::string>& crypt_http_responses);
+
+static inline void set_attr(std::map<std::string, bufferlist>& attrs,
+                            const char* key,
+                            std::string_view value)
+{
+  bufferlist bl;
+  bl.append(value.data(), value.size());
+  attrs[key] = std::move(bl);
+}
+
+static inline std::string get_str_attribute(const std::map<std::string, bufferlist>& attrs,
+                                            const char *name)
+{
+  auto iter = attrs.find(name);
+  if (iter == attrs.end()) {
+    return {};
+  }
+  return iter->second.to_str();
+}
+
+int rgw_remove_sse_s3_bucket_key(req_state *s, optional_yield y);

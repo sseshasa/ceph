@@ -1,19 +1,30 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
-
-from datetime import datetime
 
 import time
+from datetime import datetime
 
 import cherrypy
+from ceph_argparse import CephString
 
-from . import BaseController, ApiController, RESTController, Endpoint
 from .. import mgr
-from ..exceptions import DashboardException, UserAlreadyExists, \
-    UserDoesNotExist, PasswordPolicyException, PwdExpirationDateNotValid
+from ..exceptions import DashboardException, PasswordPolicyException, \
+    PwdExpirationDateNotValid, UserAlreadyExists, UserDoesNotExist
 from ..security import Scope
 from ..services.access_control import SYSTEM_ROLES, PasswordPolicy
 from ..services.auth import JwtManager
+from . import APIDoc, APIRouter, BaseController, Endpoint, EndpointDoc, \
+    RESTController, allow_empty_body, validate_ceph_type
+
+USER_SCHEMA = ([{
+    "username": (str, 'Username of the user'),
+    "roles": ([str], 'User Roles'),
+    "name": (str, 'User Name'),
+    "email": (str, 'User email address'),
+    "lastUpdate": (int, 'Details last updated'),
+    "enabled": (bool, 'Is the user enabled?'),
+    "pwdExpirationDate": (str, 'Password Expiration date'),
+    "pwdUpdateRequired": (bool, 'Is Password Update Required?')
+}], '')
 
 
 def validate_password_policy(password, username=None, old_password=None):
@@ -35,7 +46,8 @@ def validate_password_policy(password, username=None, old_password=None):
                                  component='user')
 
 
-@ApiController('/user', Scope.USER)
+@APIRouter('/user', Scope.USER)
+@APIDoc("Display User Details", "User")
 class User(RESTController):
 
     @staticmethod
@@ -55,6 +67,8 @@ class User(RESTController):
                                      code='role_does_not_exist',
                                      component='user')
 
+    @EndpointDoc("Get List Of Users",
+                 responses={200: USER_SCHEMA})
     def list(self):
         users = mgr.ACCESS_CTRL_DB.users
         result = [User._user_to_dict(u) for _, u in users.items()]
@@ -67,6 +81,7 @@ class User(RESTController):
             raise cherrypy.HTTPError(404)
         return User._user_to_dict(user)
 
+    @validate_ceph_type([('username', CephString())], 'user')
     def create(self, username=None, password=None, name=None, email=None,
                roles=None, enabled=True, pwdExpirationDate=None, pwdUpdateRequired=True):
         if not username:
@@ -142,19 +157,21 @@ class User(RESTController):
         return User._user_to_dict(user)
 
 
-@ApiController('/user')
+@APIRouter('/user')
+@APIDoc("Get User Password Policy Details", "UserPasswordPolicy")
 class UserPasswordPolicy(RESTController):
 
     @Endpoint('POST')
+    @allow_empty_body
     def validate_password(self, password, username=None, old_password=None):
         """
         Check if the password meets the password policy.
         :param password: The password to validate.
         :param username: The name of the user (optional).
         :param old_password: The old password (optional).
-        :return: An object with the properties valid, credits and valuation.
-          'credits' contains the password complexity credits and
-          'valuation' the textual summary of the validation.
+        :return: An object with properties valid, credits and valuation.
+        'credits' contains the password complexity credits and
+        'valuation' the textual summary of the validation.
         """
         result = {'valid': False, 'credits': 0, 'valuation': None}
         try:
@@ -173,7 +190,8 @@ class UserPasswordPolicy(RESTController):
         return result
 
 
-@ApiController('/user/{username}')
+@APIRouter('/user/{username}')
+@APIDoc("Change User Password", "UserChangePassword")
 class UserChangePassword(BaseController):
 
     @Endpoint('POST')

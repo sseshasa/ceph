@@ -17,16 +17,32 @@
 #include "include/common_fwd.h"
 #include "include/elist.h"
 #include <list>
-#include "mds/PurgeQueue.h"
+#include "Mutation.h"
+#include "PurgeQueue.h"
+#include "MDSMetaRequest.h"
+#include "CDentry.h"
 
 class MDSRank;
 class CInode;
-class CDentry;
 
 class StrayManager
 {
   // My public interface is for consumption by MDCache
 public:
+  struct StrayEvalRequest : public MDSMetaRequest {
+    CDentry *dentry;
+  public:
+    explicit StrayEvalRequest(int o, ceph_tid_t t, CDentry *d) :
+      MDSMetaRequest(o, t), dentry(d) {
+      dentry->get(CDentry::PIN_PURGING);
+      dentry->reintegration_reqid = t;
+    }
+    ~StrayEvalRequest() {
+      dentry->reintegration_reqid = 0;
+      dentry->put(CDentry::PIN_PURGING);
+    }
+  };
+
   explicit StrayManager(MDSRank *mds, PurgeQueue &purge_queue_);
   void set_logger(PerfCounters *l) {logger = l;}
   void activate();
@@ -123,13 +139,13 @@ protected:
    */
   void _purge_stray_purged(CDentry *dn, bool only_head);
 
-  void _purge_stray_logged(CDentry *dn, version_t pdv, LogSegment *ls);
+  void _purge_stray_logged(CDentry *dn, version_t pdv, MutationRef& mut);
 
   /**
    * Callback: we have logged the update to an inode's metadata
    * reflecting it's newly-zeroed length.
    */
-  void _truncate_stray_logged(CDentry *dn, LogSegment *ls);
+  void _truncate_stray_logged(CDentry *dn, MutationRef &mut);
   /**
    * Call this on a dentry that has been identified as
    * eligible for purging. It will be passed on to PurgeQueue.

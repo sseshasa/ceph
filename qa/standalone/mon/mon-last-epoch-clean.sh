@@ -173,7 +173,7 @@ function TEST_mon_last_clean_epoch() {
   local dir=$1
 
   run_mon $dir a || return 1
-  run_mgr $dir x || return 1
+  run_mgr $dir x --mon-warn-on-pool-no-app=false || return 1
   run_osd $dir 0 || return 1
   run_osd $dir 1 || return 1
   run_osd $dir 2 || return 1
@@ -181,8 +181,8 @@ function TEST_mon_last_clean_epoch() {
 
   sleep 5
 
-  ceph tell osd.* injectargs '--osd-beacon-report-interval 10' || exit 1
-  ceph tell mon.* injectargs \
+  ceph tell 'osd.*' injectargs '--osd-beacon-report-interval 10' || exit 1
+  ceph tell 'mon.*' injectargs \
     '--mon-min-osdmap-epochs 2 --paxos-service-trim-min 1' || exit 1
 
   create_pool foo 32
@@ -226,7 +226,7 @@ function TEST_mon_last_clean_epoch() {
   # - all pools have floor equal to lec
 
   while kill $osd_pid ; do sleep 1 ; done
-  ceph osd down 2
+  ceph osd out 2
   sleep 5 # seriously, just to make sure things settle; we may not need this.
 
   # generate some maps

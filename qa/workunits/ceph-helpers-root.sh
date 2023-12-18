@@ -28,14 +28,26 @@ function distro_version() {
 }
 
 function install() {
+    if [ $(distro_id) = "ubuntu" ]; then
+        sudo apt-get purge -y gcc
+        sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+    fi
     for package in "$@" ; do
         install_one $package
     done
+    if [ $(distro_id) = "ubuntu" ]; then
+        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-11 11
+        sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-11 11
+        sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc 11
+        sudo update-alternatives --set cc /usr/bin/gcc
+        sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++ 11
+        sudo update-alternatives --set c++ /usr/bin/g++
+    fi
 }
 
 function install_one() {
     case $(distro_id) in
-        ubuntu|debian|devuan)
+        ubuntu|debian|devuan|softiron)
             sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
             ;;
         centos|fedora|rhel)
@@ -48,15 +60,6 @@ function install_one() {
             echo "$(distro_id) is unknown, $@ will have to be installed manually."
             ;;
     esac
-}
-
-function install_cmake3_on_xenial {
-    install_pkg_on_ubuntu \
-	ceph-cmake \
-	d278b9d28de0f6b88f56dfe1e8bf684a41577210 \
-	xenial \
-	force \
-	cmake
 }
 
 function install_pkg_on_ubuntu {

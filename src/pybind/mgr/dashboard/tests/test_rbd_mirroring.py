@@ -1,18 +1,22 @@
-from __future__ import absolute_import
 
 import json
+import unittest
+
+import rbd
+
 try:
     import mock
 except ImportError:
     import unittest.mock as mock
 
-from . import ControllerTestCase
 from .. import mgr
+from ..controllers.orchestrator import Orchestrator
+from ..controllers.rbd_mirroring import RbdMirroring, \
+    RbdMirroringPoolBootstrap, RbdMirroringStatus, RbdMirroringSummary, \
+    get_daemons, get_pools
 from ..controllers.summary import Summary
-from ..controllers.rbd_mirroring import RbdMirroring, RbdMirroringSummary, \
-    RbdMirroringPoolBootstrap
 from ..services import progress
-
+from ..tests import ControllerTestCase
 
 mock_list_servers = [{
     'hostname': 'ceph-host',
@@ -27,12 +31,16 @@ mock_get_metadata = {
 
 _status = {
     1: {
-        'callouts': {},
+        'callouts': {
+            'image': {
+                'level': 'warning',
+            }
+        },
         'image_local_count': 5,
         'image_remote_count': 6,
         'image_error_count': 7,
         'image_warning_count': 8,
-        'name': 'pool_name'
+        'name': 'rbd'
     }
 }
 
@@ -48,14 +56,125 @@ mock_osd_map = {
 }
 
 
+class GetDaemonAndPoolsTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        mgr.list_servers.return_value = mock_list_servers
+        mgr.get_metadata = mock.Mock(return_value=mock_get_metadata)
+        mgr.get_daemon_status.return_value = mock_get_daemon_status
+        mgr.get.side_effect = lambda key: {
+            'osd_map': mock_osd_map,
+            'health': {'json': '{"status": 1}'},
+            'fs_map': {'filesystems': []},
+            'mgr_map': {
+                'services': {
+                    'dashboard': 'https://ceph.dev:11000/'
+                },
+            }
+        }[key]
+        mgr.url_prefix = ''
+        mgr.get_mgr_id.return_value = 0
+        mgr.have_mon_connection.return_value = True
+        mgr.version = 'ceph version 13.1.0-534-g23d3751b89 ' \
+                      '(23d3751b897b31d2bda57aeaf01acb5ff3c4a9cd) ' \
+                      'nautilus (dev)'
+
+        progress.get_progress_tasks = mock.MagicMock()
+        progress.get_progress_tasks.return_value = ([], [])
+
+    @mock.patch('rbd.RBD')
+    def test_get_pools_unknown(self, mock_rbd):
+        mock_rbd_instance = mock_rbd.return_value
+        mock_rbd_instance.mirror_mode_get.side_effect = Exception
+        daemons = get_daemons()
+        res = get_pools(daemons)
+        self.assertTrue(res['rbd']['mirror_mode'] == "unknown")
+
+    @mock.patch('rbd.RBD')
+    def test_get_pools_mode(self, mock_rbd):
+
+        daemons = get_daemons()
+        mock_rbd_instance = mock_rbd.return_value
+        testcases = [
+            (rbd.RBD_MIRROR_MODE_DISABLED, "disabled"),
+            (rbd.RBD_MIRROR_MODE_IMAGE, "image"),
+            (rbd.RBD_MIRROR_MODE_POOL, "pool"),
+        ]
+        mock_rbd_instance.mirror_peer_list.return_value = []
+        for mirror_mode, expected in testcases:
+            mock_rbd_instance.mirror_mode_get.return_value = mirror_mode
+            res = get_pools(daemons)
+            self.assertTrue(res['rbd']['mirror_mode'] == expected)
+
+    @mock.patch('rbd.RBD')
+    def test_get_pools_health(self, mock_rbd):
+
+        mock_rbd_instance = mock_rbd.return_value
+        mock_rbd_instance.mirror_peer_list.return_value = []
+        test_cases = self._get_pool_test_cases()
+        for new_status, pool_mirror_mode, images_summary, expected_output in test_cases:
+            _status[1].update(new_status)
+            daemon_status = {
+                'json': json.dumps(_status)
+            }
+            mgr.get_daemon_status.return_value = daemon_status
+            daemons = get_daemons()
+            mock_rbd_instance.mirror_mode_get.return_value = pool_mirror_mode
+            mock_rbd_instance.mirror_image_status_summary.return_value = images_summary
+            res = get_pools(daemons)
+            for k, v in expected_output.items():
+                self.assertTrue(v == res['rbd'][k])
+        mgr.get_daemon_status.return_value = mock_get_daemon_status  # reset return value
+
+    def _get_pool_test_cases(self):
+        test_cases = [
+            # 1. daemon status
+            # 2. Pool mirror mock_get_daemon_status
+            # 3. Image health summary
+            # 4. Pool health output
+            (
+                {
+                    'image_error_count': 7,
+                },
+                rbd.RBD_MIRROR_MODE_IMAGE,
+                [(rbd.MIRROR_IMAGE_STATUS_STATE_UNKNOWN, None)],
+                {
+                    'health_color': 'warning',
+                    'health': 'Warning'
+                }
+            ),
+            (
+                {
+                    'image_error_count': 7,
+                },
+                rbd.RBD_MIRROR_MODE_POOL,
+                [(rbd.MIRROR_IMAGE_STATUS_STATE_ERROR, None)],
+                {
+                    'health_color': 'error',
+                    'health': 'Error'
+                }
+            ),
+            (
+                {
+                    'image_error_count': 0,
+                    'image_warning_count': 0,
+                    'leader_id': 1
+                },
+                rbd.RBD_MIRROR_MODE_DISABLED,
+                [],
+                {
+                    'health_color': 'info',
+                    'health': 'Disabled'
+                }
+            ),
+        ]
+        return test_cases
+
+
 class RbdMirroringControllerTest(ControllerTestCase):
 
     @classmethod
     def setup_server(cls):
-        # pylint: disable=protected-access
-        RbdMirroring._cp_config['tools.authenticate.on'] = False
-        # pylint: enable=protected-access
-
         cls.setup_controllers([RbdMirroring])
 
     @mock.patch('dashboard.controllers.rbd_mirroring.rbd.RBD')
@@ -83,10 +202,6 @@ class RbdMirroringPoolBootstrapControllerTest(ControllerTestCase):
 
     @classmethod
     def setup_server(cls):
-        # pylint: disable=protected-access
-        RbdMirroringPoolBootstrap._cp_config['tools.authenticate.on'] = False
-        # pylint: enable=protected-access
-
         cls.setup_controllers([RbdMirroringPoolBootstrap])
 
     @mock.patch('dashboard.controllers.rbd_mirroring.rbd.RBD')
@@ -137,7 +252,7 @@ class RbdMirroringSummaryControllerTest(ControllerTestCase):
             'mgr_map': {
                 'services': {
                     'dashboard': 'https://ceph.dev:11000/'
-                    },
+                },
             }
         }[key]
         mgr.url_prefix = ''
@@ -149,11 +264,6 @@ class RbdMirroringSummaryControllerTest(ControllerTestCase):
 
         progress.get_progress_tasks = mock.MagicMock()
         progress.get_progress_tasks.return_value = ([], [])
-
-        # pylint: disable=protected-access
-        RbdMirroringSummary._cp_config['tools.authenticate.on'] = False
-        Summary._cp_config['tools.authenticate.on'] = False
-        # pylint: enable=protected-access
 
         cls.setup_controllers([RbdMirroringSummary, Summary], '/test')
 
@@ -182,4 +292,27 @@ class RbdMirroringSummaryControllerTest(ControllerTestCase):
         self.assertStatus(200)
 
         summary = self.json_body()['rbd_mirroring']
-        self.assertEqual(summary, {'errors': 0, 'warnings': 1})
+        # 2 warnings: 1 for the daemon, 1 for the pool
+        self.assertEqual(summary, {'errors': 0, 'warnings': 2})
+
+
+class RbdMirroringStatusControllerTest(ControllerTestCase):
+
+    @classmethod
+    def setup_server(cls):
+        cls.setup_controllers([RbdMirroringStatus, Orchestrator])
+
+    @mock.patch('dashboard.controllers.orchestrator.OrchClient.instance')
+    def test_status(self, instance):
+        status = {'available': False, 'description': ''}
+        fake_client = mock.Mock()
+        fake_client.status.return_value = status
+        instance.return_value = fake_client
+
+        self._get('/ui-api/block/mirroring/status')
+        self.assertStatus(200)
+        self.assertJsonBody({'available': True, 'message': None})
+
+    def test_configure(self):
+        self._post('/ui-api/block/mirroring/configure')
+        self.assertStatus(200)

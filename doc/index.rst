@@ -2,77 +2,87 @@
  Welcome to Ceph
 =================
 
-Ceph uniquely delivers **object, block, and file storage in one unified
-system**.
+Ceph delivers **object, block, and file storage in one unified system**.
 
-.. raw:: html
+.. warning::
 
-	<style type="text/css">div.body h3{margin:5px 0px 0px 0px;}</style>
-	<table cellpadding="10"><colgroup><col width="33%"><col width="33%"><col width="33%"></colgroup><tbody valign="top"><tr><td><h3>Ceph Object Store</h3>
+   :ref:`If this is your first time using Ceph, read the "Basic Workflow"
+   page in the Ceph Developer Guide to learn how to contribute to the
+   Ceph project. (Click anywhere in this paragraph to read the "Basic
+   Workflow" page of the Ceph Developer Guide.) <basic workflow dev guide>`.
 
-- RESTful Interface
-- S3- and Swift-compliant APIs
-- S3-style subdomains
-- Unified S3/Swift namespace
-- User management
-- Usage tracking
-- Striped objects
-- Cloud solution integration
-- Multi-site deployment
-- Multi-site replication
+.. note::
 
-.. raw:: html
+   :ref:`If you want to make a commit to the documentation but you don't
+   know how to get started, read the "Documenting Ceph" page. (Click anywhere
+   in this paragraph to read the "Documenting Ceph" page.) <documenting_ceph>`.
 
-	</td><td><h3>Ceph Block Device</h3>
+.. container:: columns-3
 
+   .. container:: column
 
-- Thin-provisioned
-- Images up to 16 exabytes
-- Configurable striping
-- In-memory caching
-- Snapshots
-- Copy-on-write cloning
-- Kernel driver support
-- KVM/libvirt support
-- Back-end for cloud solutions
-- Incremental backup
-- Disaster recovery (multisite asynchronous replication)
+      .. raw:: html
 
-.. raw:: html
+          <h3>Ceph Object Store</h3>
 
-	</td><td><h3>Ceph File System</h3>
+      - RESTful Interface
+      - S3- and Swift-compliant APIs
+      - S3-style subdomains
+      - Unified S3/Swift namespace
+      - User management
+      - Usage tracking
+      - Striped objects
+      - Cloud solution integration
+      - Multi-site deployment
+      - Multi-site replication
 
-- POSIX-compliant semantics
-- Separates metadata from data
-- Dynamic rebalancing
-- Subdirectory snapshots
-- Configurable striping
-- Kernel driver support
-- FUSE support
-- NFS/CIFS deployable
-- Use with Hadoop (replace HDFS)
+   .. container:: column
 
-.. raw:: html
+      .. raw:: html
 
-	</td></tr><tr><td>
+          <h3>Ceph Block Device</h3>
 
-See `Ceph Object Store`_ for additional details.
+      - Thin-provisioned
+      - Images up to 16 exabytes
+      - Configurable striping
+      - In-memory caching
+      - Snapshots
+      - Copy-on-write cloning
+      - Kernel driver support
+      - KVM/libvirt support
+      - Back-end for cloud solutions
+      - Incremental backup
+      - Disaster recovery (multisite asynchronous replication)
 
-.. raw:: html
+   .. container:: column
 
-	</td><td>
+      .. raw:: html
 
-See `Ceph Block Device`_ for additional details.
+          <h3>Ceph File System</h3>
 
-.. raw:: html
+      - POSIX-compliant semantics
+      - Separates metadata from data
+      - Dynamic rebalancing
+      - Subdirectory snapshots
+      - Configurable striping
+      - Kernel driver support
+      - FUSE support
+      - NFS/CIFS deployable
+      - Use with Hadoop (replace HDFS)
 
-	</td><td>
+.. container:: columns-3
 
-See `Ceph File System`_ for additional details.
+   .. container:: column
 
-.. raw::	html
+      See `Ceph Object Store`_ for additional details.
 
-	</td></tr></tbody></table>
+   .. container:: column
+
+      See `Ceph Block Device`_ for additional details.
+
+   .. container:: column
+
+      See `Ceph File System`_ for additional details.
 
 Ceph is highly reliable, easy to manage, and free. The power of Ceph
 can transform your company's IT infrastructure and your ability to manage vast
@@ -100,6 +110,7 @@ about Ceph, see our `Architecture`_ section.
    radosgw/index
    mgr/index
    mgr/dashboard
+   monitoring/index
    api/index
    architecture
    Developer Guide <dev/developer_guide/index>
@@ -109,4 +120,6 @@ about Ceph, see our `Architecture`_ section.
    ceph-volume/index
    releases/general
    releases/index
+   security/index
    Glossary <glossary>
+   Tracing <jaegertracing/index>

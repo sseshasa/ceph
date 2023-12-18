@@ -80,6 +80,6 @@ export class PrometheusCustomAlert {
   status: 'resolved' | 'unprocessed' | 'active' | 'suppressed';
   name: string;
   url: string;
-  summary: string;
+  description: string;
   fingerprint?: string | boolean;
 }

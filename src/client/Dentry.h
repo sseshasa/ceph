@@ -64,6 +64,10 @@ public:
     inode.reset();
     dir->num_null_dentries++;
   }
+  void mark_primary() {
+    if (inode && inode->dentries.front() != this)
+      inode->dentries.push_front(&inode_xlist_link);
+  }
   void detach(void) {
     ceph_assert(!inode);
     auto p = dir->dentries.find(name);
@@ -73,11 +77,27 @@ public:
     dir = nullptr;
   }
 
+  bool make_path_string(std::string& s)
+  {
+    bool ret = false;
+
+    if (dir) {
+      ret = dir->parent_inode->make_path_string(s);
+    } else {
+      // Couldn't link all the way to our mount point
+      return false;
+    }
+    s += "/";
+    s.append(name.data(), name.length());
+
+    return ret;
+  }
+
   void dump(Formatter *f) const;
   friend std::ostream &operator<<(std::ostream &oss, const Dentry &Dentry);
 
   Dir	   *dir;
-  const string name;
+  const std::string name;
   InodeRef inode;
   int	   ref = 1; // 1 if there's a dir beneath me.
   int64_t offset = 0;
@@ -86,6 +106,8 @@ public:
   uint64_t lease_gen = 0;
   ceph_seq_t lease_seq = 0;
   int cap_shared_gen = 0;
+  std::string alternate_name;
+  bool is_renaming = false;
 
 private:
   xlist<Dentry *>::item inode_xlist_link;

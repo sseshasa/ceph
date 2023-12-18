@@ -20,11 +20,14 @@ export enum Icons {
   stop = 'fa fa-stop', // Disable
   analyse = 'fa fa-stethoscope', // Scrub
   deepCheck = 'fa fa-cog', // Deep Scrub, Setting, Configuration
+  cogs = 'fa fa-cogs', // Multiple Settings, Configurations
   reweight = 'fa fa-balance-scale', // Reweight
+  up = 'fa fa-arrow-up', // Up
   left = 'fa fa-arrow-left', // Mark out
   right = 'fa fa-arrow-right', // Mark in
   down = 'fa fa-arrow-down', // Mark Down
-  erase = 'fa fa-eraser', // Purge
+  erase = 'fa fa-eraser', // Purge  color: bd.$white;
+
   user = 'fa fa-user', // User, Initiators
   users = 'fa fa-users', // Users, Groups
   share = 'fa fa-share-alt', // share
@@ -33,6 +36,8 @@ export enum Icons {
   info = 'fa fa-info', // Notification information
   infoCircle = 'fa fa-info-circle', // Info on landing page
   questionCircle = 'fa fa-question-circle-o',
+  danger = 'fa fa-exclamation-circle',
+  success = 'fa fa-check-circle',
   check = 'fa fa-check', // Notification check
   show = 'fa fa-eye', // Show
   paragraph = 'fa fa-paragraph', // Silence Matcher - Attribute name
@@ -52,6 +57,7 @@ export enum Icons {
   health = 'fa fa-heartbeat', // Health
   circle = 'fa fa-circle', // Circle
   bell = 'fa fa-bell', // Notification
+  mute = 'fa fa-bell-slash', // Mute or silence
   tag = 'fa fa-tag', // Tag, Badge
   leftArrow = 'fa fa-angle-left', // Left facing angle
   rightArrow = 'fa fa-angle-right', // Right facing angle
@@ -61,6 +67,21 @@ export enum Icons {
   clearFilters = 'fa fa-window-close', // Clear filters, solid x
   download = 'fa fa-download', // Download
   upload = 'fa fa-upload', // Upload
+  close = 'fa fa-times', // Close
+  json = 'fa fa-file-code-o', // JSON file
+  text = 'fa fa-file-text', // Text file
+  wrench = 'fa fa-wrench', // Configuration Error
+  enter = 'fa fa-sign-in', // Enter
+  exit = 'fa fa-sign-out', // Exit
+  restart = 'fa fa-history', // Restart
+  deploy = 'fa fa-cube', // Deploy, Redeploy
+  cubes = 'fa fa-cubes', // Object storage
+  sitemap = 'fa fa-sitemap', // Cluster, network, connections
+  database = 'fa fa-database', // Database, Block storage
+  bars = 'fa fa-bars', // Stack, bars
+  navicon = 'fa fa-navicon', // Navigation
+  areaChart = 'fa fa-area-chart', // Area Chart, dashboard
+  eye = 'fa fa-eye', // Observability
 
   /* Icons for special effect */
   large = 'fa fa-lg', // icon becomes 33% larger

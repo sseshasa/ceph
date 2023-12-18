@@ -32,7 +32,7 @@ class CDir;
 class CInode;
 class CDentry;
 class MDSRank;
-struct MDSlaveUpdate;
+struct MDPeerUpdate;
 
 class LogSegment {
  public:
@@ -53,9 +53,9 @@ class LogSegment {
 
   void try_to_expire(MDSRank *mds, MDSGatherBuilder &gather_bld, int op_prio);
   void purge_inodes_finish(interval_set<inodeno_t>& inos){
-    purge_inodes.subtract(inos);
+    purging_inodes.subtract(inos);
     if (NULL != purged_cb &&
-	purge_inodes.empty())
+	purging_inodes.empty())
       purged_cb->complete(0);
   }
   void set_purged_cb(MDSContext* c){
@@ -70,7 +70,7 @@ class LogSegment {
 
   const seq_t seq;
   uint64_t offset, end;
-  int num_events = 0;
+  uint64_t num_events = 0;
 
   // dirty items
   elist<CDir*>    dirty_dirfrags, new_dirfrags;
@@ -83,18 +83,17 @@ class LogSegment {
   elist<CInode*>  dirty_dirfrag_nest;
   elist<CInode*>  dirty_dirfrag_dirfragtree;
 
-  elist<MDSlaveUpdate*> slave_updates{0}; // passed to begin() manually
-
-  set<CInode*> truncating_inodes;
-  interval_set<inodeno_t> purge_inodes;
+  std::set<CInode*> truncating_inodes;
+  interval_set<inodeno_t> purging_inodes;
   MDSContext* purged_cb = nullptr;
 
-  map<int, ceph::unordered_set<version_t> > pending_commit_tids;  // mdstable
-  set<metareqid_t> uncommitted_masters;
-  set<dirfrag_t> uncommitted_fragments;
+  std::map<int, ceph::unordered_set<version_t> > pending_commit_tids;  // mdstable
+  std::set<metareqid_t> uncommitted_leaders;
+  std::set<metareqid_t> uncommitted_peers;
+  std::set<dirfrag_t> uncommitted_fragments;
 
   // client request ids
-  map<int, ceph_tid_t> last_client_tids;
+  std::map<int, ceph_tid_t> last_client_tids;
 
   // potentially dirty sessions
   std::set<entity_name_t> touched_sessions;
@@ -102,9 +101,14 @@ class LogSegment {
   // table version
   version_t inotablev = 0;
   version_t sessionmapv = 0;
-  map<int,version_t> tablev;
+  std::map<int,version_t> tablev;
 
   MDSContext::vec expiry_waiters;
 };
+
+static inline std::ostream& operator<<(std::ostream& out, const LogSegment& ls) {
+  return out << "LogSegment(" << ls.seq << "/0x" << std::hex << ls.offset
+             << std::dec << " events=" << ls.num_events << ")";
+}
 
 #endif

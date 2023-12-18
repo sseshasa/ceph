@@ -2,9 +2,11 @@
 from __future__ import absolute_import
 
 import logging
+
 import requests
 
-from .helper import DashboardTestCase, JAny, JObj, JList, JLeaf
+from .helper import (DashboardTestCase, JLeaf, JList, JObj,
+                     module_options_object_schema, module_options_schema)
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,7 @@ class MgrModuleTestCase(DashboardTestCase):
 
 
 class MgrModuleTest(MgrModuleTestCase):
+
     def test_list_disabled_module(self):
         self._ceph_cmd(['mgr', 'module', 'disable', 'iostat'])
         self.wait_until_rest_api_accessible()
@@ -43,23 +46,7 @@ class MgrModuleTest(MgrModuleTestCase):
                     'name': JLeaf(str),
                     'enabled': JLeaf(bool),
                     'always_on': JLeaf(bool),
-                    'options': JObj(
-                        {},
-                        allow_unknown=True,
-                        unknown_schema=JObj({
-                            'name': str,
-                            'type': str,
-                            'level': str,
-                            'flags': int,
-                            'default_value': JAny(none=False),
-                            'min': JAny(none=False),
-                            'max': JAny(none=False),
-                            'enum_allowed': JList(str),
-                            'see_also': JList(str),
-                            'desc': str,
-                            'long_desc': str,
-                            'tags': JList(str)
-                        }))
+                    'options': module_options_schema
                 })))
         module_info = self.find_object_in_list('name', 'iostat', data)
         self.assertIsNotNone(module_info)
@@ -77,23 +64,7 @@ class MgrModuleTest(MgrModuleTestCase):
                     'name': JLeaf(str),
                     'enabled': JLeaf(bool),
                     'always_on': JLeaf(bool),
-                    'options': JObj(
-                        {},
-                        allow_unknown=True,
-                        unknown_schema=JObj({
-                            'name': str,
-                            'type': str,
-                            'level': str,
-                            'flags': int,
-                            'default_value': JAny(none=False),
-                            'min': JAny(none=False),
-                            'max': JAny(none=False),
-                            'enum_allowed': JList(str),
-                            'see_also': JList(str),
-                            'desc': str,
-                            'long_desc': str,
-                            'tags': JList(str)
-                        }))
+                    'options': module_options_schema
                 })))
         module_info = self.find_object_in_list('name', 'iostat', data)
         self.assertIsNotNone(module_info)
@@ -111,16 +82,53 @@ class MgrModuleTest(MgrModuleTestCase):
                     'channel_ident': bool,
                     'channel_crash': bool,
                     'channel_device': bool,
+                    'channel_perf': bool,
                     'contact': str,
                     'description': str,
                     'enabled': bool,
                     'interval': int,
                     'last_opt_revision': int,
                     'leaderboard': bool,
+                    'leaderboard_description': str,
                     'organization': str,
                     'proxy': str,
                     'url': str
                 }))
+
+    def test_module_options(self):
+        data = self._get('/api/mgr/module/telemetry/options')
+        self.assertStatus(200)
+        schema = JObj({
+            'channel_basic': module_options_object_schema,
+            'channel_crash': module_options_object_schema,
+            'channel_device': module_options_object_schema,
+            'channel_ident': module_options_object_schema,
+            'channel_perf': module_options_object_schema,
+            'contact': module_options_object_schema,
+            'description': module_options_object_schema,
+            'device_url': module_options_object_schema,
+            'enabled': module_options_object_schema,
+            'interval': module_options_object_schema,
+            'last_opt_revision': module_options_object_schema,
+            'leaderboard': module_options_object_schema,
+            'leaderboard_description': module_options_object_schema,
+            'log_level': module_options_object_schema,
+            'log_to_cluster': module_options_object_schema,
+            'log_to_cluster_level': module_options_object_schema,
+            'log_to_file': module_options_object_schema,
+            'organization': module_options_object_schema,
+            'proxy': module_options_object_schema,
+            'url': module_options_object_schema
+        })
+        self.assertSchema(data, schema)
+
+    def test_module_enable(self):
+        self._post('/api/mgr/module/telemetry/enable')
+        self.assertStatus(200)
+
+    def test_disable(self):
+        self._post('/api/mgr/module/iostat/disable')
+        self.assertStatus(200)
 
     def test_put(self):
         self.set_config_key('config/mgr/mgr/iostat/log_level', 'critical')

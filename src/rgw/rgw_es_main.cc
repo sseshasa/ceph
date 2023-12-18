@@ -12,11 +12,14 @@
 #include "common/ceph_json.h"
 #include "rgw_es_query.h"
 
+using namespace std;
 
+// This has an uncaught exception. Even if the exception is caught, the program
+// would need to be terminated, so the warning is simply suppressed.
+// coverity[root_function:SUPPRESS]
 int main(int argc, char *argv[])
 {
-  vector<const char*> args;
-  argv_to_vec(argc, (const char **)argv, args);
+  auto args = argv_to_vec(argc, argv);
 
   auto cct = global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT,
                          CODE_ENVIRONMENT_UTILITY, 0);

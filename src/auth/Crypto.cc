@@ -33,11 +33,11 @@
 #include "common/debug.h"
 #include <errno.h>
 
-// use getentropy() if available. it uses the same source of randomness
-// as /dev/urandom without the filesystem overhead
-#ifdef HAVE_GETENTROPY
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 
-#include <unistd.h>
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
 using std::ostringstream;
 using std::string;
@@ -45,6 +45,13 @@ using std::string;
 using ceph::bufferlist;
 using ceph::bufferptr;
 using ceph::Formatter;
+
+
+// use getentropy() if available. it uses the same source of randomness
+// as /dev/urandom without the filesystem overhead
+#ifdef HAVE_GETENTROPY
+
+#include <unistd.h>
 
 static bool getentropy_works()
 {
@@ -84,8 +91,26 @@ void CryptoRandom::get_bytes(char *buf, int len)
   }
 }
 
-#else // !HAVE_GETENTROPY
+#elif defined(_WIN32) // !HAVE_GETENTROPY
 
+#include <bcrypt.h>
+
+CryptoRandom::CryptoRandom() : fd(0) {}
+CryptoRandom::~CryptoRandom() = default;
+
+void CryptoRandom::get_bytes(char *buf, int len)
+{
+  auto ret = BCryptGenRandom (
+    NULL,
+    (unsigned char*)buf,
+    len,
+    BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+  if (ret != 0) {
+    throw std::system_error(ret, std::system_category());
+  }
+}
+
+#else // !HAVE_GETENTROPY && !_WIN32
 // open /dev/urandom once on construction and reuse the fd for all reads
 CryptoRandom::CryptoRandom()
   : fd{open_urandom()}
@@ -486,6 +511,23 @@ void CryptoKey::decode(bufferlist::const_iterator& bl)
     throw ceph::buffer::malformed_input("malformed secret");
 }
 
+void CryptoKey::dump(Formatter *f) const
+{
+  f->dump_int("type", type);
+  f->dump_stream("created") << created;
+  f->dump_int("secret.length", secret.length());
+}
+
+void CryptoKey::generate_test_instances(std::list<CryptoKey*>& ls)
+{
+  ls.push_back(new CryptoKey);
+  ls.push_back(new CryptoKey);
+  ls.back()->type = CEPH_CRYPTO_AES;
+  ls.back()->set_secret(
+    CEPH_CRYPTO_AES, bufferptr("1234567890123456", 16), utime_t(123, 456));
+  ls.back()->created = utime_t(123, 456);
+}
+
 int CryptoKey::set_secret(int type, const bufferptr& s, utime_t c)
 {
   int r = _set_secret(type, s);
@@ -585,3 +627,6 @@ CryptoHandler *CryptoHandler::create(int type)
     return NULL;
   }
 }
+
+#pragma clang diagnostic pop
+#pragma GCC diagnostic pop

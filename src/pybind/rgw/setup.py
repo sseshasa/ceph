@@ -1,10 +1,14 @@
-from __future__ import print_function
+import pkgutil
+if not pkgutil.find_loader('setuptools'):
+    from distutils.core import setup
+    from distutils.extension import Extension
+else:
+    from setuptools import setup
+    from setuptools.extension import Extension
 import distutils.core
 
 import os
-import pkgutil
 import shutil
-import subprocess
 import sys
 import tempfile
 import textwrap
@@ -46,13 +50,6 @@ def monkey_with_compiler(customize):
 distutils.sysconfig.customize_compiler = \
     monkey_with_compiler(distutils.sysconfig.customize_compiler)
 
-if not pkgutil.find_loader('setuptools'):
-    from distutils.core import setup
-    from distutils.extension import Extension
-else:
-    from setuptools import setup
-    from setuptools.extension import Extension
-
 # PEP 440 versioning of the RGW package on PyPI
 # Bump this version, after every changeset
 
@@ -73,7 +70,7 @@ def get_python_flags(libs):
         libraries=libs + py_libs,
         extra_compile_args=filter_unsupported_flags(
             compiler.compiler[0],
-            distutils.sysconfig.get_config_var('CFLAGS').split()),
+            compiler.compiler[1:] + distutils.sysconfig.get_config_var('CFLAGS').split()),
         extra_link_args=(distutils.sysconfig.get_config_var('LDFLAGS').split() +
                          ldflags))
 
@@ -138,10 +135,16 @@ def check_sanity():
         shutil.rmtree(tmp_dir)
 
 
-if 'BUILD_DOC' in os.environ.keys():
-    pass
+if 'BUILD_DOC' in os.environ or 'READTHEDOCS' in os.environ:
+    ext_args = {}
+    cython_constants = dict(BUILD_DOC=True)
+    cythonize_args = dict(compile_time_env=cython_constants)
 elif check_sanity():
-    pass
+    ext_args = get_python_flags(['rados', 'rgw'])
+    cython_constants = dict(BUILD_DOC=False)
+    include_path = [os.path.join(os.path.dirname(__file__), "..", "rados")]
+    cythonize_args = dict(compile_time_env=cython_constants,
+                          include_path=include_path)
 else:
     sys.exit(1)
 
@@ -191,14 +194,12 @@ setup(
             Extension(
                 "rgw",
                 [source],
-                **get_python_flags(['rados', 'rgw'])
+                **ext_args
             )
         ],
         compiler_directives={'language_level': sys.version_info.major},
         build_dir=os.environ.get("CYTHON_BUILD_DIR", None),
-        include_path=[
-            os.path.join(os.path.dirname(__file__), "..", "rados")
-        ]
+        **cythonize_args
     ),
     classifiers=[
         'Intended Audience :: Developers',
@@ -206,9 +207,7 @@ setup(
         'License :: OSI Approved :: GNU Lesser General Public License v2 or later (LGPLv2+)',
         'Operating System :: POSIX :: Linux',
         'Programming Language :: Cython',
-        'Programming Language :: Python :: 2.7',
-        'Programming Language :: Python :: 3.4',
-        'Programming Language :: Python :: 3.5'
+        'Programming Language :: Python :: 3',
     ],
     cmdclass=cmdclass,
 )

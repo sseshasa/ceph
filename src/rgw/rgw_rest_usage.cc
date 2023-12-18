@@ -4,10 +4,13 @@
 #include "rgw_op.h"
 #include "rgw_usage.h"
 #include "rgw_rest_usage.h"
+#include "rgw_sal.h"
 
 #include "include/str_list.h"
 
 #define dout_subsys ceph_subsys_rgw
+
+using namespace std;
 
 class RGWOp_Usage_Get : public RGWRESTOp {
 
@@ -17,23 +20,34 @@ public:
   int check_caps(const RGWUserCaps& caps) override {
     return caps.check_cap("usage", RGW_CAP_READ);
   }
-  void execute() override;
+  void execute(optional_yield y) override;
 
   const char* name() const override { return "get_usage"; }
 };
 
-void RGWOp_Usage_Get::execute() {
+void RGWOp_Usage_Get::execute(optional_yield y) {
   map<std::string, bool> categories;
 
   string uid_str;
   string bucket_name;
+  string tenant;
   uint64_t start, end;
   bool show_entries;
   bool show_summary;
 
   RESTArgs::get_string(s, "uid", uid_str, &uid_str);
   RESTArgs::get_string(s, "bucket", bucket_name, &bucket_name);
-  rgw_user uid(uid_str);
+  RESTArgs::get_string(s, "tenant", "", &tenant);
+  std::unique_ptr<rgw::sal::User> user = driver->get_user(rgw_user(uid_str));
+  std::unique_ptr<rgw::sal::Bucket> bucket;
+
+  if (!bucket_name.empty()) {
+    op_ret = driver->load_bucket(this, rgw_bucket(tenant, bucket_name),
+                                 &bucket, null_yield);
+    if (op_ret < 0) {
+      return;
+    }
+  }
 
   RESTArgs::get_epoch(s, "start", 0, &start);
   RESTArgs::get_epoch(s, "end", (uint64_t)-1, &end);
@@ -52,7 +66,7 @@ void RGWOp_Usage_Get::execute() {
     }
   }
 
-  http_ret = RGWUsage::show(store->getRados(), uid, bucket_name, start, end, show_entries, show_summary, &categories, flusher);
+  op_ret = RGWUsage::show(this, driver, user.get(), bucket.get(), start, end, show_entries, show_summary, &categories, flusher);
 }
 
 class RGWOp_Usage_Delete : public RGWRESTOp {
@@ -63,36 +77,47 @@ public:
   int check_caps(const RGWUserCaps& caps) override {
     return caps.check_cap("usage", RGW_CAP_WRITE);
   }
-  void execute() override;
+  void execute(optional_yield y) override;
 
   const char* name() const override { return "trim_usage"; }
 };
 
-void RGWOp_Usage_Delete::execute() {
+void RGWOp_Usage_Delete::execute(optional_yield y) {
   string uid_str;
   string bucket_name;
+  string tenant;
   uint64_t start, end;
 
   RESTArgs::get_string(s, "uid", uid_str, &uid_str);
   RESTArgs::get_string(s, "bucket", bucket_name, &bucket_name);
-  rgw_user uid(uid_str);
+  RESTArgs::get_string(s, "tenant", "", &tenant);
+  std::unique_ptr<rgw::sal::User> user = driver->get_user(rgw_user(uid_str));
+  std::unique_ptr<rgw::sal::Bucket> bucket;
+
+  if (!bucket_name.empty()) {
+    op_ret = driver->load_bucket(this, rgw_bucket(tenant, bucket_name),
+                                 &bucket, null_yield);
+    if (op_ret < 0) {
+      return;
+    }
+  }
 
   RESTArgs::get_epoch(s, "start", 0, &start);
   RESTArgs::get_epoch(s, "end", (uint64_t)-1, &end);
 
-  if (uid.empty() &&
-      !bucket_name.empty() &&
+  if (rgw::sal::User::empty(user.get()) &&
+      bucket_name.empty() &&
       !start &&
       end == (uint64_t)-1) {
     bool remove_all;
     RESTArgs::get_bool(s, "remove-all", false, &remove_all);
     if (!remove_all) {
-      http_ret = -EINVAL;
+      op_ret = -EINVAL;
       return;
     }
   }
 
-  http_ret = RGWUsage::trim(store->getRados(), uid, bucket_name, start, end);
+  op_ret = RGWUsage::trim(this, driver, user.get(), bucket.get(), start, end, y);
 }
 
 RGWOp *RGWHandler_Usage::op_get()

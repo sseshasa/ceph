@@ -62,6 +62,17 @@ ceph config rm client.foo.bar debug_asok
 ceph config get client.foo.bar.baz debug_asok | grep 33
 ceph config rm global debug_asok
 
+# whitespace keys
+ceph config set client.foo 'debug asok' 44
+ceph config get client.foo 'debug asok' | grep 44
+ceph config set client.foo debug_asok 55
+ceph config get client.foo 'debug asok' | grep 55
+ceph config set client.foo 'debug asok' 66
+ceph config get client.foo debug_asok | grep 66
+ceph config rm client.foo debug_asok
+ceph config set client.foo debug_asok 66
+ceph config rm client.foo 'debug asok'
+
 # help
 ceph config help debug_asok | grep debug_asok
 
@@ -87,11 +98,11 @@ ceph tell osd.0 config unset debug_asok
 ceph tell osd.0 config unset debug_asok
 
 ceph config rm osd.0 debug_asok
-while ceph config show osd.0 | grep debug_asok | grep mon
+while ceph config show osd.0 | grep '^debug_asok[:[space]:]' | grep mon
 do
     sleep 1
 done
-ceph config show osd.0 | grep -c debug_asok | grep 0
+ceph config show osd.0 | grep -c '^debug_asok[:[space]:]' | grep 0
 
 ceph config set osd.0 osd_scrub_cost 123
 while ! ceph config show osd.0 | grep osd_scrub_cost | grep mon
@@ -119,6 +130,21 @@ rm -f $t1 $t2
 
 expect_false ceph config reset
 expect_false ceph config reset -1
+
+
+# test parallel config set
+# reproducer for https://tracker.ceph.com/issues/62832
+ceph config reset 0
+for ((try = 0; try < 10; try++)); do
+    set +x
+    for ((i = 0; i < 100; i++)); do
+        # Use a config that will get "handled" by the Objecter instantiated by the ceph binary
+        ceph config set client rados_mon_op_timeout $((i+300)) &
+    done 2> /dev/null
+    set -x
+    wait
+done
+
 # we are at end of testing, so it's okay to revert everything
 ceph config reset 0
 

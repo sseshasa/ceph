@@ -18,7 +18,7 @@
 
 #include "msg/Message.h"
 
-class MClientReclaim: public SafeMessage {
+class MClientReclaim final : public SafeMessage {
 public:
   static constexpr int HEAD_VERSION = 1;
   static constexpr int COMPAT_VERSION = 1;
@@ -54,13 +54,15 @@ protected:
     SafeMessage{CEPH_MSG_CLIENT_RECLAIM, HEAD_VERSION, COMPAT_VERSION},
     uuid(_uuid), flags(_flags) {}
 private:
-  ~MClientReclaim() override {}
+  ~MClientReclaim() final {}
 
   std::string uuid;
   uint32_t flags = 0;
 
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 };
 
 #endif

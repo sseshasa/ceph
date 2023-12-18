@@ -1,9 +1,10 @@
 overrides:
   ceph:
-    log-whitelist:
+    log-ignorelist:
     - but it is still running
     - objects unfound and apparently lost
     - osd_map_cache_size
+    - \(POOL_APP_NOT_ENABLED\)
     conf:
       mon:
         mon min osdmap epochs: 50

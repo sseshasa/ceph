@@ -31,8 +31,8 @@ extern "C"{
 #include "common/ceph_argparse.h"
 #include "common/Finisher.h"
 #include "global/global_init.h"
-#include "rgw/rgw_common.h"
-#include "rgw/rgw_rados.h"
+#include "rgw_common.h"
+#include "rgw_rados.h"
 #include <gtest/gtest.h>
 
 using namespace std;
@@ -460,7 +460,7 @@ int compare_access_keys(RGWAccessKey& k1, RGWAccessKey& k2) {
 int compare_user_info(RGWUserInfo& i1, RGWUserInfo& i2) {
   int rv;
 
-  if ((rv = i1.user_id.compare(i2.user_id)) != 0)
+  if ((rv = i1.user_id.id.compare(i2.user_id.id)) != 0)
     return rv;
   if ((rv = i1.display_name.compare(i2.display_name)) != 0)
     return rv;
@@ -697,7 +697,7 @@ TEST(TestRGWAdmin, meta_get){
   p2 = RGW_CAP_WRITE;
   EXPECT_TRUE (obt_info.caps.check_cap(meta_caps, p2) != 0);
 
-  /*Version and tag infromation*/
+  /*Version and tag information*/
   EXPECT_TRUE(objv1->ver > objv->ver);
   EXPECT_EQ(objv1->tag, objv->tag);
   
@@ -894,8 +894,7 @@ TEST(TestRGWAdmin, meta_delete){
 }
 
 int main(int argc, char *argv[]){
-  vector<const char*> args;
-  argv_to_vec(argc, (const char **)argv, args);
+  auto args = argv_to_vec(argc, argv);
 
   auto cct = global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT,
 			 CODE_ENVIRONMENT_UTILITY,

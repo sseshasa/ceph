@@ -15,13 +15,13 @@
 #ifndef CEPH_MEXPORTDIRDISCOVER_H
 #define CEPH_MEXPORTDIRDISCOVER_H
 
-#include "msg/Message.h"
 #include "include/types.h"
+#include "messages/MMDSOp.h"
 
-class MExportDirDiscover : public SafeMessage {
+class MExportDirDiscover final : public MMDSOp {
 private:
-  static const int HEAD_VERSION = 1;
-  static const int COMPAT_VERSION = 1;
+  static constexpr int HEAD_VERSION = 1;
+  static constexpr int COMPAT_VERSION = 1;
   mds_rank_t from = -1;
   dirfrag_t dirfrag;
   filepath path;
@@ -36,14 +36,14 @@ private:
 
 protected:
   MExportDirDiscover() :     
-    SafeMessage{MSG_MDS_EXPORTDIRDISCOVER, HEAD_VERSION, COMPAT_VERSION},
+    MMDSOp{MSG_MDS_EXPORTDIRDISCOVER, HEAD_VERSION, COMPAT_VERSION},
     started(false) { }
   MExportDirDiscover(dirfrag_t df, filepath& p, mds_rank_t f, uint64_t tid) :
-    SafeMessage{MSG_MDS_EXPORTDIRDISCOVER, HEAD_VERSION, COMPAT_VERSION},
+    MMDSOp{MSG_MDS_EXPORTDIRDISCOVER, HEAD_VERSION, COMPAT_VERSION},
     from(f), dirfrag(df), path(p), started(false) {
     set_tid(tid);
   }
-  ~MExportDirDiscover() override {}
+  ~MExportDirDiscover() final {}
 
 public:
   std::string_view get_type_name() const override { return "ExDis"; }
@@ -68,6 +68,8 @@ public:
 private:
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 };
 
 #endif

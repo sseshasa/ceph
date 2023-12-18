@@ -1,13 +1,15 @@
 import { CommonModule } from '@angular/common';
 import { NgModule } from '@angular/core';
+import { FormsModule, ReactiveFormsModule } from '@angular/forms';
 import { RouterModule } from '@angular/router';
 
+import { NgbNavModule, NgbPopoverModule } from '@ng-bootstrap/ng-bootstrap';
 import { ChartsModule } from 'ng2-charts';
-import { PopoverModule } from 'ngx-bootstrap/popover';
-import { TabsModule } from 'ngx-bootstrap/tabs';
 
-import { SharedModule } from '../../shared/shared.module';
+import { SharedModule } from '~/app/shared/shared.module';
+import { DashboardV3Module } from '../dashboard-v3/dashboard-v3.module';
 import { CephSharedModule } from '../shared/ceph-shared.module';
+import { FeedbackComponent } from '../shared/feedback/feedback.component';
 import { DashboardComponent } from './dashboard/dashboard.component';
 import { HealthPieComponent } from './health-pie/health-pie.component';
 import { HealthComponent } from './health/health.component';
@@ -22,11 +24,14 @@ import { OsdSummaryPipe } from './osd-summary.pipe';
   imports: [
     CephSharedModule,
     CommonModule,
-    TabsModule.forRoot(),
+    NgbNavModule,
     SharedModule,
     ChartsModule,
     RouterModule,
-    PopoverModule.forRoot()
+    NgbPopoverModule,
+    FormsModule,
+    ReactiveFormsModule,
+    DashboardV3Module
   ],
 
   declarations: [
@@ -38,7 +43,8 @@ import { OsdSummaryPipe } from './osd-summary.pipe';
     MdsSummaryPipe,
     HealthPieComponent,
     InfoCardComponent,
-    InfoGroupComponent
+    InfoGroupComponent,
+    FeedbackComponent
   ]
 })
 export class DashboardModule {}

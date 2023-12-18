@@ -5,12 +5,16 @@
 #include "librbd/AsyncObjectThrottle.h"
 #include "librbd/ExclusiveLock.h"
 #include "librbd/ImageCtx.h"
+#include "librbd/crypto/CryptoInterface.h"
+#include "librbd/crypto/EncryptionFormat.h"
 #include "librbd/image/DetachChildRequest.h"
 #include "librbd/image/DetachParentRequest.h"
 #include "librbd/Types.h"
 #include "librbd/io/ObjectRequest.h"
+#include "librbd/io/Utils.h"
 #include "common/dout.h"
 #include "common/errno.h"
+#include "osdc/Striper.h"
 #include <boost/lambda/bind.hpp>
 #include <boost/lambda/construct.hpp>
 
@@ -29,8 +33,8 @@ template <typename I>
 class C_FlattenObject : public C_AsyncObjectThrottle<I> {
 public:
   C_FlattenObject(AsyncObjectThrottle<I> &throttle, I *image_ctx,
-                  ::SnapContext snapc, uint64_t object_no)
-    : C_AsyncObjectThrottle<I>(throttle, *image_ctx), m_snapc(snapc),
+                  IOContext io_context, uint64_t object_no)
+    : C_AsyncObjectThrottle<I>(throttle, *image_ctx), m_io_context(io_context),
       m_object_no(object_no) {
   }
 
@@ -54,23 +58,18 @@ public:
       }
     }
 
-    bufferlist bl;
-    auto req = new io::ObjectWriteRequest<I>(&image_ctx, m_object_no, 0,
-                                             std::move(bl), m_snapc, 0, {},
-                                             this);
-    if (!req->has_parent()) {
+    if (!io::util::trigger_copyup(
+            &image_ctx, m_object_no, m_io_context, this)) {
       // stop early if the parent went away - it just means
       // another flatten finished first or the image was resized
-      delete req;
       return 1;
     }
 
-    req->send();
     return 0;
   }
 
 private:
-  ::SnapContext m_snapc;
+  IOContext m_io_context;
   uint64_t m_object_no;
 };
 
@@ -104,9 +103,11 @@ void FlattenRequest<I>::flatten_objects() {
     &FlattenRequest<I>::handle_flatten_objects>(this);
   typename AsyncObjectThrottle<I>::ContextFactory context_factory(
     boost::lambda::bind(boost::lambda::new_ptr<C_FlattenObject<I> >(),
-      boost::lambda::_1, &image_ctx, m_snapc, boost::lambda::_2));
+      boost::lambda::_1, &image_ctx, image_ctx.get_data_io_context(),
+      boost::lambda::_2));
   AsyncObjectThrottle<I> *throttle = new AsyncObjectThrottle<I>(
-    this, image_ctx, context_factory, ctx, &m_prog_ctx, 0, m_overlap_objects);
+      this, image_ctx, context_factory, ctx, &m_prog_ctx, m_start_object_no,
+      m_start_object_no + m_overlap_objects);
   throttle->start_ops(
     image_ctx.config.template get_val<uint64_t>("rbd_concurrent_management_ops"));
 }
@@ -123,6 +124,41 @@ void FlattenRequest<I>::handle_flatten_objects(int r) {
     return;
   } else if (r < 0) {
     lderr(cct) << "flatten encountered an error: " << cpp_strerror(r) << dendl;
+    this->complete(r);
+    return;
+  }
+
+  crypto_flatten();
+}
+
+
+template <typename I>
+void FlattenRequest<I>::crypto_flatten() {
+  I &image_ctx = this->m_image_ctx;
+  CephContext *cct = image_ctx.cct;
+
+  auto encryption_format = image_ctx.encryption_format.get();
+  if (encryption_format == nullptr) {
+    detach_child();
+    return;
+  }
+
+  ldout(cct, 5) << dendl;
+
+  auto ctx = create_context_callback<
+          FlattenRequest<I>,
+          &FlattenRequest<I>::handle_crypto_flatten>(this);
+  encryption_format->flatten(&image_ctx, ctx);
+}
+
+template <typename I>
+void FlattenRequest<I>::handle_crypto_flatten(int r) {
+  I &image_ctx = this->m_image_ctx;
+  CephContext *cct = image_ctx.cct;
+  ldout(cct, 5) << "r=" << r << dendl;
+
+  if (r < 0) {
+    lderr(cct) << "error flattening crypto: " << cpp_strerror(r) << dendl;
     this->complete(r);
     return;
   }

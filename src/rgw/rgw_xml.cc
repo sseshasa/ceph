@@ -13,6 +13,8 @@
 
 #include "rgw_xml.h"
 
+using namespace std;
+
 XMLObjIter::
 XMLObjIter()
 {
@@ -430,6 +432,11 @@ void decode_xml_obj(utime_t& val, XMLObj *obj)
 }
 
 void encode_xml(const char *name, const string& val, Formatter *f)
+{
+  f->dump_string(name, val);
+}
+
+void encode_xml(const char *name, const string_view & val, Formatter *f)
 {
   f->dump_string(name, val);
 }

@@ -18,6 +18,10 @@
 #include <sstream>
 
 #include <netinet/in.h>
+#include "common/fmt_common.h"
+#if FMT_VERSION >= 90000
+#include <fmt/ostream.h>
+#endif
 
 #include "include/ceph_features.h"
 #include "include/types.h"
@@ -25,6 +29,11 @@
 #include "include/encoding.h"
 
 #define MAX_PORT_NUMBER 65535
+
+#ifdef _WIN32
+// ceph_sockaddr_storage matches the Linux format.
+#define AF_INET6_LINUX 10
+#endif
 
 namespace ceph {
   class Formatter;
@@ -77,42 +86,11 @@ public:
   bool is_mgr() const { return type() == TYPE_MGR; }
 
   operator ceph_entity_name() const {
-    ceph_entity_name n = { _type, init_le64(_num) };
+    ceph_entity_name n = { _type, ceph_le64(_num) };
     return n;
   }
 
-  bool parse(const std::string& s) {
-    const char *start = s.c_str();
-    char *end;
-    bool got = parse(start, &end);
-    return got && end == start + s.length();
-  }
-  bool parse(const char *start, char **end) {
-    if (strstr(start, "mon.") == start) {
-      _type = TYPE_MON;
-      start += 4;
-    } else if (strstr(start, "osd.") == start) {
-      _type = TYPE_OSD;
-      start += 4;
-    } else if (strstr(start, "mds.") == start) {
-      _type = TYPE_MDS;
-      start += 4;
-    } else if (strstr(start, "client.") == start) {
-      _type = TYPE_CLIENT;
-      start += 7;
-    } else if (strstr(start, "mgr.") == start) {
-      _type = TYPE_MGR;
-      start += 4;
-    } else {
-      return false;
-    }
-    if (isspace(*start))
-      return false;
-    _num = strtoll(start, end, 10);
-    if (*end == NULL || *end == start)
-      return false;
-    return true;
-  }
+  bool parse(std::string_view s);
 
   DENC(entity_name_t, v, p) {
     denc(v._type, p);
@@ -192,10 +170,18 @@ static inline void encode(const sockaddr_storage& a, ceph::buffer::list& bl) {
 				  (unsigned char*)(&ss + 1) - dst);
   ::memcpy(dst, src, copy_size);
   encode(ss, bl);
-#else
+#elif defined(_WIN32)
   ceph_sockaddr_storage ss{};
+  ::memcpy(&ss, &a, std::min(sizeof(ss), sizeof(a)));
+  // The Windows AF_INET6 definition doesn't match the Linux one.
+  if (a.ss_family == AF_INET6) {
+    ss.ss_family = AF_INET6_LINUX;
+  }
+  encode(ss, bl);
+#else
+  ceph_sockaddr_storage ss;
   ::memset(&ss, '\0', sizeof(ss));
-  ::memcpy(&wireaddr, &ss, std::min(sizeof(ss), sizeof(a)));
+  ::memcpy(&ss, &a, std::min(sizeof(ss), sizeof(a)));
   encode(ss, bl);
 #endif
 }
@@ -217,6 +203,13 @@ static inline void decode(sockaddr_storage& a,
   auto const copy_size = std::min((unsigned char*)(&ss + 1) - src,
 				  (unsigned char*)(&a + 1) - dst);
   ::memcpy(dst, src, copy_size);
+#elif defined(_WIN32)
+  ceph_sockaddr_storage ss{};
+  decode(ss, bl);
+  ::memcpy(&a, &ss, std::min(sizeof(ss), sizeof(a)));
+  if (a.ss_family == AF_INET6_LINUX) {
+    a.ss_family = AF_INET6;
+  }
 #else
   ceph_sockaddr_storage ss{};
   decode(ss, bl);
@@ -228,7 +221,9 @@ static inline void decode(sockaddr_storage& a,
  * an entity's network address.
  * includes a random value that prevents it from being reused.
  * thus identifies a particular process instance.
- * ipv4 for now.
+ *
+ * This also happens to work to support cidr ranges, in which
+ * case the nonce contains the netmask. It's great!
  */
 struct entity_addr_t {
   typedef enum {
@@ -236,6 +231,7 @@ struct entity_addr_t {
     TYPE_LEGACY = 1,  ///< legacy msgr1 protocol (ceph jewel and older)
     TYPE_MSGR2 = 2,   ///< msgr2 protocol (new in ceph kraken)
     TYPE_ANY = 3,  ///< ambiguous
+    TYPE_CIDR = 4,
   } type_t;
   static const type_t TYPE_DEFAULT = TYPE_MSGR2;
   static std::string_view get_type_name(int t) {
@@ -244,6 +240,7 @@ struct entity_addr_t {
     case TYPE_LEGACY: return "v1";
     case TYPE_MSGR2: return "v2";
     case TYPE_ANY: return "any";
+    case TYPE_CIDR: return "cidr";
     default: return "???";
     }
   };
@@ -276,6 +273,8 @@ struct entity_addr_t {
   bool is_legacy() const { return type == TYPE_LEGACY; }
   bool is_msgr2() const { return type == TYPE_MSGR2; }
   bool is_any() const { return type == TYPE_ANY; }
+  // this isn't a guarantee; some client addrs will match it
+  bool maybe_cidr() const { return get_port() == 0 && nonce != 0; }
 
   __u32 get_nonce() const { return nonce; }
   void set_nonce(__u32 n) { nonce = n; }
@@ -368,10 +367,8 @@ struct entity_addr_t {
     switch (u.sa.sa_family) {
     case AF_INET:
       return ntohs(u.sin.sin_port);
-      break;
     case AF_INET6:
       return ntohs(u.sin6.sin6_port);
-      break;
     }
     return 0;
   }
@@ -433,6 +430,7 @@ struct entity_addr_t {
   }
 
   std::string ip_only_to_str() const;
+  std::string ip_n_port_to_str() const;
 
   std::string get_legacy_str() const {
     std::ostringstream ss;
@@ -440,7 +438,8 @@ struct entity_addr_t {
     return ss.str();
   }
 
-  bool parse(const char *s, const char **end = 0, int type=0);
+  bool parse(const std::string_view s, int default_type=TYPE_DEFAULT);
+  bool parse(const char *s, const char **end = 0, int default_type=TYPE_DEFAULT);
 
   void decode_legacy_addr_after_marker(ceph::buffer::list::const_iterator& bl)
   {
@@ -479,7 +478,7 @@ struct entity_addr_t {
       encode(type, bl);
     } else {
       // map any -> legacy for old clients.  this is primary for the benefit
-      // of OSDMap's blacklist, but is reasonable in general since any: is
+      // of OSDMap's blocklist, but is reasonable in general since any: is
       // meaningless for pre-nautilus clients or daemons.
       auto t = type;
       if (t == TYPE_ANY) {
@@ -495,7 +494,11 @@ struct entity_addr_t {
     encode(elen, bl);
     if (elen) {
       uint16_t ss_family = u.sa.sa_family;
-
+#if defined(_WIN32)
+      if (ss_family == AF_INET6) {
+        ss_family = AF_INET6_LINUX;
+      }
+#endif
       encode(ss_family, bl);
       elen -= sizeof(u.sa.sa_family);
       bl.append(u.sa.sa_data, elen);
@@ -526,6 +529,11 @@ struct entity_addr_t {
 	throw ceph::buffer::malformed_input("elen smaller than family len");
       }
       decode(ss_family, bl);
+#if defined(_WIN32)
+      if (ss_family == AF_INET6_LINUX) {
+        ss_family = AF_INET6;
+      }
+#endif
       u.sa.sa_family = ss_family;
       elen -= sizeof(ss_family);
       if (elen > get_sockaddr_len() - sizeof(u.sa.sa_family)) {
@@ -537,6 +545,7 @@ struct entity_addr_t {
   }
 
   void dump(ceph::Formatter *f) const;
+  std::string fmt_print() const; ///< used by the default fmt formatter
 
   static void generate_test_instances(std::list<entity_addr_t*>& o);
 };
@@ -570,12 +579,7 @@ struct entity_addrvec_t {
   bool empty() const { return v.empty(); }
 
   entity_addr_t legacy_addr() const {
-    for (auto& a : v) {
-      if (a.type == entity_addr_t::TYPE_LEGACY) {
-	return a;
-      }
-    }
-    return entity_addr_t();
+    return addr_of_type(entity_addr_t::TYPE_LEGACY);
   }
   entity_addr_t as_legacy_addr() const {
     for (auto& a : v) {
@@ -605,22 +609,14 @@ struct entity_addrvec_t {
 	return a;
       }
     }
-    if (!v.empty()) {
-      return v.front();
-    }
-    return entity_addr_t();
+    return front();
   }
   std::string get_legacy_str() const {
     return legacy_or_front_addr().get_legacy_str();
   }
 
   entity_addr_t msgr2_addr() const {
-    for (auto &a : v) {
-      if (a.type == entity_addr_t::TYPE_MSGR2) {
-        return a;
-      }
-    }
-    return entity_addr_t();
+    return addr_of_type(entity_addr_t::TYPE_MSGR2);
   }
   bool has_msgr2() const {
     for (auto& a : v) {
@@ -629,6 +625,35 @@ struct entity_addrvec_t {
       }
     }
     return false;
+  }
+
+  entity_addr_t pick_addr(uint32_t type) const {
+    entity_addr_t picked_addr;
+    switch (type) {
+    case entity_addr_t::TYPE_LEGACY:
+      [[fallthrough]];
+    case entity_addr_t::TYPE_MSGR2:
+      picked_addr = addr_of_type(type);
+      break;
+    case entity_addr_t::TYPE_ANY:
+      return front();
+    default:
+      return {};
+    }
+    if (!picked_addr.is_blank_ip()) {
+      return picked_addr;
+    } else {
+      return addr_of_type(entity_addr_t::TYPE_ANY);
+    }
+  }
+
+  entity_addr_t addr_of_type(uint32_t type) const {
+    for (auto &a : v) {
+      if (a.type == type) {
+        return a;
+      }
+    }
+    return entity_addr_t();
   }
 
   bool parse(const char *s, const char **end = 0);
@@ -710,8 +735,14 @@ struct entity_addrvec_t {
   friend bool operator<(const entity_addrvec_t& l, const entity_addrvec_t& r) {
     return l.v < r.v;  // see lexicographical_compare()
   }
+  friend bool operator>(const entity_addrvec_t& l, const entity_addrvec_t& r) {
+    return l.v > r.v;  // see lexicographical_compare()
+  }
 };
 WRITE_CLASS_ENCODER_FEATURES(entity_addrvec_t);
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<entity_addrvec_t> : fmt::ostream_formatter {};
+#endif
 
 namespace std {
 template<> struct hash<entity_addrvec_t> {

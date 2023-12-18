@@ -5,7 +5,9 @@
 
 #include "svc_finisher.h"
 
-int RGWSI_Finisher::do_start()
+using namespace std;
+
+int RGWSI_Finisher::do_start(optional_yield, const DoutPrefixProvider *dpp)
 {
   finisher = new Finisher(cct);
   finisher->start();
@@ -23,7 +25,7 @@ void RGWSI_Finisher::shutdown()
     finisher->stop();
 
     map<int, ShutdownCB *> cbs;
-    cbs.swap(shutdown_cbs); /* move cbs out, in case caller unregisetrs */
+    cbs.swap(shutdown_cbs); /* move cbs out, in case caller unregisters */
     for (auto& iter : cbs) {
       iter.second->call();
     }

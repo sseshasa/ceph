@@ -1,4 +1,4 @@
-// -*- mode:C; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
 #include "librbd/object_map/LockRequest.h"
@@ -35,7 +35,7 @@ void LockRequest<I>::send_lock() {
   ldout(cct, 10) << this << " " << __func__ << ": oid=" << oid << dendl;
 
   librados::ObjectWriteOperation op;
-  rados::cls::lock::lock(&op, RBD_LOCK_NAME, LOCK_EXCLUSIVE, "", "", "",
+  rados::cls::lock::lock(&op, RBD_LOCK_NAME, ClsLockType::EXCLUSIVE, "", "", "",
                            utime_t(), 0);
 
   using klass = LockRequest<I>;

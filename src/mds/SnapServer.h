@@ -53,17 +53,8 @@ public:
 
   void check_osd_map(bool force);
 
-  void mark_base_recursively_scrubbed(inodeno_t ino) {
-    if (ino ==  MDS_INO_ROOT)
-      root_scrubbed = true;
-    else if (ino == MDS_INO_MDSDIR(rank))
-      mdsdir_scrubbed = true;
-    else
-      ceph_abort();
-  }
   bool can_allow_multimds_snaps() const {
-    return (root_scrubbed && mdsdir_scrubbed) ||
-	   snaps.empty() || snaps.begin()->first >= snaprealm_v2_since;
+    return snaps.empty() || snaps.begin()->first >= snaprealm_v2_since;
   }
 
   void encode(bufferlist& bl) const {
@@ -77,7 +68,7 @@ public:
   static void generate_test_instances(std::list<SnapServer*>& ls);
 
   bool force_update(snapid_t last, snapid_t v2_since,
-		    map<snapid_t, SnapInfo>& _snaps);
+		    std::map<snapid_t, SnapInfo>& _snaps);
 
 protected:
   void encode_server_state(bufferlist& bl) const override {
@@ -102,11 +93,12 @@ protected:
     if (struct_v >= 2)
       decode(pending_destroy, bl);
     else {
-      map<version_t, snapid_t> t;
+      std::map<version_t, snapid_t> t;
       decode(t, bl);
-      for (map<version_t, snapid_t>::iterator p = t.begin(); p != t.end(); ++p)
-	pending_destroy[p->first].first = p->second; 
-    } 
+      for (auto& [ver, snapid] : t) {
+	pending_destroy[ver].first = snapid;
+      }
+    }
     decode(pending_noop, bl);
     if (struct_v >= 4) {
       decode(last_created, bl);
@@ -136,17 +128,14 @@ protected:
   snapid_t last_snap = 0;
   snapid_t last_created, last_destroyed;
   snapid_t snaprealm_v2_since;
-  map<snapid_t, SnapInfo> snaps;
-  map<int, set<snapid_t> > need_to_purge;
+  std::map<snapid_t, SnapInfo> snaps;
+  std::map<int, std::set<snapid_t> > need_to_purge;
 
-  map<version_t, SnapInfo> pending_update;
-  map<version_t, pair<snapid_t,snapid_t> > pending_destroy; // (removed_snap, seq)
-  set<version_t> pending_noop;
+  std::map<version_t, SnapInfo> pending_update;
+  std::map<version_t, std::pair<snapid_t,snapid_t> > pending_destroy; // (removed_snap, seq)
+  std::set<version_t> pending_noop;
 
   version_t last_checked_osdmap = 0;
-
-  bool root_scrubbed = false; // all snaprealms under root are converted?
-  bool mdsdir_scrubbed = false; // all snaprealms under ~mds0 are converted?
 };
 WRITE_CLASS_ENCODER(SnapServer)
 

@@ -7,21 +7,9 @@ See `Block Device`_ for additional details.
 Generic IO Settings
 ===================
 
-``rbd compression hint``
-
-:Description: Hint to send to the OSDs on write operations. If set to `compressible` and the OSD `bluestore compression mode` setting is `passive`, the OSD will attempt to compress the data. If set to `incompressible` and the OSD compression setting is `aggressive`, the OSD will not attempt to compress the data.
-:Type: Enum
-:Required: No
-:Default: ``none``
-:Values: ``none``, ``compressible``, ``incompressible``
-
-``rbd read from replica policy``
-
-:Description: policy for determining which OSD will receive read operations. If set to `default`, the primary OSD will always be used for read operations. If set to `balance`, read operations will be sent to a randomly selected OSD within the replica set. If set to `localize`, read operations will be sent to the closest OSD as determined by the CRUSH map. Note: this feature requires the cluster to be configured with a minimum compatible OSD release of Octopus.
-:Type: Enum
-:Required: No
-:Default: ``default``
-:Values: ``default``, ``balance``, ``localize``
+.. confval:: rbd_compression_hint
+.. confval:: rbd_read_from_replica_policy
+.. confval:: rbd_default_order
 
 Cache Settings
 =======================
@@ -44,7 +32,7 @@ better throughput.
 The librbd cache is enabled by default and supports three different cache
 policies: write-around, write-back, and write-through. Writes return
 immediately under both the write-around and write-back policies, unless there
-are more than ``rbd cache max dirty`` unwritten bytes to the storage cluster.
+are more than ``rbd_cache_max_dirty`` unwritten bytes to the storage cluster.
 The write-around policy differs from the write-back policy in that it does
 not attempt to service read requests from the cache, unlike the write-back
 policy, and is therefore faster for high performance write workloads. Under the
@@ -66,72 +54,17 @@ is on disk on all replicas.
    RBD will not work with caching enabled.
 
 
-The ``ceph.conf`` file settings for RBD should be set in the ``[client]``
-section of your configuration file. The settings include:
+Option settings for RBD should be set in the ``[client]``
+section of your configuration file or the central config store. These settings
+include:
 
-
-``rbd cache``
-
-:Description: Enable caching for RADOS Block Device (RBD).
-:Type: Boolean
-:Required: No
-:Default: ``true``
-
-
-``rbd cache policy``
-
-:Description: Select the caching policy for librbd.
-:Type: Enum
-:Required: No
-:Default: ``writearound``
-:Values: ``writearound``, ``writeback``, ``writethrough``
-
-
-``rbd cache writethrough until flush``
-
-:Description: Start out in write-through mode, and switch to write-back after the first flush request is received. Enabling this is a conservative but safe setting in case VMs running on rbd are too old to send flushes, like the virtio driver in Linux before 2.6.32.
-:Type: Boolean
-:Required: No
-:Default: ``true``
-
-
-``rbd cache size``
-
-:Description: The RBD cache size in bytes.
-:Type: 64-bit Integer
-:Required: No
-:Default: ``32 MiB``
-:Policies: write-back and write-through
-
-
-``rbd cache max dirty``
-
-:Description: The ``dirty`` limit in bytes at which the cache triggers write-back.  If ``0``, uses write-through caching.
-:Type: 64-bit Integer
-:Required: No
-:Constraint: Must be less than ``rbd cache size``.
-:Default: ``24 MiB``
-:Policies: write-around and write-back
-
-
-``rbd cache target dirty``
-
-:Description: The ``dirty target`` before the cache begins writing data to the data storage. Does not block writes to the cache.
-:Type: 64-bit Integer
-:Required: No
-:Constraint: Must be less than ``rbd cache max dirty``.
-:Default: ``16 MiB``
-:Policies: write-back
-
-
-``rbd cache max dirty age``
-
-:Description: The number of seconds dirty data is in the cache before writeback starts. 
-:Type: Float
-:Required: No
-:Default: ``1.0``
-:Policies: write-back
-
+.. confval:: rbd_cache
+.. confval:: rbd_cache_policy
+.. confval:: rbd_cache_writethrough_until_flush
+.. confval:: rbd_cache_size
+.. confval:: rbd_cache_max_dirty
+.. confval:: rbd_cache_target_dirty
+.. confval:: rbd_cache_max_dirty_age
 
 .. _Block Device: ../../rbd
 
@@ -145,38 +78,21 @@ but boot loaders may not issue efficient reads. Read-ahead is automatically
 disabled if caching is disabled or if the policy is write-around.
 
 
-``rbd readahead trigger requests``
-
-:Description: Number of sequential read requests necessary to trigger read-ahead.
-:Type: Integer
-:Required: No
-:Default: ``10``
-
-
-``rbd readahead max bytes``
-
-:Description: Maximum size of a read-ahead request.  If zero, read-ahead is disabled.
-:Type: 64-bit Integer
-:Required: No
-:Default: ``512 KiB``
-
-
-``rbd readahead disable after bytes``
-
-:Description: After this many bytes have been read from an RBD image, read-ahead is disabled for that image until it is closed.  This allows the guest OS to take over read-ahead once it is booted.  If zero, read-ahead stays enabled.
-:Type: 64-bit Integer
-:Required: No
-:Default: ``50 MiB``
-
+.. confval:: rbd_readahead_trigger_requests
+.. confval:: rbd_readahead_max_bytes
+.. confval:: rbd_readahead_disable_after_bytes
 
 Image Features
 ==============
 
-RBD supports advanced features which can be specified via the command line when creating images or the default features can be specified via Ceph config file via 'rbd_default_features = <sum of feature numeric values>' or 'rbd_default_features = <comma-delimited list of CLI values>'
+RBD supports advanced features which can be specified via the command line when
+creating images or the default features can be configured via
+``rbd_default_features = <sum of feature numeric values>`` or
+``rbd_default_features = <comma-delimited list of CLI values>``.
 
 ``Layering``
 
-:Description: Layering enables you to use cloning.
+:Description: Layering enables cloning.
 :Internal value: 1
 :CLI value: layering
 :Added in: v0.52 (Bobtail)
@@ -185,7 +101,8 @@ RBD supports advanced features which can be specified via the command line when 
 
 ``Striping v2``
 
-:Description: Striping spreads data across multiple objects. Striping helps with parallelism for sequential read/write workloads.
+:Description: Striping spreads data across multiple objects. Striping helps with
+              parallelism for sequential read/write workloads.
 :Internal value: 2
 :CLI value: striping
 :Added in: v0.55 (Bobtail)
@@ -194,7 +111,9 @@ RBD supports advanced features which can be specified via the command line when 
 
 ``Exclusive locking``
 
-:Description: When enabled, it requires a client to get a lock on an object before making a write. Exclusive lock should only be enabled when a single client is accessing an image at the same time. 
+:Description: When enabled, it requires a client to acquire a lock on an object
+              before making a write. Exclusive lock should only be enabled when
+              a single client is accessing an image at any given time.
 :Internal value: 4
 :CLI value: exclusive-lock
 :Added in: v0.92 (Hammer)
@@ -203,7 +122,13 @@ RBD supports advanced features which can be specified via the command line when 
 
 ``Object map``
 
-:Description: Object map support depends on exclusive lock support. Block devices are thin provisioned—meaning, they only store data that actually exists. Object map support helps track which objects actually exist (have data stored on a drive). Enabling object map support speeds up I/O operations for cloning; importing and exporting a sparsely populated image; and deleting.
+:Description: Object map support depends on exclusive lock support. Block
+              devices are thin provisioned, which means that they only store
+              data that actually has been written, ie. they are *sparse*. Object
+              map support helps track which objects actually exist (have data
+              stored on a device). Enabling object map support speeds up I/O
+              operations for cloning, importing and exporting a sparsely
+              populated image, and deleting.
 :Internal value: 8
 :CLI value: object-map
 :Added in: v0.93 (Hammer)
@@ -213,7 +138,11 @@ RBD supports advanced features which can be specified via the command line when 
 
 ``Fast-diff``
 
-:Description: Fast-diff support depends on object map support and exclusive lock support. It adds another property to the object map, which makes it much faster to generate diffs between snapshots of an image, and the actual data usage of a snapshot much faster.
+:Description: Fast-diff support depends on object map support and exclusive lock
+              support. It adds another property to the object map, which makes
+              it much faster to generate diffs between snapshots of an image.
+              It is also much faster to calculate the actual data usage of a
+              snapshot or volume (``rbd du``).
 :Internal value: 16
 :CLI value: fast-diff
 :Added in: v9.0.1 (Infernalis)
@@ -223,7 +152,12 @@ RBD supports advanced features which can be specified via the command line when 
 
 ``Deep-flatten``
 
-:Description: Deep-flatten makes rbd flatten work on all the snapshots of an image, in addition to the image itself. Without it, snapshots of an image will still rely on the parent, so the parent will not be delete-able until the snapshots are deleted. Deep-flatten makes a parent independent of its clones, even if they have snapshots.
+:Description: Deep-flatten enables ``rbd flatten`` to work on all  snapshots of
+              an image, in addition to the image itself. Without it, snapshots
+              of an image will still rely on the parent, so the parent cannot be
+              deleted until the snapshots are first deleted. Deep-flatten makes
+              a parent independent of its clones, even if they have snapshots,
+              at the expense of using additional OSD device space.
 :Internal value: 32
 :CLI value: deep-flatten
 :Added in: v9.0.2 (Infernalis)
@@ -233,7 +167,12 @@ RBD supports advanced features which can be specified via the command line when 
 
 ``Journaling``
 
-:Description: Journaling support depends on exclusive lock support. Journaling records all modifications to an image in the order they occur. RBD mirroring utilizes the journal to replicate a crash consistent image to a remote cluster.
+:Description: Journaling support depends on exclusive lock support. Journaling
+              records all modifications to an image in the order they occur. RBD
+              mirroring can utilize the journal to replicate a crash-consistent
+              image to a remote cluster.  It is best to let ``rbd-mirror``
+              manage this feature only as needed, as enabling it long term may
+              result in substantial additional OSD space consumption.
 :Internal value: 64
 :CLI value: journaling
 :Added in: v10.0.1 (Jewel)
@@ -273,111 +212,54 @@ RBD supports advanced features which can be specified via the command line when 
 :KRBD support: no
 
 
-QOS Settings
+QoS Settings
 ============
 
-librbd supports limiting per image IO, controlled by the following
-settings.
+librbd supports limiting per-image IO in several ways. These all apply
+to a given image within a given process - the same image used in
+multiple places, e.g. two separate VMs, would have independent limits.
 
-``rbd qos iops limit``
+* **IOPS:** number of I/Os per second (any type of I/O)
+* **read IOPS:** number of read I/Os per second
+* **write IOPS:** number of write I/Os per second
+* **bps:** bytes per second (any type of I/O)
+* **read bps:** bytes per second read
+* **write bps:** bytes per second written
 
-:Description: The desired limit of IO operations per second.
-:Type: Unsigned Integer
-:Required: No
-:Default: ``0``
+Each of these limits operates independently of each other. They are
+all off by default. Every type of limit throttles I/O using a token
+bucket algorithm, with the ability to configure the limit (average
+speed over time) and potential for a higher rate (a burst) for a short
+period of time (burst_seconds). When any of these limits is reached,
+and there is no burst capacity left, librbd reduces the rate of that
+type of I/O to the limit.
 
+For example, if a read bps limit of 100MB was configured, but writes
+were not limited, writes could proceed as quickly as possible, while
+reads would be throttled to 100MB/s on average. If a read bps burst of
+150MB was set, and read burst seconds was set to five seconds, reads
+could proceed at 150MB/s for up to five seconds before dropping back
+to the 100MB/s limit.
 
-``rbd qos bps limit``
+The following options configure these throttles:
 
-:Description: The desired limit of IO bytes per second.
-:Type: Unsigned Integer
-:Required: No
-:Default: ``0``
-
-
-``rbd qos read iops limit``
-
-:Description: The desired limit of read operations per second.
-:Type: Unsigned Integer
-:Required: No
-:Default: ``0``
-
-
-``rbd qos write iops limit``
-
-:Description: The desired limit of write operations per second.
-:Type: Unsigned Integer
-:Required: No
-:Default: ``0``
-
-
-``rbd qos read bps limit``
-
-:Description: The desired limit of read bytes per second.
-:Type: Unsigned Integer
-:Required: No
-:Default: ``0``
-
-
-``rbd qos write bps limit``
-
-:Description: The desired limit of write bytes per second.
-:Type: Unsigned Integer
-:Required: No
-:Default: ``0``
-
-
-``rbd qos iops burst``
-
-:Description: The desired burst limit of IO operations.
-:Type: Unsigned Integer
-:Required: No
-:Default: ``0``
-
-
-``rbd qos bps burst``
-
-:Description: The desired burst limit of IO bytes.
-:Type: Unsigned Integer
-:Required: No
-:Default: ``0``
-
-
-``rbd qos read iops burst``
-
-:Description: The desired burst limit of read operations.
-:Type: Unsigned Integer
-:Required: No
-:Default: ``0``
-
-
-``rbd qos write iops burst``
-
-:Description: The desired burst limit of write operations.
-:Type: Unsigned Integer
-:Required: No
-:Default: ``0``
-
-
-``rbd qos read bps burst``
-
-:Description: The desired burst limit of read bytes.
-:Type: Unsigned Integer
-:Required: No
-:Default: ``0``
-
-
-``rbd qos write bps burst``
-
-:Description: The desired burst limit of write bytes.
-:Type: Unsigned Integer
-:Required: No
-:Default: ``0``
-
-
-``rbd qos schedule tick min``
-
-:Description: The minimum schedule tick (in milliseconds) for QoS.
-:Type: Unsigned Integer
-:Required: No
-:Default: ``50``
+.. confval:: rbd_qos_iops_limit
+.. confval:: rbd_qos_iops_burst
+.. confval:: rbd_qos_iops_burst_seconds
+.. confval:: rbd_qos_read_iops_limit
+.. confval:: rbd_qos_read_iops_burst
+.. confval:: rbd_qos_read_iops_burst_seconds
+.. confval:: rbd_qos_write_iops_limit
+.. confval:: rbd_qos_write_iops_burst
+.. confval:: rbd_qos_write_iops_burst_seconds
+.. confval:: rbd_qos_bps_limit
+.. confval:: rbd_qos_bps_burst
+.. confval:: rbd_qos_bps_burst_seconds
+.. confval:: rbd_qos_read_bps_limit
+.. confval:: rbd_qos_read_bps_burst
+.. confval:: rbd_qos_read_bps_burst_seconds
+.. confval:: rbd_qos_write_bps_limit
+.. confval:: rbd_qos_write_bps_burst
+.. confval:: rbd_qos_write_bps_burst_seconds
+.. confval:: rbd_qos_schedule_tick_min
+.. confval:: rbd_qos_exclude_ops

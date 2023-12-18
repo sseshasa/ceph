@@ -5,16 +5,14 @@
 
 #include "common/static_ptr.h"
 
-#include "rgw/rgw_service.h"
+#include "rgw_service.h"
 
-#include "svc_rados.h"
 #include "svc_sys_obj_types.h"
 #include "svc_sys_obj_core_types.h"
 
 
 class RGWSI_Zone;
 class RGWSI_SysObj;
-class RGWSysObjectCtx;
 
 struct rgw_cache_entry_info;
 
@@ -27,21 +25,11 @@ public:
     friend class ROp;
 
     RGWSI_SysObj_Core *core_svc;
-    RGWSysObjectCtx& ctx;
     rgw_raw_obj obj;
 
   public:
-    Obj(RGWSI_SysObj_Core *_core_svc,
-        RGWSysObjectCtx& _ctx,
-        const rgw_raw_obj& _obj) : core_svc(_core_svc),
-                                   ctx(_ctx),
-                                   obj(_obj) {}
-
-    void invalidate();
-
-    RGWSysObjectCtx& get_ctx() {
-      return ctx;
-    }
+    Obj(RGWSI_SysObj_Core *_core_svc, const rgw_raw_obj& _obj)
+        : core_svc(_core_svc), obj(_obj) {}
 
     rgw_raw_obj& get_obj() {
       return obj;
@@ -53,7 +41,7 @@ public:
       ceph::static_ptr<RGWSI_SysObj_Obj_GetObjState, sizeof(RGWSI_SysObj_Core_GetObjState)> state;
       
       RGWObjVersionTracker *objv_tracker{nullptr};
-      map<string, bufferlist> *attrs{nullptr};
+      std::map<std::string, bufferlist> *attrs{nullptr};
       bool raw_attrs{false};
       boost::optional<obj_version> refresh_version{boost::none};
       ceph::real_time *lastmod{nullptr};
@@ -75,7 +63,7 @@ public:
         return *this;
       }
 
-      ROp& set_attrs(map<string, bufferlist> *_attrs) {
+      ROp& set_attrs(std::map<std::string, bufferlist> *_attrs) {
         attrs = _attrs;
         return *this;
       }
@@ -97,19 +85,19 @@ public:
 
       ROp(Obj& _source);
 
-      int stat(optional_yield y);
-      int read(int64_t ofs, int64_t end, bufferlist *pbl, optional_yield y);
-      int read(bufferlist *pbl, optional_yield y) {
-        return read(0, -1, pbl, y);
+      int stat(optional_yield y, const DoutPrefixProvider *dpp);
+      int read(const DoutPrefixProvider *dpp, int64_t ofs, int64_t end, bufferlist *pbl, optional_yield y);
+      int read(const DoutPrefixProvider *dpp, bufferlist *pbl, optional_yield y) {
+        return read(dpp, 0, -1, pbl, y);
       }
-      int get_attr(const char *name, bufferlist *dest, optional_yield y);
+      int get_attr(const DoutPrefixProvider *dpp, const char *name, bufferlist *dest, optional_yield y);
     };
 
     struct WOp {
       Obj& source;
 
       RGWObjVersionTracker *objv_tracker{nullptr};
-      map<string, bufferlist> attrs;
+      std::map<std::string, bufferlist> attrs;
       ceph::real_time mtime;
       ceph::real_time *pmtime{nullptr};
       bool exclusive{false};
@@ -119,13 +107,13 @@ public:
         return *this;
       }
 
-      WOp& set_attrs(map<string, bufferlist>& _attrs) {
+      WOp& set_attrs(const std::map<std::string, bufferlist>& _attrs) {
         attrs = _attrs;
         return *this;
       }
 
-      WOp& set_attrs(map<string, bufferlist>&& _attrs) {
-        attrs = _attrs;
+      WOp& set_attrs(std::map<std::string, bufferlist>&& _attrs) {
+        attrs = std::move(_attrs);
         return *this;
       }
 
@@ -146,12 +134,12 @@ public:
 
       WOp(Obj& _source) : source(_source) {}
 
-      int remove(optional_yield y);
-      int write(bufferlist& bl, optional_yield y);
+      int remove(const DoutPrefixProvider *dpp, optional_yield y);
+      int write(const DoutPrefixProvider *dpp, bufferlist& bl, optional_yield y);
 
-      int write_data(bufferlist& bl, optional_yield y); /* write data only */
-      int write_attrs(optional_yield y); /* write attrs only */
-      int write_attr(const char *name, bufferlist& bl,
+      int write_data(const DoutPrefixProvider *dpp, bufferlist& bl, optional_yield y); /* write data only */
+      int write_attrs(const DoutPrefixProvider *dpp, optional_yield y); /* write attrs only */
+      int write_attr(const DoutPrefixProvider *dpp, const char *name, bufferlist& bl,
                      optional_yield y); /* write attrs only */
     };
 
@@ -167,13 +155,13 @@ public:
 
       OmapOp(Obj& _source) : source(_source) {}
 
-      int get_all(std::map<string, bufferlist> *m, optional_yield y);
-      int get_vals(const string& marker, uint64_t count,
-                   std::map<string, bufferlist> *m,
+      int get_all(const DoutPrefixProvider *dpp, std::map<std::string, bufferlist> *m, optional_yield y);
+      int get_vals(const DoutPrefixProvider *dpp, const std::string& marker, uint64_t count,
+                   std::map<std::string, bufferlist> *m,
                    bool *pmore, optional_yield y);
-      int set(const std::string& key, bufferlist& bl, optional_yield y);
-      int set(const map<std::string, bufferlist>& m, optional_yield y);
-      int del(const std::string& key, optional_yield y);
+      int set(const DoutPrefixProvider *dpp, const std::string& key, bufferlist& bl, optional_yield y);
+      int set(const DoutPrefixProvider *dpp, const std::map<std::string, bufferlist>& m, optional_yield y);
+      int del(const DoutPrefixProvider *dpp, const std::string& key, optional_yield y);
     };
 
     struct WNOp {
@@ -181,7 +169,7 @@ public:
 
       WNOp(Obj& _source) : source(_source) {}
 
-      int notify(bufferlist& bl, uint64_t timeout_ms, bufferlist *pbl,
+      int notify(const DoutPrefixProvider *dpp, bufferlist& bl, uint64_t timeout_ms, bufferlist *pbl,
                  optional_yield y);
     };
     ROp rop() {
@@ -230,17 +218,17 @@ public:
 
       Op(Pool& _source) : source(_source) {}
 
-      int init(const std::string& marker, const std::string& prefix);
-      int get_next(int max, std::vector<string> *oids, bool *is_truncated);
-      int get_marker(string *marker);
+      int init(const DoutPrefixProvider *dpp, const std::string& marker, const std::string& prefix);
+      int get_next(const DoutPrefixProvider *dpp, int max, std::vector<std::string> *oids, bool *is_truncated);
+      int get_marker(std::string *marker);
     };
 
-    int list_prefixed_objs(const std::string& prefix, std::function<void(const string&)> cb);
+    int list_prefixed_objs(const DoutPrefixProvider *dpp, const std::string& prefix, std::function<void(const std::string&)> cb);
 
     template <typename Container>
-    int list_prefixed_objs(const string& prefix,
+    int list_prefixed_objs(const DoutPrefixProvider *dpp, const std::string& prefix,
                            Container *result) {
-      return list_prefixed_objs(prefix, [&](const string& val) {
+      return list_prefixed_objs(dpp, prefix, [&](const std::string& val) {
         result->push_back(val);
       });
     }
@@ -257,20 +245,19 @@ public:
   friend class Pool::Op;
 
 protected:
-  RGWSI_RADOS *rados_svc{nullptr};
+  librados::Rados* rados{nullptr};
   RGWSI_SysObj_Core *core_svc{nullptr};
 
-  void init(RGWSI_RADOS *_rados_svc,
+  void init(librados::Rados* rados_,
             RGWSI_SysObj_Core *_core_svc) {
-    rados_svc = _rados_svc;
+    rados = rados_;
     core_svc = _core_svc;
   }
 
 public:
   RGWSI_SysObj(CephContext *cct): RGWServiceInstance(cct) {}
 
-  RGWSysObjectCtx init_obj_ctx();
-  Obj get_obj(RGWSysObjectCtx& obj_ctx, const rgw_raw_obj& obj);
+  Obj get_obj(const rgw_raw_obj& obj);
 
   Pool get_pool(const rgw_pool& pool) {
     return Pool(core_svc, pool);
@@ -280,14 +267,3 @@ public:
 };
 
 using RGWSysObj = RGWSI_SysObj::Obj;
-
-class RGWSysObjectCtx : public RGWSysObjectCtxBase
-{
-  RGWSI_SysObj *sysobj_svc;
-public:
-  RGWSysObjectCtx(RGWSI_SysObj *_sysobj_svc) : sysobj_svc(_sysobj_svc) {}
-
-  RGWSI_SysObj::Obj get_obj(const rgw_raw_obj& obj) {
-    return sysobj_svc->get_obj(*this, obj);
-  }
-};

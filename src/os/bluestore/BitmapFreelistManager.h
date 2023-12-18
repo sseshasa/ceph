@@ -40,8 +40,6 @@ class BitmapFreelistManager : public FreelistManager {
 
   void _init_misc();
 
-  void _verify_range(KeyValueDB *kvdb,
-    uint64_t offset, uint64_t length, int val);
   void _xor(
     uint64_t offset, uint64_t length,
     KeyValueDB::Transaction txn);
@@ -65,6 +63,7 @@ public:
   static void setup_merge_operator(KeyValueDB *db, std::string prefix);
 
   int create(uint64_t size, uint64_t granularity,
+	     uint64_t zone_size, uint64_t first_sequential_zone,
 	     KeyValueDB::Transaction txn) override;
 
   int init(KeyValueDB *kvdb, bool db_in_read_only,
@@ -95,7 +94,7 @@ public:
     return bytes_per_block;
   }
   void get_meta(uint64_t target_size,
-    std::vector<std::pair<string, string>>*) const override;
+    std::vector<std::pair<std::string, std::string>>*) const override;
 };
 
 #endif

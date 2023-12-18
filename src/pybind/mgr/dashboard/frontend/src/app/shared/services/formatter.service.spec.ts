@@ -1,4 +1,4 @@
-import { configureTestBed } from '../../../testing/unit-test-helper';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { DimlessBinaryPipe } from '../pipes/dimless-binary.pipe';
 import { DimlessPipe } from '../pipes/dimless.pipe';
 import { FormatterService } from './formatter.service';
@@ -52,6 +52,28 @@ describe('FormatterService', () => {
       expect(dimlessPipe.transform(1000.608)).toBe('1 k');
       expect(dimlessPipe.transform(1e10)).toBe('10 G');
       expect(dimlessPipe.transform(2.37e16)).toBe('23.7 P');
+    });
+  });
+
+  describe('formatNumberFromTo', () => {
+    const formats = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB', 'ZiB', 'YiB'];
+    const formats2 = ['ns', 'μs', 'ms', 's'];
+
+    it('should test some values and data units', () => {
+      expect(service.formatNumberFromTo('0.1', 'B', 'TiB', 1024, formats)).toBe('0 TiB');
+      expect(service.formatNumberFromTo('1024', 'B', 'KiB', 1024, formats)).toBe('1 KiB');
+      expect(service.formatNumberFromTo(1000, 'mib', 'gib', 1024, formats, 3)).toBe('0.977 gib');
+      expect(service.formatNumberFromTo(1024, 'GiB', 'MiB', 1024, formats)).toBe('1048576 MiB');
+      expect(
+        service.formatNumberFromTo(23.45678 * Math.pow(1024, 3), 'B', 'GiB', 1024, formats)
+      ).toBe('23.5 GiB');
+      expect(
+        service.formatNumberFromTo(23.45678 * Math.pow(1024, 3), 'B', 'GiB', 1024, formats, 2)
+      ).toBe('23.46 GiB');
+
+      expect(service.formatNumberFromTo('128', 'ns', 'ms', 1000, formats2)).toBe('0 ms');
+      expect(service.formatNumberFromTo(128, 'ns', 'ms', 1000, formats2, 4)).toBe('0.0001 ms');
+      expect(service.formatNumberFromTo(20, 's', 'ms', 1000, formats2, 4)).toBe('20000 ms');
     });
   });
 

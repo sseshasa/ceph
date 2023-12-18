@@ -3,11 +3,11 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 
-import * as _ from 'lodash';
-import { TabsModule } from 'ngx-bootstrap/tabs';
+import { NgbNavModule } from '@ng-bootstrap/ng-bootstrap';
+import _ from 'lodash';
 
-import { configureTestBed, i18nProviders } from '../../../../testing/unit-test-helper';
-import { SharedModule } from '../../../shared/shared.module';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { NfsDetailsComponent } from './nfs-details.component';
 
 describe('NfsDetailsComponent', () => {
@@ -18,26 +18,22 @@ describe('NfsDetailsComponent', () => {
 
   configureTestBed({
     declarations: [NfsDetailsComponent],
-    imports: [BrowserAnimationsModule, SharedModule, TabsModule.forRoot(), HttpClientTestingModule],
-    providers: i18nProviders
+    imports: [BrowserAnimationsModule, SharedModule, HttpClientTestingModule, NgbNavModule]
   });
 
   beforeEach(() => {
     fixture = TestBed.createComponent(NfsDetailsComponent);
     component = fixture.componentInstance;
 
-    component.selection = undefined;
     component.selection = {
       export_id: 1,
       path: '/qwe',
       fsal: { name: 'CEPH', user_id: 'fs', fs_name: 1 },
       cluster_id: 'cluster1',
-      daemons: ['node1', 'node2'],
       pseudo: '/qwe',
-      tag: 'asd',
       access_type: 'RW',
       squash: 'no_root_squash',
-      protocols: [3, 4],
+      protocols: [4],
       transports: ['TCP', 'UDP'],
       clients: [
         {
@@ -45,9 +41,7 @@ describe('NfsDetailsComponent', () => {
           access_type: 'RW',
           squash: 'root_id_squash'
         }
-      ],
-      id: 'cluster1:1',
-      state: 'LOADING'
+      ]
     };
     component.ngOnChanges();
     fixture.detectChanges();
@@ -63,8 +57,7 @@ describe('NfsDetailsComponent', () => {
       'CephFS Filesystem': 1,
       'CephFS User': 'fs',
       Cluster: 'cluster1',
-      Daemons: ['node1', 'node2'],
-      'NFS Protocol': ['NFSv3', 'NFSv4'],
+      'NFS Protocol': ['NFSv4'],
       Path: '/qwe',
       Pseudo: '/qwe',
       'Security Label': undefined,
@@ -78,7 +71,7 @@ describe('NfsDetailsComponent', () => {
     const newData = _.assignIn(component.selection, {
       fsal: {
         name: 'RGW',
-        rgw_user_id: 'rgw_user_id'
+        user_id: 'user-id'
       }
     });
     component.selection = newData;
@@ -86,9 +79,8 @@ describe('NfsDetailsComponent', () => {
     expect(component.data).toEqual({
       'Access Type': 'RW',
       Cluster: 'cluster1',
-      Daemons: ['node1', 'node2'],
-      'NFS Protocol': ['NFSv3', 'NFSv4'],
-      'Object Gateway User': 'rgw_user_id',
+      'NFS Protocol': ['NFSv4'],
+      'Object Gateway User': 'user-id',
       Path: '/qwe',
       Pseudo: '/qwe',
       Squash: 'no_root_squash',
@@ -98,7 +90,7 @@ describe('NfsDetailsComponent', () => {
   });
 
   it('should have 1 client', () => {
-    expect(elem('li.nav-item:nth-of-type(2) span').nativeElement.textContent).toBe('Clients (1)');
+    expect(elem('nav.nav-tabs a:nth-of-type(2)').nativeElement.textContent).toBe('Clients (1)');
     expect(component.clients).toEqual([
       {
         access_type: 'RW',

@@ -1,11 +1,11 @@
-<div class="cd-col-form">
+<div class="cd-col-form"
+     *cdFormLoading="loading">
   <form name="targetForm"
         #formDir="ngForm"
         [formGroup]="targetForm"
-        novalidate
-        *ngIf="targetForm">
+        novalidate>
     <div class="card">
-      <div i18n="form title|Example: Create Pool@@formTitle"
+      <div i18n="form title"
            class="card-header">{{ action | titlecase }} {{ resource | upperFirst }}</div>
 
       <div class="card-body">
@@ -22,15 +22,13 @@
                      name="target_iqn"
                      formControlName="target_iqn"
                      cdTrim />
-              <span class="input-group-append">
-                <button class="btn btn-light"
-                        id="ecp-info-button"
-                        type="button"
-                        (click)="targetSettingsModal()">
-                  <i [ngClass]="[icons.deepCheck]"
-                     aria-hidden="true"></i>
-                </button>
-              </span>
+              <button class="btn btn-light"
+                      id="ecp-info-button"
+                      type="button"
+                      (click)="targetSettingsModal()">
+                <i [ngClass]="[icons.deepCheck]"
+                   aria-hidden="true"></i>
+              </button>
             </div>
 
             <span class="invalid-feedback"
@@ -73,14 +71,12 @@
                        type="text"
                        [value]="portal"
                        disabled />
-                <span class="input-group-append">
-                  <button class="btn btn-light"
-                          type="button"
-                          (click)="removePortal(i, portal)">
-                    <i [ngClass]="[icons.destroy]"
-                       aria-hidden="true"></i>
-                  </button>
-                </span>
+                <button class="btn btn-light"
+                        type="button"
+                        (click)="removePortal(i, portal)">
+                  <i [ngClass]="[icons.destroy]"
+                     aria-hidden="true"></i>
+                </button>
               </div>
             </ng-container>
 
@@ -90,7 +86,7 @@
                            [options]="portalsSelections"
                            [messages]="messages.portals"
                            (selection)="onPortalSelection($event)"
-                           elemClass="btn btn-light float-right">
+                           elemClass="btn btn-light float-end">
                   <i [ngClass]="[icons.add]"></i>
                   <ng-container i18n>Add portal</ng-container>
                 </cd-select>
@@ -123,22 +119,20 @@
                        type="text"
                        [value]="image"
                        disabled />
-                <span class="input-group-append">
-                  <div class="input-group-text"
-                       *ngIf="api_version >= 1">lun: {{ imagesSettings[image]['lun'] }}</div>
-                  <button class="btn btn-light"
-                          type="button"
-                          (click)="imageSettingsModal(image)">
-                    <i [ngClass]="[icons.deepCheck]"
-                       aria-hidden="true"></i>
-                  </button>
-                  <button class="btn btn-light"
-                          type="button"
-                          (click)="removeImage(i, image)">
-                    <i [ngClass]="[icons.destroy]"
-                       aria-hidden="true"></i>
-                  </button>
-                </span>
+                <div class="input-group-text"
+                     *ngIf="api_version >= 1">lun: {{ imagesSettings[image]['lun'] }}</div>
+                <button class="btn btn-light"
+                        type="button"
+                        (click)="imageSettingsModal(image)">
+                  <i [ngClass]="[icons.deepCheck]"
+                     aria-hidden="true"></i>
+                </button>
+                <button class="btn btn-light"
+                        type="button"
+                        (click)="removeImage(i, image)">
+                  <i [ngClass]="[icons.destroy]"
+                     aria-hidden="true"></i>
+                </button>
 
               </div>
 
@@ -171,7 +165,7 @@
                            [options]="imagesSelections"
                            [messages]="messages.images"
                            (selection)="onImageSelection($event)"
-                           elemClass="btn btn-light float-right">
+                           elemClass="btn btn-light float-end">
                   <i [ngClass]="[icons.add]"></i>
                   <ng-container i18n>Add image</ng-container>
                 </cd-select>
@@ -213,6 +207,7 @@
             <div class="cd-col-form-input">
               <input class="form-control"
                      type="text"
+                     autocomplete="off"
                      id="target_user"
                      name="target_user"
                      formControlName="user" />
@@ -242,16 +237,12 @@
                        id="target_password"
                        name="target_password"
                        formControlName="password" />
-                <span class="input-group-append">
-                  <button type="button"
-                          class="btn btn-light"
-                          cdPasswordButton="target_password">
-                  </button>
-                  <button type="button"
-                          class="btn btn-light"
-                          cdCopy2ClipboardButton="target_password">
-                  </button>
-                </span>
+                <button type="button"
+                        class="btn btn-light"
+                        cdPasswordButton="target_password">
+                </button>
+                <cd-copy-2-clipboard-button source="target_password">
+                </cd-copy-2-clipboard-button>
               </div>
 
               <span class="invalid-feedback"
@@ -274,6 +265,7 @@
             <div class="cd-col-form-input">
               <input class="form-control"
                      type="text"
+                     autocomplete="off"
                      id="target_mutual_user"
                      name="target_mutual_user"
                      formControlName="mutual_user" />
@@ -304,16 +296,12 @@
                        name="target_mutual_password"
                        formControlName="mutual_password" />
 
-                <span class="input-group-append">
-                  <button type="button"
-                          class="btn btn-light"
-                          cdPasswordButton="target_mutual_password">
-                  </button>
-                  <button type="button"
-                          class="btn btn-light"
-                          cdCopy2ClipboardButton="target_mutual_password">
-                  </button>
-                </span>
+                <button type="button"
+                        class="btn btn-light"
+                        cdPasswordButton="target_mutual_password">
+                </button>
+                <cd-copy-2-clipboard-button source="target_mutual_password">
+                </cd-copy-2-clipboard-button>
               </div>
 
               <span class="invalid-feedback"
@@ -339,13 +327,12 @@
                formArrayName="initiators">
             <div class="card mb-2"
                  *ngFor="let initiator of initiators.controls; let ii = index"
-                 [formGroupName]="ii">
+                 [formGroup]="initiator">
               <div class="card-header">
                 <ng-container i18n>Initiator</ng-container>: {{ initiator.getValue('client_iqn') }}
                 <button type="button"
-                        class="close"
+                        class="btn-close float-end"
                         (click)="removeInitiator(ii)">
-                  <i [ngClass]="[icons.destroy]"></i>
                 </button>
               </div>
               <div class="card-body">
@@ -385,6 +372,7 @@
                       <input [id]="'user' + ii"
                              class="form-control"
                              formControlName="user"
+                             autocomplete="off"
                              type="text">
                       <span class="invalid-feedback"
                             *ngIf="initiator.showError('user', formDir, 'required')"
@@ -407,18 +395,15 @@
                         <input [id]="'password' + ii"
                                class="form-control"
                                formControlName="password"
+                               autocomplete="new-password"
                                type="password">
 
-                        <span class="input-group-append">
-                          <button type="button"
-                                  class="btn btn-light"
-                                  [cdPasswordButton]="'password' + ii">
-                          </button>
-                          <button type="button"
-                                  class="btn btn-light"
-                                  [cdCopy2ClipboardButton]="'password' + ii">
-                          </button>
-                        </span>
+                        <button type="button"
+                                class="btn btn-light"
+                                [cdPasswordButton]="'password' + ii">
+                        </button>
+                        <cd-copy-2-clipboard-button [source]="'password' + ii">
+                        </cd-copy-2-clipboard-button>
                       </div>
                       <span class="invalid-feedback"
                             *ngIf="initiator.showError('password', formDir, 'required')"
@@ -442,6 +427,7 @@
                       <input [id]="'mutual_user' + ii"
                              class="form-control"
                              formControlName="mutual_user"
+                             autocomplete="off"
                              type="text">
 
                       <span class="invalid-feedback"
@@ -465,18 +451,15 @@
                         <input [id]="'mutual_password' + ii"
                                class="form-control"
                                formControlName="mutual_password"
+                               autocomplete="new-password"
                                type="password">
 
-                        <span class="input-group-append">
-                          <button type="button"
-                                  class="btn btn-light"
-                                  [cdPasswordButton]="'mutual_password' + ii">
-                          </button>
-                          <button type="button"
-                                  class="btn btn-light"
-                                  [cdCopy2ClipboardButton]="'mutual_password' + ii">
-                          </button>
-                        </span>
+                        <button type="button"
+                                class="btn btn-light"
+                                [cdPasswordButton]="'mutual_password' + ii">
+                        </button>
+                        <cd-copy-2-clipboard-button [source]="'mutual_password' + ii">
+                        </cd-copy-2-clipboard-button>
                       </div>
                       <span class="invalid-feedback"
                             *ngIf="initiator.showError('mutual_password', formDir, 'required')"
@@ -502,14 +485,12 @@
                                type="text"
                                [value]="image"
                                disabled />
-                        <span class="input-group-append">
-                          <button class="btn btn-light"
-                                  type="button"
-                                  (click)="removeInitiatorImage(initiator, li, ii, image)">
-                            <i [ngClass]="[icons.destroy]"
-                               aria-hidden="true"></i>
-                          </button>
-                        </span>
+                        <button class="btn btn-light"
+                                type="button"
+                                (click)="removeInitiatorImage(initiator, li, ii, image)">
+                          <i [ngClass]="[icons.destroy]"
+                             aria-hidden="true"></i>
+                        </button>
                       </div>
                     </ng-container>
 
@@ -522,7 +503,7 @@
                         <cd-select [data]="initiator.getValue('luns')"
                                    [options]="imagesInitiatorSelections[ii]"
                                    [messages]="messages.initiatorImage"
-                                   elemClass="btn btn-light float-right">
+                                   elemClass="btn btn-light float-end">
                           <i [ngClass]="[icons.add]"></i>
                           <ng-container i18n>Add image</ng-container>
                         </cd-select>
@@ -540,7 +521,7 @@
                       i18n>No items added.</span>
 
                 <button (click)="addInitiator(); false"
-                        class="btn btn-light float-right">
+                        class="btn btn-light float-end">
                   <i [ngClass]="[icons.add]"></i>
                   <ng-container i18n>Add initiator</ng-container>
                 </button>
@@ -561,13 +542,12 @@
                formArrayName="groups">
             <div class="card mb-2"
                  *ngFor="let group of groups.controls; let gi = index"
-                 [formGroupName]="gi">
+                 [formGroup]="group">
               <div class="card-header">
                 <ng-container i18n>Group</ng-container>: {{ group.getValue('group_id') }}
                 <button type="button"
-                        class="close"
-                        (click)="groups.removeAt(gi)">
-                  <i [ngClass]="[icons.destroy]"></i>
+                        class="btn-close float-end"
+                        (click)="removeGroup(gi)">
                 </button>
               </div>
               <div class="card-body">
@@ -596,14 +576,12 @@
                                type="text"
                                [value]="member"
                                disabled />
-                        <span class="input-group-append">
-                          <button class="btn btn-light"
-                                  type="button"
-                                  (click)="removeGroupInitiator(group, i, gi)">
-                            <i [ngClass]="[icons.destroy]"
-                               aria-hidden="true"></i>
-                          </button>
-                        </span>
+                        <button class="btn btn-light"
+                                type="button"
+                                (click)="removeGroupInitiator(group, i, gi)">
+                          <i [ngClass]="[icons.destroy]"
+                             aria-hidden="true"></i>
+                        </button>
                       </div>
                     </ng-container>
 
@@ -612,8 +590,8 @@
                         <cd-select [data]="group.getValue('members')"
                                    [options]="groupMembersSelections[gi]"
                                    [messages]="messages.groupInitiator"
-                                   (selection)="onGroupMemberSelection($event)"
-                                   elemClass="btn btn-light float-right">
+                                   (selection)="onGroupMemberSelection($event, gi)"
+                                   elemClass="btn btn-light float-end">
                           <i [ngClass]="[icons.add]"></i>
                           <ng-container i18n>Add initiator</ng-container>
                         </cd-select>
@@ -637,14 +615,12 @@
                                type="text"
                                [value]="disk"
                                disabled />
-                        <span class="input-group-append">
-                          <button class="btn btn-light"
-                                  type="button"
-                                  (click)="removeGroupDisk(group, i, gi)">
-                            <i [ngClass]="[icons.destroy]"
-                               aria-hidden="true"></i>
-                          </button>
-                        </span>
+                        <button class="btn btn-light"
+                                type="button"
+                                (click)="removeGroupDisk(group, i, gi)">
+                          <i [ngClass]="[icons.destroy]"
+                             aria-hidden="true"></i>
+                        </button>
                       </div>
                     </ng-container>
 
@@ -653,7 +629,7 @@
                         <cd-select [data]="group.getValue('disks')"
                                    [options]="groupDiskSelections[gi]"
                                    [messages]="messages.initiatorImage"
-                                   elemClass="btn btn-light float-right">
+                                   elemClass="btn btn-light float-end">
                           <i [ngClass]="[icons.add]"></i>
                           <ng-container i18n>Add image</ng-container>
                         </cd-select>
@@ -673,7 +649,7 @@
                       i18n>No items added.</span>
 
                 <button (click)="addGroup(); false"
-                        class="btn btn-light float-right">
+                        class="btn btn-light float-end">
                   <i [ngClass]="[icons.add]"></i>
                   <ng-container i18n>Add group</ng-container>
                 </button>
@@ -684,12 +660,10 @@
 
       </div>
       <div class="card-footer">
-        <div class="text-right">
-          <cd-submit-button (submitAction)="submit()"
-                            i18n="form action button|Example: Create Pool@@formActionButton"
-                            [form]="formDir">{{ action | titlecase }} {{ resource | upperFirst }}</cd-submit-button>
-          <cd-back-button></cd-back-button>
-        </div>
+        <cd-form-button-panel (submitActionEvent)="submit()"
+                              [form]="targetForm"
+                              [submitText]="(action | titlecase) + ' ' + (resource | upperFirst)"
+                              wrappingClass="text-right"></cd-form-button-panel>
       </div>
     </div>
   </form>

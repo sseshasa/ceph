@@ -1,6 +1,11 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
+#include <boost/asio/error.hpp>
+#include <boost/asio/placeholders.hpp>
+#include <boost/asio/read.hpp>
+#include <boost/asio/write.hpp>
+#include <boost/bind/bind.hpp>
 #include "common/debug.h"
 #include "common/ceph_context.h"
 #include "CacheSession.h"
@@ -15,7 +20,7 @@
 namespace ceph {
 namespace immutable_obj_cache {
 
-CacheSession::CacheSession(io_service& io_service,
+CacheSession::CacheSession(io_context& io_service,
                            ProcessMsg processmsg,
                            CephContext* cct)
     : m_dm_socket(io_service),
@@ -29,6 +34,14 @@ CacheSession::~CacheSession() {
 
 stream_protocol::socket& CacheSession::socket() {
   return m_dm_socket;
+}
+
+void CacheSession::set_client_version(const std::string &version) {
+  m_client_version = version;
+}
+
+const std::string &CacheSession::client_version() const {
+  return m_client_version;
 }
 
 void CacheSession::close() {

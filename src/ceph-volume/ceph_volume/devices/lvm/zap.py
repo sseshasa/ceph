@@ -7,7 +7,7 @@ from textwrap import dedent
 
 from ceph_volume import decorators, terminal, process
 from ceph_volume.api import lvm as api
-from ceph_volume.util import system, encryption, disk, arg_validators, str_to_int
+from ceph_volume.util import system, encryption, disk, arg_validators, str_to_int, merge_dict
 from ceph_volume.util.device import Device
 from ceph_volume.systemd import systemctl
 
@@ -81,17 +81,17 @@ def find_associated_devices(osd_id=None, osd_fsid=None):
         lv_tags['ceph.osd_id'] = osd_id
     if osd_fsid:
         lv_tags['ceph.osd_fsid'] = osd_fsid
-    lvs = api.Volumes()
-    lvs.filter(lv_tags=lv_tags)
+
+    lvs = api.get_lvs(tags=lv_tags)
     if not lvs:
-        raise RuntimeError('Unable to find any LV for zapping OSD: %s' % osd_id or osd_fsid)
+        raise RuntimeError('Unable to find any LV for zapping OSD: '
+                           '%s' % osd_id or osd_fsid)
 
-    devices_to_zap = ensure_associated_lvs(lvs)
-
+    devices_to_zap = ensure_associated_lvs(lvs, lv_tags)
     return [Device(path) for path in set(devices_to_zap) if path]
 
 
-def ensure_associated_lvs(lvs):
+def ensure_associated_lvs(lvs, lv_tags={}):
     """
     Go through each LV and ensure if backing devices (journal, wal, block)
     are LVs or partitions, so that they can be accurately reported.
@@ -100,14 +100,11 @@ def ensure_associated_lvs(lvs):
     # receive a filtering for osd.1, and have multiple failed deployments
     # leaving many journals with osd.1 - usually, only a single LV will be
     # returned
-    journal_lvs = lvs._filter(lv_tags={'ceph.type': 'journal'})
-    db_lvs = lvs._filter(lv_tags={'ceph.type': 'db'})
-    wal_lvs = lvs._filter(lv_tags={'ceph.type': 'wal'})
-    backing_devices = [
-        (journal_lvs, 'journal'),
-        (db_lvs, 'db'),
-        (wal_lvs, 'wal')
-    ]
+
+    db_lvs = api.get_lvs(tags=merge_dict(lv_tags, {'ceph.type': 'db'}))
+    wal_lvs = api.get_lvs(tags=merge_dict(lv_tags, {'ceph.type': 'wal'}))
+    backing_devices = [(db_lvs, 'db'),
+                       (wal_lvs, 'wal')]
 
     verified_devices = []
 
@@ -168,22 +165,31 @@ class Zap(object):
         Device examples: vg-name/lv-name, /dev/vg-name/lv-name
         Requirements: Must be a logical volume (LV)
         """
-        lv = api.get_lv(lv_name=device.lv_name, vg_name=device.vg_name)
+        lv = api.get_single_lv(filters={'lv_name': device.lv_name, 'vg_name':
+                                        device.vg_name})
         self.unmount_lv(lv)
 
-        wipefs(device.abspath)
-        zap_data(device.abspath)
+        wipefs(device.path)
+        zap_data(device.path)
 
         if self.args.destroy:
-            lvs = api.Volumes()
-            lvs.filter(vg_name=device.vg_name)
-            if len(lvs) <= 1:
-                mlogger.info('Only 1 LV left in VG, will proceed to destroy volume group %s', device.vg_name)
+            lvs = api.get_lvs(filters={'vg_name': device.vg_name})
+            if lvs == []:
+                mlogger.info('No LVs left, exiting', device.vg_name)
+                return
+            elif len(lvs) <= 1:
+                mlogger.info('Only 1 LV left in VG, will proceed to destroy '
+                             'volume group %s', device.vg_name)
+                pvs = api.get_pvs(filters={'lv_uuid': lv.lv_uuid})
                 api.remove_vg(device.vg_name)
+                for pv in pvs:
+                    api.remove_pv(pv.pv_name)
             else:
-                mlogger.info('More than 1 LV left in VG, will proceed to destroy LV only')
-                mlogger.info('Removing LV because --destroy was given: %s', device.abspath)
-                api.remove_lv(device.abspath)
+                mlogger.info('More than 1 LV left in VG, will proceed to '
+                             'destroy LV only')
+                mlogger.info('Removing LV because --destroy was given: %s',
+                             device.path)
+                api.remove_lv(device.path)
         elif lv:
             # just remove all lvm metadata, leaving the LV around
             lv.clear_tags()
@@ -203,15 +209,15 @@ class Zap(object):
                 if os.path.realpath(mapper_path) in holders:
                     self.dmcrypt_close(mapper_uuid)
 
-        if system.device_is_mounted(device.abspath):
-            mlogger.info("Unmounting %s", device.abspath)
-            system.unmount(device.abspath)
+        if system.device_is_mounted(device.path):
+            mlogger.info("Unmounting %s", device.path)
+            system.unmount(device.path)
 
-        wipefs(device.abspath)
-        zap_data(device.abspath)
+        wipefs(device.path)
+        zap_data(device.path)
 
         if self.args.destroy:
-            mlogger.info("Destroying partition since --destroy was used: %s" % device.abspath)
+            mlogger.info("Destroying partition since --destroy was used: %s" % device.path)
             disk.remove_partition(device)
 
     def zap_lvm_member(self, device):
@@ -224,10 +230,10 @@ class Zap(object):
         """
         for lv in device.lvs:
             if lv.lv_name:
-                mlogger.info('Zapping lvm member {}. lv_path is {}'.format(device.abspath, lv.lv_path))
+                mlogger.info('Zapping lvm member {}. lv_path is {}'.format(device.path, lv.lv_path))
                 self.zap_lv(Device(lv.lv_path))
             else:
-                vg = api.get_first_vg(filters={'vg_name': lv.vg_name})
+                vg = api.get_single_vg(filters={'vg_name': lv.vg_name})
                 if vg:
                     mlogger.info('Found empty VG {}, removing'.format(vg.vg_name))
                     api.remove_vg(vg.vg_name)
@@ -253,16 +259,16 @@ class Zap(object):
         for part_name in device.sys_api.get('partitions', {}).keys():
             self.zap_partition(Device('/dev/%s' % part_name))
 
-        wipefs(device.abspath)
-        zap_data(device.abspath)
+        wipefs(device.path)
+        zap_data(device.path)
 
     @decorators.needs_root
     def zap(self, devices=None):
         devices = devices or self.args.devices
 
         for device in devices:
-            mlogger.info("Zapping: %s", device.abspath)
-            if device.is_mapper:
+            mlogger.info("Zapping: %s", device.path)
+            if device.is_mapper and not device.is_mpath:
                 terminal.error("Refusing to zap the mapper device: {}".format(device))
                 raise SystemExit(1)
             if device.is_lvm_member:
@@ -286,7 +292,7 @@ class Zap(object):
 
     @decorators.needs_root
     def zap_osd(self):
-        if self.args.osd_id:
+        if self.args.osd_id and not self.args.no_systemd:
             osd_is_running = systemctl.osd_is_active(self.args.osd_id)
             if osd_is_running:
                 mlogger.error("OSD ID %s is running, stop it with:" % self.args.osd_id)
@@ -296,9 +302,8 @@ class Zap(object):
         self.zap(devices)
 
     def dmcrypt_close(self, dmcrypt_uuid):
-        dmcrypt_path = "/dev/mapper/{}".format(dmcrypt_uuid)
-        mlogger.info("Closing encrypted path %s", dmcrypt_path)
-        encryption.dmcrypt_close(dmcrypt_path)
+        mlogger.info("Closing encrypted volume %s", dmcrypt_uuid)
+        encryption.dmcrypt_close(mapping=dmcrypt_uuid, skip_path_check=True)
 
     def main(self):
         sub_command_help = dedent("""
@@ -358,7 +363,7 @@ class Zap(object):
             'devices',
             metavar='DEVICES',
             nargs='*',
-            type=arg_validators.ValidDevice(gpt_ok=True),
+            type=arg_validators.ValidZapDevice(gpt_ok=True),
             default=[],
             help='Path to one or many lv (as vg/lv), partition (as /dev/sda1) or device (as /dev/sda)'
         )
@@ -372,12 +377,20 @@ class Zap(object):
 
         parser.add_argument(
             '--osd-id',
+            type=arg_validators.valid_osd_id,
             help='Specify an OSD ID to detect associated devices for zapping',
         )
 
         parser.add_argument(
             '--osd-fsid',
             help='Specify an OSD FSID to detect associated devices for zapping',
+        )
+
+        parser.add_argument(
+            '--no-systemd',
+            dest='no_systemd',
+            action='store_true',
+            help='Skip systemd unit checks',
         )
 
         if len(self.argv) == 0:

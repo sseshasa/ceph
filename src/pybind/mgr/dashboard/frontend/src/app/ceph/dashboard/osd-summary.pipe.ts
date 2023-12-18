@@ -1,14 +1,11 @@
 import { Pipe, PipeTransform } from '@angular/core';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import _ from 'lodash';
 
 @Pipe({
   name: 'osdSummary'
 })
 export class OsdSummaryPipe implements PipeTransform {
-  constructor(private i18n: I18n) {}
-
   transform(value: any): any {
     if (!value) {
       return '';
@@ -16,6 +13,8 @@ export class OsdSummaryPipe implements PipeTransform {
 
     let inCount = 0;
     let upCount = 0;
+    let nearFullCount = 0;
+    let fullCount = 0;
     _.each(value.osds, (osd) => {
       if (osd.in) {
         inCount++;
@@ -23,11 +22,17 @@ export class OsdSummaryPipe implements PipeTransform {
       if (osd.up) {
         upCount++;
       }
+      if (osd.state.includes('nearfull')) {
+        nearFullCount++;
+      }
+      if (osd.state.includes('full')) {
+        fullCount++;
+      }
     });
 
     const osdSummary = [
       {
-        content: `${value.osds.length} ${this.i18n('total')}`,
+        content: `${value.osds.length} ${$localize`total`}`,
         class: ''
       }
     ];
@@ -36,23 +41,47 @@ export class OsdSummaryPipe implements PipeTransform {
       class: 'card-text-line-break'
     });
     osdSummary.push({
-      content: `${upCount} ${this.i18n('up')}, ${inCount} ${this.i18n('in')}`,
+      content: `${upCount} ${$localize`up`}, ${inCount} ${$localize`in`}`,
       class: ''
     });
 
     const downCount = value.osds.length - upCount;
-    const outCount = upCount - inCount;
+    const outCount = value.osds.length - inCount;
     if (downCount > 0 || outCount > 0) {
       osdSummary.push({
         content: '',
         class: 'card-text-line-break'
       });
 
-      const downText = downCount > 0 ? `${downCount} ${this.i18n('down')}` : '';
+      const downText = downCount > 0 ? `${downCount} ${$localize`down`}` : '';
       const separator = downCount > 0 && outCount > 0 ? ', ' : '';
-      const outText = outCount > 0 ? `${outCount} ${this.i18n('out')}` : '';
+      const outText = outCount > 0 ? `${outCount} ${$localize`out`}` : '';
       osdSummary.push({
         content: `${downText}${separator}${outText}`,
+        class: 'card-text-error'
+      });
+    }
+
+    if (nearFullCount > 0) {
+      osdSummary.push(
+        {
+          content: '',
+          class: 'card-text-line-break'
+        },
+        {
+          content: `${nearFullCount} ${$localize`near full`}`,
+          class: 'card-text-error'
+        },
+        {
+          content: '',
+          class: 'card-text-line-break'
+        }
+      );
+    }
+
+    if (fullCount > 0) {
+      osdSummary.push({
+        content: `${fullCount} ${$localize`full`}`,
         class: 'card-text-error'
       });
     }

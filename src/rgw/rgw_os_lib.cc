@@ -5,13 +5,14 @@
 #include "rgw_rest_s3.h"
 #include "rgw_rest_user.h"
 #include "rgw_os_lib.h"
-#include "rgw_file.h"
+#include "rgw_file_int.h"
 #include "rgw_lib_frontend.h"
 
 namespace rgw {
 
 /* static */
-  int RGWHandler_Lib::init_from_header(struct req_state *s)
+  int RGWHandler_Lib::init_from_header(rgw::sal::Driver* driver,
+				       req_state *s)
   {
     string req;
     string first;
@@ -28,7 +29,7 @@ namespace rgw {
     }
 
     s->info.args.set(p);
-    s->info.args.parse();
+    s->info.args.parse(s);
 
     if (*req_name != '/')
       return 0;
@@ -51,10 +52,10 @@ namespace rgw {
       if (pos >= 0) {
 	// XXX ugh, another copy
 	string encoded_obj_str = req.substr(pos+1);
-	s->object = rgw_obj_key(encoded_obj_str, s->info.args.get("versionId"));
+	s->object = driver->get_object(rgw_obj_key(encoded_obj_str, s->info.args.get("versionId")));
       }
     } else {
-      s->object = rgw_obj_key(req_name, s->info.args.get("versionId"));
+      s->object = driver->get_object(rgw_obj_key(req_name, s->info.args.get("versionId")));
     }
     return 0;
   } /* init_from_header */

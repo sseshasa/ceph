@@ -17,8 +17,6 @@
 #include "common/ceph_context.h"
 #include "global/global_context.h"
 
-#define dout_context g_ceph_context
-#define dout_subsys ceph_subsys_rgw
 
 #define GC_LIST_DEFAULT_MAX 128
 
@@ -369,7 +367,9 @@ static int cls_rgw_gc_queue_remove_entries(cls_method_context_t hctx, bufferlist
   }
 
   //Update urgent data map
+  head.bl_urgent_data.clear();
   encode(urgent_data, head.bl_urgent_data);
+  CLS_LOG(5, "INFO: cls_rgw_gc_queue_remove_entries(): Urgent data size is %u\n", head.bl_urgent_data.length());
 
   return queue_write_head(hctx, head);
 }
@@ -432,7 +432,7 @@ static int cls_rgw_gc_queue_update_entry(cls_method_context_t hctx, bufferlist *
       } //end - catch
       auto xattr_iter = xattr_urgent_data_map.find(op.info.tag);
       if (xattr_iter != xattr_urgent_data_map.end()) {
-        it->second = op.info.time;
+        xattr_iter->second = op.info.time;
         tag_found = true;
         //write the updated map back
         bufferlist bl_map;
@@ -500,6 +500,11 @@ static int cls_rgw_gc_queue_update_entry(cls_method_context_t hctx, bufferlist *
     return -ENOSPC;
   }
 
+  // Due to Tracker 47866 we are no longer executing this code, as it
+  // appears to possibly create a GC entry for an object that has not
+  // been deleted. Instead we will log at level 0 to perhaps confirm
+  // that when and how often this bug would otherwise be hit.
+#if 0
   cls_queue_enqueue_op enqueue_op;
   bufferlist bl_data;
   encode(op.info, bl_data);
@@ -510,6 +515,16 @@ static int cls_rgw_gc_queue_update_entry(cls_method_context_t hctx, bufferlist *
   if (ret < 0) {
     return ret;
   }
+#else
+  std::string first_chain = "<empty-chain>";
+  if (! op.info.chain.objs.empty()) {
+    first_chain = op.info.chain.objs.cbegin()->key.name;
+  }
+  CLS_LOG(0,
+	  "INFO: refrained from enqueueing GC entry during GC defer"
+	  " tag=%s, first_chain=%s\n",
+	  op.info.tag.c_str(), first_chain.c_str());
+#endif
 
   if (has_urgent_data) {
     head.bl_urgent_data.clear();

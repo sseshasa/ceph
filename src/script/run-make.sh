@@ -2,6 +2,13 @@
 
 set -e
 
+if ! [ "${_SOURCED_LIB_BUILD}" = 1 ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    CEPH_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+    . "${CEPH_ROOT}/src/script/lib-build.sh" || exit 2
+fi
+
+
 trap clean_up_after_myself EXIT
 
 ORIGINAL_CCACHE_CONF="$HOME/.ccache/ccache.conf"
@@ -20,21 +27,8 @@ function clean_up_after_myself() {
     restore_ccache_conf
 }
 
-function get_processors() {
-    # get_processors() depends on coreutils nproc.
-    if test -n "$NPROC" ; then
-        echo $NPROC
-    else
-        if test $(nproc) -ge 2 ; then
-            expr $(nproc) / 2
-        else
-            echo 1
-        fi
-    fi
-}
-
 function detect_ceph_dev_pkgs() {
-    local cmake_opts
+    local cmake_opts="-DWITH_FMT_VERSION=9.0.0"
     local boost_root=/opt/ceph
     if test -f $boost_root/include/boost/config.hpp; then
         cmake_opts+=" -DWITH_SYSTEM_BOOST=ON -DBOOST_ROOT=$boost_root"
@@ -43,55 +37,37 @@ function detect_ceph_dev_pkgs() {
     fi
 
     source /etc/os-release
-    if [[ "$ID" == "ubuntu" ]] && [[ "$VERSION" =~ .*Xenial*. ]]; then 
-        cmake_opts+=" -DWITH_RADOSGW_KAFKA_ENDPOINT=NO"
+    if [[ "$ID" == "ubuntu" ]]; then
+        case "$VERSION" in
+            *Xenial*)
+                cmake_opts+=" -DWITH_RADOSGW_KAFKA_ENDPOINT=OFF";;
+            *Focal*)
+                cmake_opts+=" -DWITH_SYSTEM_ZSTD=ON";;
+        esac
     fi
     echo "$cmake_opts"
 }
 
 function prepare() {
-    local install_cmd
     local which_pkg="which"
-    source /etc/os-release
-    if test -f /etc/redhat-release ; then
-        if ! type bc > /dev/null 2>&1 ; then
-            echo "Please install bc and re-run." 
-            exit 1
-        fi
-        if test "$(echo "$VERSION_ID >= 22" | bc)" -ne 0; then
-            install_cmd="dnf -y install"
-        else
-            install_cmd="yum install -y"
-        fi
-    elif type zypper > /dev/null 2>&1 ; then
-        install_cmd="zypper --gpg-auto-import-keys --non-interactive install --no-recommends"
-    elif type apt-get > /dev/null 2>&1 ; then
-        install_cmd="apt-get install -y"
+    if command -v apt-get > /dev/null 2>&1 ; then
         which_pkg="debianutils"
     fi
 
-    if ! type sudo > /dev/null 2>&1 ; then
-        echo "Please install sudo and re-run. This script assumes it is running"
-        echo "as a normal user with the ability to run commands as root via sudo." 
-        exit 1
-    fi
-    if [ -n "$install_cmd" ]; then
-        $DRY_RUN sudo $install_cmd ccache $which_pkg
-    else
-        echo "WARNING: Don't know how to install packages" >&2
-        echo "This probably means distribution $ID is not supported by run-make-check.sh" >&2
+    if test -f ./install-deps.sh ; then
+        ci_debug "Running install-deps.sh"
+        INSTALL_EXTRA_PACKAGES="ccache git $which_pkg clang"
+        $DRY_RUN source ./install-deps.sh || return 1
+        trap clean_up_after_myself EXIT
     fi
 
     if ! type ccache > /dev/null 2>&1 ; then
         echo "ERROR: ccache could not be installed"
         exit 1
     fi
+}
 
-    if test -f ./install-deps.sh ; then
-	    $DRY_RUN source ./install-deps.sh || return 1
-        trap clean_up_after_myself EXIT
-    fi
-
+function configure() {
     cat <<EOM
 Note that the binaries produced by this script do not contain correct time
 and git version information, which may make them unsuitable for debugging
@@ -102,7 +78,7 @@ EOM
     $DRY_RUN export SOURCE_DATE_EPOCH="946684800"
     $DRY_RUN ccache -o sloppiness=time_macros
     $DRY_RUN ccache -o run_second_cpp=true
-    if [ -n "$JENKINS_HOME" ]; then
+    if in_jenkins; then
         # Build host has plenty of space available, let's use it to keep
         # various versions of the built objects. This could increase the cache hit
         # if the same or similar PRs are running several times
@@ -112,19 +88,61 @@ EOM
         ccache -p | grep max_size
     fi
     $DRY_RUN ccache -sz # Reset the ccache statistics and show the current configuration
-}
 
-function configure() {
-    local cmake_build_opts=$(detect_ceph_dev_pkgs)
-    $DRY_RUN ./do_cmake.sh $cmake_build_opts $@ || return 1
+    if ! discover_compiler ci-build ; then
+        ci_debug "Failed to discover a compiler"
+    fi
+    if [ "${discovered_compiler_env}" ]; then
+        ci_debug "Enabling compiler environment file: ${discovered_compiler_env}"
+        . "${discovered_compiler_env}"
+    fi
+    local cxx_compiler="${discovered_cxx_compiler}"
+    local c_compiler="${discovered_c_compiler}"
+    local cmake_opts
+    cmake_opts+=" -DCMAKE_CXX_COMPILER=$cxx_compiler -DCMAKE_C_COMPILER=$c_compiler"
+    cmake_opts+=" -DCMAKE_CXX_FLAGS_DEBUG=-Werror"
+    cmake_opts+=" -DENABLE_GIT_VERSION=OFF"
+    cmake_opts+=" -DWITH_GTEST_PARALLEL=ON"
+    cmake_opts+=" -DWITH_FIO=ON"
+    cmake_opts+=" -DWITH_CEPHFS_SHELL=ON"
+    cmake_opts+=" -DWITH_GRAFANA=ON"
+    cmake_opts+=" -DWITH_SPDK=ON"
+    cmake_opts+=" -DWITH_RBD_MIRROR=ON"
+    if [ $WITH_SEASTAR ]; then
+        cmake_opts+=" -DWITH_SEASTAR=ON"
+    fi
+    if [ $WITH_ZBD ]; then
+        cmake_opts+=" -DWITH_ZBD=ON"
+    fi
+    if [ $WITH_RBD_RWL ]; then
+        cmake_opts+=" -DWITH_RBD_RWL=ON"
+    fi
+    cmake_opts+=" -DWITH_RBD_SSD_CACHE=ON"
+
+    cmake_opts+=" $(detect_ceph_dev_pkgs)"
+
+    ci_debug "Our cmake_opts are: $cmake_opts"
+    ci_debug "Running ./configure"
+    ci_debug "Running do_cmake.sh"
+
+    $DRY_RUN ./do_cmake.sh $cmake_opts $@ || return 1
 }
 
 function build() {
     local targets="$@"
-    $DRY_RUN cd build
+    if test -n "$targets"; then
+        targets="--target $targets"
+    fi
+    local bdir=build
+    if [ "$BUILD_DIR" ]; then
+        bdir="$BUILD_DIR"
+    fi
+    $DRY_RUN cd "${bdir}"
     BUILD_MAKEOPTS=${BUILD_MAKEOPTS:-$DEFAULT_MAKEOPTS}
     test "$BUILD_MAKEOPTS" && echo "make will run with option(s) $BUILD_MAKEOPTS"
-    $DRY_RUN make $BUILD_MAKEOPTS $targets || return 1
+    # older cmake does not support --parallel or -j, so pass it to underlying generator
+    ci_debug "Running cmake"
+    $DRY_RUN cmake --build . $targets -- $BUILD_MAKEOPTS || return 1
     $DRY_RUN ccache -s # print the ccache statistics to evaluate the efficiency
 }
 

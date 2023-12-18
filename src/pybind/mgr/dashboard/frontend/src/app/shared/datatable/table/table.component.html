@@ -1,7 +1,3 @@
-<cd-alert-panel type="error"
-                *ngIf="loadingError"
-                i18n>Failed to load data.</cd-alert-panel>
-
 <div class="dataTables_wrapper">
 
   <div *ngIf="onlyActionHeader"
@@ -18,53 +14,44 @@
     </div>
     <!-- end actions -->
 
-    <!-- filters -->
-    <ng-content select=".table-filters"></ng-content>
-    <!-- end filters -->
-
     <!-- column filters -->
     <div *ngIf="columnFilters.length !== 0"
          class="btn-group widget-toolbar">
-      <div dropdown
-           class="btn-group tc_filter_name">
-        <a dropdownToggle
-           class="btn btn-light dropdown-toggle"
-           data-toggle="dropdown">
+      <div ngbDropdown
+           placement="bottom-right"
+           class="tc_filter_name">
+        <button ngbDropdownToggle
+                class="btn btn-light"
+                title="Filter">
           <i [ngClass]="[icons.large, icons.filter]"></i>
           {{ selectedFilter.column.name }}
-        </a>
-        <ul *dropdownMenu
-            class="dropdown-menu px-1"
-            role="menu">
-          <li *ngFor="let filter of columnFilters"
-              role="menuitem">
-            <a href=""
-               class="dropdown-item"
-               (click)="onSelectFilter(filter); false">{{ filter.column.name }}</a>
-          </li>
-        </ul>
+        </button>
+        <div ngbDropdownMenu>
+          <ng-container *ngFor="let filter of columnFilters">
+            <button ngbDropdownItem
+                    (click)="onSelectFilter(filter); false">{{ filter.column.name }}</button>
+          </ng-container>
+        </div>
       </div>
-      <div dropdown
-           class="btn-group tc_filter_option">
-        <a dropdownToggle
-           class="btn btn-light dropdown-toggle"
-           [class.disabled]="selectedFilter.options.length === 0"
-           data-toggle="dropdown">
-           {{ selectedFilter.value ? selectedFilter.value.formatted: 'Any' }}
-        </a>
-        <ul *dropdownMenu
-            class="dropdown-menu px-1"
-            role="menu">
-          <li *ngFor="let option of selectedFilter.options"
-              role="menuitem">
-            <a href=""
-               class="dropdown-item"
-               (click)="onChangeFilter(selectedFilter, option); false">{{ option.formatted }}
+
+      <div ngbDropdown
+           placement="bottom-right"
+           class="tc_filter_option">
+        <button ngbDropdownToggle
+                class="btn btn-light"
+                [class.disabled]="selectedFilter.options.length === 0">
+          {{ selectedFilter.value ? selectedFilter.value.formatted: 'Any' }}
+        </button>
+        <div ngbDropdownMenu>
+          <ng-container *ngFor="let option of selectedFilter.options">
+            <button ngbDropdownItem
+                    (click)="onChangeFilter(selectedFilter, option); false">
+              {{ option.formatted }}
               <i *ngIf="selectedFilter.value !== undefined && (selectedFilter.value.raw === option.raw)"
                  [ngClass]="[icons.check]"></i>
-            </a>
-          </li>
-        </ul>
+            </button>
+          </ng-container>
+        </div>
       </div>
     </div>
     <!-- end column filters -->
@@ -72,28 +59,28 @@
     <!-- search -->
     <div class="input-group search"
          *ngIf="searchField">
-      <span class="input-group-prepend">
-        <span class="input-group-text">
+      <span class="input-group-text">
         <i [ngClass]="[icons.search]"></i>
-        </span>
       </span>
-      <input class="form-control"
+      <input aria-label="search"
+             class="form-control"
              type="text"
              [(ngModel)]="search"
              (keyup)="updateFilter()">
-      <div class="input-group-append">
-        <button type="button"
-                class="btn btn-light"
-                (click)="onClearSearch()">
-          <i class="icon-prepend {{ icons.destroy }}"></i>
-        </button>
-      </div>
+      <button type="button"
+              class="btn btn-light"
+              title="Clear"
+              (click)="onClearSearch()">
+        <i class="icon-prepend {{ icons.destroy }}"></i>
+      </button>
     </div>
     <!-- end search -->
 
     <!-- pagination limit -->
-    <div class="input-group dataTables_paginate">
-      <input class="form-control"
+    <div class="input-group dataTables_paginate"
+         *ngIf="limit">
+      <input aria-label="table pagination"
+             class="form-control"
              type="number"
              min="1"
              max="9999"
@@ -106,31 +93,31 @@
 
     <!-- show hide columns -->
     <div class="widget-toolbar">
-      <div dropdown
-           [autoClose]="false"
-           class="dropdown tc_menuitem tc_menuitem_cluster">
-        <a dropdownToggle
-           class="btn btn-light dropdown-toggle tc_columnBtn"
-           data-toggle="dropdown">
+      <div ngbDropdown
+           autoClose="outside"
+           class="tc_menuitem">
+        <button ngbDropdownToggle
+                class="btn btn-light tc_columnBtn"
+                title="toggle columns">
           <i [ngClass]="[icons.large, icons.table]"></i>
-        </a>
-        <ul *dropdownMenu
-            class="dropdown-menu px-3">
+        </button>
+        <div ngbDropdownMenu>
           <ng-container *ngFor="let column of columns">
-            <li *ngIf="column.name !== ''" >
-              <div class="custom-control custom-checkbox">
+            <button ngbDropdownItem
+                    *ngIf="column.name !== ''"
+                    (click)="toggleColumn(column); false;">
+              <div class="custom-control custom-checkbox py-0">
                 <input class="custom-control-input"
                        type="checkbox"
-                       (change)="toggleColumn($event)"
                        [name]="column.prop"
-                       [id]="column.prop"
+                       id="{{ column.prop }}{{ tableName }}"
                        [checked]="!column.isHidden">
                 <label class="custom-control-label"
-                       [for]="column.prop">{{ column.name }}</label>
+                       for="{{ column.prop }}{{ tableName }}">{{ column.name }}</label>
               </div>
-            </li>
+            </button>
           </ng-container>
-        </ul>
+        </div>
       </div>
     </div>
     <!-- end show hide columns -->
@@ -140,8 +127,10 @@
          *ngIf="fetchData.observers.length > 0">
 
       <button type="button"
-              class="btn btn-light"
-              (click)="refreshBtn()">
+              [class]="'btn btn-' + status.type"
+              [ngbTooltip]="status.msg"
+              (click)="refreshBtn()"
+              title="Refresh">
         <i [ngClass]="[icons.large, icons.refresh]"
            [class.fa-spin]="updating || loadingIndicator"></i>
       </button>
@@ -154,8 +143,8 @@
     <div class="filter-chips">
       <span *ngFor="let filter of columnFilters">
         <span *ngIf="filter.value"
-              class="badge badge-info mr-2">
-          <span class="mr-2">{{ filter.column.name }}: {{ filter.value.formatted }}</span>
+              class="badge badge-info me-2">
+          <span class="me-2">{{ filter.column.name }}: {{ filter.value.formatted }}</span>
           <a class="badge-remove"
              (click)="onChangeFilter(filter); false">
             <i [ngClass]="[icons.destroy]"
@@ -185,10 +174,26 @@
                  [rowClass]="getRowClass()"
                  [headerHeight]="header ? 'auto' : 0"
                  [footerHeight]="footer ? 'auto' : 0"
+                 [count]="count"
+                 [externalPaging]="serverSide"
+                 [externalSorting]="serverSide"
                  [limit]="userConfig.limit > 0 ? userConfig.limit : undefined"
+                 [offset]="userConfig.offset >= 0 ? userConfig.offset : 0"
+                 (page)="changePage($event)"
                  [loadingIndicator]="loadingIndicator"
                  [rowIdentity]="rowIdentity()"
                  [rowHeight]="'auto'">
+
+    <!-- Row Selection Template-->
+    <ng-template #rowSelectionTpl
+                 let-value="value"
+                 let-isSelected="isSelected"
+                 ngx-datatable-cell-template>
+      <input type="checkbox"
+             [attr.aria-label]="isSelected ? 'selected' : 'select'"
+             [checked]="isSelected"
+             class="cd-datatable-checkbox" />
+    </ng-template>
 
     <!-- Row Detail Template -->
     <ngx-datatable-row-detail rowHeight="auto"
@@ -213,23 +218,29 @@
           <span *ngIf="selectionType">
             {{ selectedCount }} <ng-container i18n="X selected">selected</ng-container> /
           </span>
-          <span *ngIf="rowCount != data?.length">
-            {{ rowCount }} <ng-container i18n="X found">found</ng-container> /
-          </span>
-          <span>
+
+          <!-- rowCount might have different semantics with or without serverSide.
+            We treat serverSide (backend-driven tables) as a specific case.
+          -->
+          <span *ngIf="!serverSide else serverSideTpl">
+            <span *ngIf="rowCount != data?.length">
+              {{ rowCount }} <ng-container i18n="X found">found</ng-container> /
+            </span>
             {{ data?.length || 0 }} <ng-container i18n="X total">total</ng-container>
           </span>
+
+          <ng-template #serverSideTpl>
+            <span>
+              {{ data?.length || 0 }} <ng-container i18n="X found">found</ng-container> /
+              {{ rowCount }} <ng-container i18n="X total">total</ng-container>
+            </span>
+          </ng-template>
         </div>
-        <datatable-pager [pagerLeftArrowIcon]="paginationClasses.pagerLeftArrow"
-                         [pagerRightArrowIcon]="paginationClasses.pagerRightArrow"
-                         [pagerPreviousIcon]="paginationClasses.pagerPrevious"
-                         [pagerNextIcon]="paginationClasses.pagerNext"
-                         [page]="curPage"
-                         [size]="pageSize"
-                         [count]="rowCount"
-                         [hidden]="!((rowCount / pageSize) > 1)"
-                         (change)="table.onFooterPage($event)">
-        </datatable-pager>
+        <cd-table-pagination [page]="curPage"
+                             [size]="pageSize"
+                             [count]="rowCount"
+                             [hidden]="!((rowCount / pageSize) > 1)"
+                             (pageChange)="table.onFooterPage($event)"></cd-table-pagination>
       </ng-template>
     </ngx-datatable-footer>
   </ngx-datatable>
@@ -268,18 +279,21 @@
 </ng-template>
 
 <ng-template #executingTpl
+             let-column="column"
              let-row="row"
              let-value="value">
   <i [ngClass]="[icons.spinner, icons.spin]"
      *ngIf="row.cdExecuting"></i>
-  {{ value }}
+  <span [ngClass]="column?.customTemplateConfig?.valueClass">
+    {{ value }}
+  </span>
   <span *ngIf="row.cdExecuting"
-        class="text-muted italic">({{ row.cdExecuting }})</span>
+        [ngClass]="column?.customTemplateConfig?.executingClass ? column.customTemplateConfig.executingClass : 'text-muted italic'">({{ row.cdExecuting }})</span>
 </ng-template>
 
 <ng-template #classAddingTpl
              let-value="value">
-  <span class="{{useCustomClass(value)}}">{{ value }}</span>
+  <span class="{{ value | pipeFunction:useCustomClass:this }}">{{ value }}</span>
 </ng-template>
 
 <ng-template #badgeTpl
@@ -318,6 +332,25 @@
      class="expand-collapse-icon tc_expand-collapse"
      title="Expand/Collapse Row"
      i18n-title
-     (click)="toggleExpandRow(row, isExpanded)">
+     (click)="toggleExpandRow(row, isExpanded, $event)">
   </a>
+</ng-template>
+
+<ng-template #timeAgoTpl
+             let-value="value">
+  <span data-toggle="tooltip"
+        [title]="value | cdDate">{{ value | relativeDate }}</span>
+</ng-template>
+
+<ng-template #pathTpl
+             let-value="value">
+  <span data-toggle="tooltip"
+        [title]="value"
+        class="font-monospace">{{ value | path }}
+    <cd-copy-2-clipboard-button *ngIf="value"
+                                [source]="value"
+                                [byId]="false"
+                                [showIconOnly]="true">
+    </cd-copy-2-clipboard-button>
+  </span>
 </ng-template>

@@ -56,9 +56,9 @@ function above_margin() {
     return $(( $check >= $target && $check <= $target + $margin ? 0 : 1 ))
 }
 
-FIND_UPACT='grep "pg[[]${PG}.*recovering.*update_calc_stats " $log | tail -1 | sed "s/.*[)] \([[][^ p]*\).*$/\1/"'
-FIND_FIRST='grep "pg[[]${PG}.*recovering.*update_calc_stats $which " $log | grep -F " ${UPACT}${addp}" | grep -v est | head -1 | sed "s/.* \([0-9]*\)$/\1/"'
-FIND_LAST='grep "pg[[]${PG}.*recovering.*update_calc_stats $which " $log | tail -1 | sed "s/.* \([0-9]*\)$/\1/"'
+FIND_UPACT='grep "pg[[]${PG}.*recovering.*PeeringState::update_calc_stats " $log | tail -1 | sed "s/.*[)] \([[][^ p]*\).*$/\1/"'
+FIND_FIRST='grep "pg[[]${PG}.*recovering.*PeeringState::update_calc_stats $which " $log | grep -F " ${UPACT}${addp}" | grep -v est | head -1 | sed "s/.* \([0-9]*\)$/\1/"'
+FIND_LAST='grep "pg[[]${PG}.*recovering.*PeeringState::update_calc_stats $which " $log | tail -1 | sed "s/.* \([0-9]*\)$/\1/"'
 
 function check() {
     local dir=$1
@@ -347,13 +347,13 @@ function TEST_recovery_undersized() {
     # Wait for recovery to finish
     # Can't use wait_for_clean() because state goes from active+recovering+undersized+degraded
     # to  active+undersized+degraded
-    for i in $(seq 1 60)
+    for i in $(seq 1 300)
     do
       if ceph pg dump pgs | grep ^$PG | grep -qv recovering
       then
           break
       fi
-      if [ $i = "60" ];
+      if [ $i = "300" ];
       then
           echo "Timeout waiting for recovery to finish"
           return 1

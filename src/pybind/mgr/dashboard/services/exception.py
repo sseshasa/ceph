@@ -1,68 +1,20 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
 
 import json
-from contextlib import contextmanager
 import logging
-import six
+from contextlib import contextmanager
 
+import cephfs
 import cherrypy
-
-from orchestrator import OrchestratorError
-import rbd
 import rados
+import rbd
+from orchestrator import OrchestratorError
 
+from ..exceptions import DashboardException, ViewCacheNoDataException
+from ..rest_client import RequestException
 from ..services.ceph_service import SendCommandError
-from ..exceptions import ViewCacheNoDataException, DashboardException
-from ..tools import wraps
-
 
 logger = logging.getLogger('exception')
-
-
-if six.PY2:
-    # Monkey-patch a __call__ method into @contextmanager to make
-    # it compatible to Python 3
-
-    # pylint: disable=no-name-in-module,ungrouped-imports
-    from contextlib import GeneratorContextManager
-
-    def init(self, *args):
-        if len(args) == 1:
-            self.gen = args[0]
-        elif len(args) == 3:
-            self.func, self.args, self.kwargs = args
-        else:
-            raise TypeError()
-
-    def enter(self):
-        if hasattr(self, 'func'):
-            self.gen = self.func(*self.args, **self.kwargs)
-        try:
-            return self.gen.next()
-        except StopIteration:
-            raise RuntimeError("generator didn't yield")
-
-    def call(self, f):
-        @wraps(f)
-        def wrapper(*args, **kwargs):
-            with self:
-                return f(*args, **kwargs)
-
-        return wrapper
-
-    GeneratorContextManager.__init__ = init
-    GeneratorContextManager.__enter__ = enter
-    GeneratorContextManager.__call__ = call
-
-    # pylint: disable=function-redefined
-    def contextmanager(func):  # noqa: F811
-
-        @wraps(func)
-        def helper(*args, **kwds):
-            return GeneratorContextManager(func, args, kwds)
-
-        return helper
 
 
 def serialize_dashboard_exception(e, include_http_status=False, task=None):
@@ -82,22 +34,36 @@ def serialize_dashboard_exception(e, include_http_status=False, task=None):
     component = getattr(e, 'component', None)
     out['component'] = component if component else None
     if include_http_status:
-        out['status'] = getattr(e, 'status', 500)
+        out['status'] = getattr(e, 'status', 500)  # type: ignore
     if task:
         out['task'] = dict(name=task.name, metadata=task.metadata)  # type: ignore
     return out
 
 
+# pylint: disable=broad-except
 def dashboard_exception_handler(handler, *args, **kwargs):
     try:
         with handle_rados_error(component=None):  # make the None controller the fallback.
             return handler(*args, **kwargs)
-    # Don't catch cherrypy.* Exceptions.
-    except (ViewCacheNoDataException, DashboardException) as e:
+    # pylint: disable=try-except-raise
+    except (cherrypy.HTTPRedirect, cherrypy.NotFound, cherrypy.HTTPError):
+        raise
+    except (ViewCacheNoDataException, DashboardException) as error:
         logger.exception('Dashboard Exception')
         cherrypy.response.headers['Content-Type'] = 'application/json'
-        cherrypy.response.status = getattr(e, 'status', 400)
-        return json.dumps(serialize_dashboard_exception(e)).encode('utf-8')
+        cherrypy.response.status = getattr(error, 'status', 400)
+        return json.dumps(serialize_dashboard_exception(error)).encode('utf-8')
+    except Exception as error:
+        logger.exception('Internal Server Error')
+        raise error
+
+
+@contextmanager
+def handle_cephfs_error():
+    try:
+        yield
+    except cephfs.OSError as e:
+        raise DashboardException(e, component='cephfs') from e
 
 
 @contextmanager
@@ -134,3 +100,33 @@ def handle_orchestrator_error(component):
         yield
     except OrchestratorError as e:
         raise DashboardException(e, component=component)
+
+
+@contextmanager
+def handle_request_error(component):
+    try:
+        yield
+    except RequestException as e:
+        if e.content:
+            content = json.loads(e.content)
+            content_message = content.get('message')
+            if content_message:
+                raise DashboardException(
+                    msg=content_message, component=component)
+        raise DashboardException(e=e, component=component)
+
+
+@contextmanager
+def handle_error(component, http_status_code=None):
+    try:
+        yield
+    except Exception as e:  # pylint: disable=broad-except
+        raise DashboardException(e, component=component, http_status_code=http_status_code)
+
+
+@contextmanager
+def handle_custom_error(component, http_status_code=None, exceptions=()):
+    try:
+        yield
+    except exceptions as e:
+        raise DashboardException(e, component=component, http_status_code=http_status_code)

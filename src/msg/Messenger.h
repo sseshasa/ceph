@@ -17,8 +17,9 @@
 #ifndef CEPH_MESSENGER_H
 #define CEPH_MESSENGER_H
 
-#include <map>
 #include <deque>
+#include <map>
+#include <optional>
 
 #include <errno.h>
 #include <sstream>
@@ -34,6 +35,7 @@
 #include "auth/Crypto.h"
 #include "common/item_history.h"
 #include "auth/AuthRegistry.h"
+#include "compressor_registry.h"
 #include "include/ceph_assert.h"
 
 #include <errno.h>
@@ -57,6 +59,29 @@ struct Interceptor {
     CONTINUE = 0,
     FAIL,
     STOP
+  };
+
+  enum STEP {
+    START_CLIENT_BANNER_EXCHANGE = 1,
+    START_SERVER_BANNER_EXCHANGE,
+    BANNER_EXCHANGE_BANNER_CONNECTING,
+    BANNER_EXCHANGE,
+    HANDLE_PEER_BANNER_BANNER_CONNECTING,
+    HANDLE_PEER_BANNER,
+    HANDLE_PEER_BANNER_PAYLOAD_HELLO_CONNECTING,
+    HANDLE_PEER_BANNER_PAYLOAD,
+    SEND_AUTH_REQUEST,
+    HANDLE_AUTH_REQUEST_ACCEPTING_SIGN,
+    SEND_CLIENT_IDENTITY,
+    SEND_SERVER_IDENTITY,
+    SEND_RECONNECT,
+    SEND_RECONNECT_OK,
+    READY,
+    HANDLE_MESSAGE,
+    READ_MESSAGE_COMPLETE,
+    SESSION_RETRY,
+    SEND_COMPRESSION_REQUEST,
+    HANDLE_COMPRESSION_REQUEST
   };
 
   virtual ~Interceptor() {}
@@ -97,14 +122,6 @@ public:
 #endif
 
   /**
-   * Various Messenger conditional config/type flags to allow
-   * different "transport" Messengers to tune themselves
-   */
-  static const int HAS_HEAVY_TRAFFIC    = 0x0001;
-  static const int HAS_MANY_CONNECTIONS = 0x0002;
-  static const int HEARTBEAT            = 0x0004;
-
-  /**
    *  The CephContext this Messenger uses. Many other components initialize themselves
    *  from this value.
    */
@@ -143,18 +160,14 @@ public:
    * @param name entity name to register
    * @param lname logical name of the messenger in this process (e.g., "client")
    * @param nonce nonce value to uniquely identify this instance on the current host
-   * @param features bits for the local connection
-   * @param cflags general std::set of flags to configure transport resources
    */
   static Messenger *create(CephContext *cct,
                            const std::string &type,
                            entity_name_t name,
 			   std::string lname,
-                           uint64_t nonce,
-			   uint64_t cflags);
+                           uint64_t nonce);
 
   static uint64_t get_random_nonce();
-  static uint64_t get_pid_nonce();
 
   /**
    * create a new messenger
@@ -162,7 +175,6 @@ public:
    * Create a new messenger instance.
    * Same as the above, but a slightly simpler interface for clients:
    * - Generate a random nonce
-   * - use the default feature bits
    * - get the messenger type from cct
    * - use the client entity_type
    *
@@ -219,6 +231,9 @@ public:
     auth_server = as;
   }
 
+  // for compression
+  CompressorRegistry comp_registry;
+
 protected:
   /**
    * std::set messenger's address
@@ -254,14 +269,7 @@ public:
    * @param addr The address to use as a template.
    */
   virtual bool set_addr_unknowns(const entity_addrvec_t &addrs) = 0;
-  /**
-   * set the address for this Messenger. This is useful if the Messenger
-   * binds to a specific address but advertises a different address on the
-   * the network.
-   *
-   * @param addr The address to use.
-   */
-  virtual void set_addrs(const entity_addrvec_t &addr) = 0;
+
   /// Get the default send priority.
   int get_default_send_priority() { return default_send_priority; }
   /**
@@ -411,12 +419,15 @@ public:
    * in an unspecified order.
    *
    * @param bind_addr The address to bind to.
+   * @patam public_addrs The addresses to announce over the network
    * @return 0 on success, or -1 on error, or -errno if
    * we can be more specific about the failure.
    */
-  virtual int bind(const entity_addr_t& bind_addr) = 0;
+  virtual int bind(const entity_addr_t& bind_addr,
+		   std::optional<entity_addrvec_t> public_addrs=std::nullopt) = 0;
 
-  virtual int bindv(const entity_addrvec_t& addrs);
+  virtual int bindv(const entity_addrvec_t& bind_addrs,
+                    std::optional<entity_addrvec_t> public_addrs=std::nullopt);
 
   /**
    * This function performs a full restart of the Messenger component,

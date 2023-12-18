@@ -3,6 +3,8 @@
 //
 #include "rgw_object_lock.h"
 
+using namespace std;
+
 void DefaultRetention::decode_xml(XMLObj *obj) {
   RGWXMLDecoder::decode_xml("Mode", mode, obj, true);
   if (mode.compare("GOVERNANCE") != 0 && mode.compare("COMPLIANCE") != 0) {
@@ -12,6 +14,15 @@ void DefaultRetention::decode_xml(XMLObj *obj) {
   bool years_exist = RGWXMLDecoder::decode_xml("Years", years, obj);
   if ((days_exist && years_exist) || (!days_exist && !years_exist)) {
     throw RGWXMLDecoder::err("either Days or Years must be specified, but not both");
+  }
+}
+
+void DefaultRetention::dump(Formatter *f) const {
+  f->dump_string("mode", mode);
+  if (days > 0) {
+    f->dump_int("days", days);
+  } else {
+    f->dump_int("years", years);
   }
 }
 
@@ -30,6 +41,17 @@ void ObjectLockRule::decode_xml(XMLObj *obj) {
 
 void ObjectLockRule::dump_xml(Formatter *f) const {
   encode_xml("DefaultRetention", defaultRetention, f);
+}
+
+void ObjectLockRule::dump(Formatter *f) const {
+  f->open_object_section("default_retention");
+  defaultRetention.dump(f);
+  f->close_section();
+}
+
+void ObjectLockRule::generate_test_instances(std::list<ObjectLockRule*>& o) {
+  ObjectLockRule *obj = new ObjectLockRule;
+  o.push_back(obj);
 }
 
 void RGWObjectLock::decode_xml(XMLObj *obj) {
@@ -52,15 +74,35 @@ void RGWObjectLock::dump_xml(Formatter *f) const {
   }
 }
 
+void RGWObjectLock::dump(Formatter *f) const {
+  f->dump_bool("enabled", enabled);
+  f->dump_bool("rule_exist", rule_exist);
+  if (rule_exist) {
+    f->open_object_section("rule");
+    rule.dump(f);
+    f->close_section();
+  }
+}
+
 ceph::real_time RGWObjectLock::get_lock_until_date(const ceph::real_time& mtime) const {
   if (!rule_exist) {
     return ceph::real_time();
   }
-  int days = get_days();
-  if (days <= 0) {
-    days = get_years()*365;
+  if (int days = get_days(); days > 0) {
+    return mtime + std::chrono::days(days);
   }
-  return mtime + make_timespan(days*24*60*60);
+  return mtime + std::chrono::years(get_years());
+}
+
+void RGWObjectLock::generate_test_instances(list<RGWObjectLock*>& o) {
+  RGWObjectLock *obj = new RGWObjectLock;
+  obj->enabled = true;
+  obj->rule_exist = true;
+  o.push_back(obj);
+  obj = new RGWObjectLock;
+  obj->enabled = false;
+  obj->rule_exist = false;
+  o.push_back(obj);
 }
 
 void RGWObjectRetention::decode_xml(XMLObj *obj) {

@@ -24,7 +24,7 @@
 #include "include/encoding.h"
 #include "include/stringify.h"
 
-class MForward : public Message {
+class MForward final : public Message {
 public:
   uint64_t tid;
   uint8_t client_type;
@@ -48,14 +48,18 @@ public:
     tid(t), client_caps(caps), msg(NULL) {
     client_type = m->get_source().type();
     client_addrs = m->get_source_addrs();
-    if (auto con = m->get_connection()) {
+#ifdef WITH_SEASTAR
+    ceph_abort("In crimson, conn is independently maintained outside Message");
+#else
+    if (auto &con = m->get_connection()) {
       client_socket_addr = con->get_peer_socket_addr();
     }
+#endif
     con_features = feat;
     msg = (PaxosServiceMessage*)m->get();
   }
 private:
-  ~MForward() override {
+  ~MForward() final {
     if (msg) {
       // message was unclaimed
       msg->put();

@@ -17,6 +17,7 @@ extern void register_test_image_watcher();
 extern void register_test_internal();
 extern void register_test_journal_entries();
 extern void register_test_journal_replay();
+extern void register_test_journal_stress();
 extern void register_test_migration();
 extern void register_test_mirroring();
 extern void register_test_mirroring_watcher();
@@ -37,6 +38,7 @@ int main(int argc, char **argv)
   register_test_internal();
   register_test_journal_entries();
   register_test_journal_replay();
+  register_test_journal_stress();
   register_test_migration();
   register_test_mirroring();
   register_test_mirroring_watcher();
@@ -60,8 +62,7 @@ int main(int argc, char **argv)
 
   int r = rados.conf_set("lockdep", "true");
   if (r < 0) {
-    std::cerr << "failed to enable lockdep" << std::endl;
-    return -r;
+    std::cerr << "warning: failed to enable lockdep" << std::endl;
   }
 
   int seed = getpid();

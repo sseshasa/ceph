@@ -1,9 +1,10 @@
 overrides:
   ceph:
-    log-whitelist:
+    log-ignorelist:
     - but it is still running
     - objects unfound and apparently lost
     - slow request
+    - \(POOL_APP_NOT_ENABLED\)
     conf:
       osd:
         osd debug reject backfill probability: .1
@@ -17,3 +18,5 @@ tasks:
     chance_pgnum_shrink: 1
     chance_pgpnum_fix: 1
     min_in: 8
+    chance_bluestore_reshard: 1
+    bluestore_new_sharding: random

@@ -14,6 +14,7 @@
 
 #include "mdstypes.h"
 #include "MDSContext.h"
+#include "include/elist.h"
 
 #define MDS_REF_SET      // define me for improved debug output, sanity checking
 //#define MDS_AUTHPIN_SET  // define me for debugging auth pin leaks
@@ -75,6 +76,7 @@ class MDSCacheObject {
   const static int PIN_TEMPEXPORTING = 1008;  // temp pin between encode_ and finish_export
   static const int PIN_CLIENTLEASE = 1009;
   static const int PIN_DISCOVERBASE = 1010;
+  static const int PIN_SCRUBQUEUE = 1011;     // for scrub of inode and dir
 
   // -- state --
   const static int STATE_AUTH      = (1<<30);
@@ -88,14 +90,16 @@ class MDSCacheObject {
   const static uint64_t WAIT_SINGLEAUTH  = (1ull<<60);
   const static uint64_t WAIT_UNFREEZE    = (1ull<<59); // pka AUTHPINNABLE
 
+  elist<MDSCacheObject*>::item item_scrub;   // for scrub inode or dir
+
   MDSCacheObject() {}
   virtual ~MDSCacheObject() {}
 
   std::string_view generic_pin_name(int p) const;
 
   // printing
-  virtual void print(std::ostream& out) = 0;
-  virtual std::ostream& print_db_line_prefix(std::ostream& out) { 
+  virtual void print(std::ostream& out) const = 0;
+  virtual std::ostream& print_db_line_prefix(std::ostream& out) const {
     return out << "mdscacheobject(" << this << ") "; 
   }
 
@@ -113,7 +117,7 @@ class MDSCacheObject {
   // --------------------------------------------
   // authority
   virtual mds_authority_t authority() const = 0;
-  bool is_ambiguous_auth() const {
+  virtual bool is_ambiguous_auth() const {
     return authority().second != CDIR_AUTH_UNKNOWN;
   }
 
@@ -322,11 +326,7 @@ class MDSCacheObject {
   static uint64_t last_wait_seq;
 };
 
-std::ostream& operator<<(std::ostream& out, const mdsco_db_line_prefix& o);
-// printer
-std::ostream& operator<<(std::ostream& out, const MDSCacheObject &o);
-
-inline std::ostream& operator<<(std::ostream& out, MDSCacheObject &o) {
+inline std::ostream& operator<<(std::ostream& out, const MDSCacheObject& o) {
   o.print(out);
   return out;
 }

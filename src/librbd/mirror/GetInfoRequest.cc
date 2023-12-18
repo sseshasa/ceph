@@ -23,7 +23,7 @@ using librbd::util::create_rados_callback;
 
 template <typename I>
 GetInfoRequest<I>::GetInfoRequest(librados::IoCtx& io_ctx,
-                                  ContextWQ *op_work_queue,
+                                  asio::ContextWQ *op_work_queue,
                                   const std::string &image_id,
                                   cls::rbd::MirrorImage *mirror_image,
                                   PromotionState *promotion_state,
@@ -259,7 +259,7 @@ void GetInfoRequest<I>::calc_promotion_state(
   *m_primary_mirror_uuid = "";
 
   for (auto it = snap_info.rbegin(); it != snap_info.rend(); it++) {
-    auto mirror_ns = boost::get<cls::rbd::MirrorSnapshotNamespace>(
+    auto mirror_ns = std::get_if<cls::rbd::MirrorSnapshotNamespace>(
       &it->second.snap_namespace);
 
     if (mirror_ns != nullptr) {

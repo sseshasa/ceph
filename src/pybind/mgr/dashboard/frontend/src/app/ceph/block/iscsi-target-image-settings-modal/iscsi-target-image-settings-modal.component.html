@@ -1,4 +1,4 @@
-<cd-modal [modalRef]="modalRef">
+<cd-modal [modalRef]="activeModal">
   <ng-container class="modal-title">
     <ng-container i18n>Configure</ng-container>&nbsp;
     <small>{{ image }}</small>
@@ -58,7 +58,7 @@
                    i18n>Backstore</label>
             <select id="backstore"
                     name="backstore"
-                    class="form-control custom-select"
+                    class="form-select"
                     formControlName="backstore">
               <option *ngFor="let bs of backstores"
                       [value]="bs">{{ bs | iscsiBackstore }}</option>
@@ -83,13 +83,9 @@
       </div>
 
       <div class="modal-footer">
-        <cd-submit-button i18n
-                          [form]="settingsForm"
-                          (submitAction)="save()">Confirm</cd-submit-button>
-        <cd-back-button [back]="modalRef.hide"
-                        name="Cancel"
-                        i18n-name>
-        </cd-back-button>
+        <cd-form-button-panel (submitActionEvent)="save()"
+                              [form]="settingsForm"
+                              [submitText]="actionLabels.UPDATE"></cd-form-button-panel>
       </div>
     </form>
   </ng-container>

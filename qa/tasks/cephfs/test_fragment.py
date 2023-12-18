@@ -1,4 +1,4 @@
-
+from io import StringIO
 
 from tasks.cephfs.cephfs_test_case import CephFSTestCase
 from teuthology.orchestra import run
@@ -160,14 +160,13 @@ class TestFragmentation(CephFSTestCase):
             target_files = branch_factor**depth * int(split_size * 1.5)
             create_files = target_files - files_written
 
-            self.ceph_cluster.mon_manager.raw_cluster_cmd("log",
+            self.run_ceph_cmd("log",
                 "{0} Writing {1} files (depth={2})".format(
                     self.__class__.__name__, create_files, depth
                 ))
             self.mount_a.create_n_files("splitdir/file_{0}".format(depth),
                                         create_files)
-            self.ceph_cluster.mon_manager.raw_cluster_cmd("log",
-                "{0} Done".format(self.__class__.__name__))
+            self.run_ceph_cmd("log","{0} Done".format(self.__class__.__name__))
 
             files_written += create_files
             log.info("Now have {0} files".format(files_written))
@@ -214,18 +213,21 @@ class TestFragmentation(CephFSTestCase):
 
         self.fs.mds_asok(['flush', 'journal'])
 
+        def _check_pq_finished():
+            num_strays = self.fs.mds_asok(['perf', 'dump', 'mds_cache'])['mds_cache']['num_strays']
+            pq_ops = self.fs.mds_asok(['perf', 'dump', 'purge_queue'])['purge_queue']['pq_executing']
+            return num_strays == 0 and pq_ops == 0
+
         # Wait for all strays to purge
-        self.wait_until_equal(
-            lambda: self.fs.mds_asok(['perf', 'dump', 'mds_cache']
-                                     )['mds_cache']['num_strays'],
-            0,
+        self.wait_until_true(
+            lambda: _check_pq_finished(),
             timeout=1200
         )
         # Check that the metadata pool objects for all the myriad
         # child fragments are gone
-        metadata_objs = self.fs.rados(["ls"])
+        metadata_objs = self.fs.radosmo(["ls"], stdout=StringIO()).strip()
         frag_objs = []
-        for o in metadata_objs:
+        for o in metadata_objs.split("\n"):
             if o.startswith("{0:x}.".format(dir_inode_no)):
                 frag_objs.append(o)
         self.assertListEqual(frag_objs, [])
@@ -297,7 +299,7 @@ class TestFragmentation(CephFSTestCase):
             self.mount_a.run_shell(["ln", "testdir1/{0}".format(i), "testdir2/"])
 
         self.mount_a.umount_wait()
-        self.mount_a.mount()
+        self.mount_a.mount_wait()
         self.mount_a.wait_until_mounted()
 
         # flush journal and restart mds. after restart, testdir2 is not in mds' cache
@@ -314,3 +316,43 @@ class TestFragmentation(CephFSTestCase):
             lambda: _count_fragmented() > 0,
             timeout=30
         )
+
+    def test_dir_merge_with_snap_items(self):
+        """
+        That directory remain fragmented when snapshot items are taken into account.
+        """
+        split_size = 1000
+        merge_size = 100
+        self._configure(
+            mds_bal_split_size=split_size,
+            mds_bal_merge_size=merge_size,
+            mds_bal_split_bits=1
+        )
+
+        # split the dir
+        create_files = split_size + 50
+        self.mount_a.create_n_files("splitdir/file_", create_files)
+
+        self.wait_until_true(
+            lambda: self.get_splits() == 1,
+            timeout=30
+        )
+
+        frags = self.get_dir_ino("/splitdir")['dirfrags']
+        self.assertEqual(len(frags), 2)
+        self.assertEqual(frags[0]['dirfrag'], "0x10000000000.0*")
+        self.assertEqual(frags[1]['dirfrag'], "0x10000000000.1*")
+        self.assertEqual(
+            sum([len(f['dentries']) for f in frags]), create_files
+        )
+
+        self.assertEqual(self.get_merges(), 0)
+
+        self.mount_a.run_shell(["mkdir", "splitdir/.snap/snap_a"])
+        self.mount_a.run_shell(["mkdir", "splitdir/.snap/snap_b"])
+        self.mount_a.run_shell(["rm", "-f", run.Raw("splitdir/file*")])
+
+        time.sleep(30)
+
+        self.assertEqual(self.get_merges(), 0)
+        self.assertEqual(len(self.get_dir_ino("/splitdir")["dirfrags"]), 2)

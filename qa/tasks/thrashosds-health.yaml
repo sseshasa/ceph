@@ -3,7 +3,8 @@ overrides:
     conf:
       osd:
         osd max markdown count: 1000
-    log-whitelist:
+        osd blocked scrub grace period: 3600
+    log-ignorelist:
       - overall HEALTH_
       - \(OSDMAP_FLAGS\)
       - \(OSD_
@@ -16,3 +17,5 @@ overrides:
       - \(REQUEST_SLOW\)
       - \(TOO_FEW_PGS\)
       - slow request
+      - timeout on replica
+      - late reservation from

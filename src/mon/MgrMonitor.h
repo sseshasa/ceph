@@ -45,7 +45,13 @@ class MgrMonitor: public PaxosService
    * @return true if a standby was promoted
    */
   bool promote_standby();
-  void drop_active();
+
+  /**
+   * Drop the active daemon from the MgrMap. No promotion is performed.
+   *
+   * @return whether PAXOS was plugged by this method
+   */
+  bool drop_active();
 
   /**
    * Remove this gid from the list of standbys.  By default,
@@ -71,7 +77,7 @@ class MgrMonitor: public PaxosService
   std::vector<MonCommand> pending_command_descs;
 
 public:
-  MgrMonitor(Monitor *mn, Paxos *p, const std::string& service_name)
+  MgrMonitor(Monitor &mn, Paxos &p, const std::string& service_name)
     : PaxosService(mn, p, service_name)
   {}
   ~MgrMonitor() override {}
@@ -129,6 +135,7 @@ public:
   void print_nodes(ceph::Formatter *f) const;
   void count_metadata(const std::string& field, ceph::Formatter *f);
   void count_metadata(const std::string& field, std::map<std::string,int> *out);
+  void get_versions(std::map<std::string, std::list<std::string>> &versions);
 
   // When did the mon last call into our tick() method?  Used for detecting
   // when the mon was not updating us for some period (e.g. during slow

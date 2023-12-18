@@ -14,6 +14,7 @@
 #ifndef CEPH_ENCODING_H
 #define CEPH_ENCODING_H
 
+#include <concepts>
 #include <set>
 #include <map>
 #include <deque>
@@ -92,10 +93,6 @@ WRITE_RAW_ENCODER(ceph_le64)
 WRITE_RAW_ENCODER(ceph_le32)
 WRITE_RAW_ENCODER(ceph_le16)
 
-// FIXME: we need to choose some portable floating point encoding here
-WRITE_RAW_ENCODER(float)
-WRITE_RAW_ENCODER(double)
-
 inline void encode(const bool &v, bufferlist& bl) {
   __u8 vv = v;
   encode_raw(vv, bl);
@@ -129,6 +126,37 @@ WRITE_INTTYPE_ENCODER(int32_t, le32)
 WRITE_INTTYPE_ENCODER(uint16_t, le16)
 WRITE_INTTYPE_ENCODER(int16_t, le16)
 
+// -----------------------------------
+// float types
+//
+// NOTE: The following code assumes all supported platforms use IEEE binary32
+// as float and IEEE binary64 as double floating-point format.  The assumption
+// is verified by the assertions below.
+//
+// Under this assumption, we can use raw encoding of floating-point types
+// on little-endian machines, but we still need to perform a byte swap
+// on big-endian machines to ensure cross-architecture compatibility.
+// To achive that, we reinterpret the values as integers first, which are
+// byte-swapped via the ceph_le types as above.  The extra conversions
+// are optimized away on little-endian machines by the compiler.
+#define WRITE_FLTTYPE_ENCODER(type, itype, etype)			\
+  static_assert(sizeof(type) == sizeof(itype));				\
+  static_assert(std::numeric_limits<type>::is_iec559,			\
+	      "floating-point type not using IEEE754 format");		\
+  inline void encode(type v, ::ceph::bufferlist& bl, uint64_t features=0) { \
+    ceph_##etype e;							\
+    e = *reinterpret_cast<itype *>(&v);					\
+    ::ceph::encode_raw(e, bl);						\
+  }									\
+  inline void decode(type &v, ::ceph::bufferlist::const_iterator& p) {	\
+    ceph_##etype e;							\
+    ::ceph::decode_raw(e, p);						\
+    *reinterpret_cast<itype *>(&v) = e;					\
+  }
+
+WRITE_FLTTYPE_ENCODER(float, uint32_t, le32)
+WRITE_FLTTYPE_ENCODER(double, uint64_t, le64)
+
 // see denc.h for ENCODE_DUMP_PATH discussion and definition.
 #ifdef ENCODE_DUMP_PATH
 # define ENCODE_DUMP_PRE()			\
@@ -144,7 +172,7 @@ WRITE_INTTYPE_ENCODER(int16_t, le16)
       break;								\
     char fn[PATH_MAX];							\
     snprintf(fn, sizeof(fn), ENCODE_STRINGIFY(ENCODE_DUMP_PATH) "/%s__%d.%x", #cl, getpid(), i++); \
-    int fd = ::open(fn, O_WRONLY|O_TRUNC|O_CREAT|O_CLOEXEC, 0644);		\
+    int fd = ::open(fn, O_WRONLY|O_TRUNC|O_CREAT|O_CLOEXEC|O_BINARY, 0644);		\
     if (fd >= 0) {							\
       ::ceph::bufferlist sub;						\
       sub.substr_of(bl, pre_off, bl.length() - pre_off);		\
@@ -219,6 +247,23 @@ inline void encode(const char *s, bufferlist& bl)
   encode(std::string_view(s, strlen(s)), bl);
 }
 
+// opaque byte vectors
+inline void encode(std::vector<uint8_t>& v, bufferlist& bl)
+{
+  uint32_t len = v.size();
+  encode(len, bl);
+  if (len)
+    bl.append((char *)v.data(), len);
+}
+
+inline void decode(std::vector<uint8_t>& v, bufferlist::const_iterator& p)
+{
+  uint32_t len;
+
+  decode(len, p);
+  v.resize(len);
+  p.copy(len, (char *)v.data());
+}
 
 // -----------------------------
 // buffers
@@ -278,10 +323,11 @@ inline void decode_nohead(int len, bufferlist& s, bufferlist::const_iterator& p)
   p.copy(len, s);
 }
 
-// Time, since the templates are defined in std::chrono
+// Time, since the templates are defined in std::chrono. The default encodings
+// for time_point and duration are backward-compatible with utime_t, but
+// truncate seconds to 32 bits so are not guaranteed to round-trip.
 
-template<typename Clock, typename Duration,
-         typename std::enable_if_t<converts_to_timespec_v<Clock>>* = nullptr>
+template<clock_with_timespec Clock, typename Duration>
 void encode(const std::chrono::time_point<Clock, Duration>& t,
 	    ceph::bufferlist &bl) {
   auto ts = Clock::to_timespec(t);
@@ -292,8 +338,7 @@ void encode(const std::chrono::time_point<Clock, Duration>& t,
   encode(ns, bl);
 }
 
-template<typename Clock, typename Duration,
-         typename std::enable_if_t<converts_to_timespec_v<Clock>>* = nullptr>
+template<clock_with_timespec Clock, typename Duration>
 void decode(std::chrono::time_point<Clock, Duration>& t,
 	    bufferlist::const_iterator& p) {
   uint32_t s;
@@ -307,8 +352,7 @@ void decode(std::chrono::time_point<Clock, Duration>& t,
   t = Clock::from_timespec(ts);
 }
 
-template<typename Rep, typename Period,
-         typename std::enable_if_t<std::is_integral_v<Rep>>* = nullptr>
+template<std::integral Rep, typename Period>
 void encode(const std::chrono::duration<Rep, Period>& d,
 	    ceph::bufferlist &bl) {
   using namespace std::chrono;
@@ -318,8 +362,7 @@ void encode(const std::chrono::duration<Rep, Period>& d,
   encode(ns, bl);
 }
 
-template<typename Rep, typename Period,
-         typename std::enable_if_t<std::is_integral_v<Rep>>* = nullptr>
+template<std::integral Rep, typename Period>
 void decode(std::chrono::duration<Rep, Period>& d,
 	    bufferlist::const_iterator& p) {
   int32_t s;
@@ -327,6 +370,38 @@ void decode(std::chrono::duration<Rep, Period>& d,
   decode(s, p);
   decode(ns, p);
   d = std::chrono::seconds(s) + std::chrono::nanoseconds(ns);
+}
+
+// Provide encodings for chrono::time_point and duration that use
+// the underlying representation so are guaranteed to round-trip.
+
+template <std::integral Rep, typename Period>
+void round_trip_encode(const std::chrono::duration<Rep, Period>& d,
+                       ceph::bufferlist &bl) {
+  const Rep r = d.count();
+  encode(r, bl);
+}
+
+template <std::integral Rep, typename Period>
+void round_trip_decode(std::chrono::duration<Rep, Period>& d,
+                       bufferlist::const_iterator& p) {
+  Rep r;
+  decode(r, p);
+  d = std::chrono::duration<Rep, Period>(r);
+}
+
+template <typename Clock, typename Duration>
+void round_trip_encode(const std::chrono::time_point<Clock, Duration>& t,
+                       ceph::bufferlist &bl) {
+  round_trip_encode(t.time_since_epoch(), bl);
+}
+
+template <typename Clock, typename Duration>
+void round_trip_decode(std::chrono::time_point<Clock, Duration>& t,
+                       bufferlist::const_iterator& p) {
+  Duration dur;
+  round_trip_decode(dur, p);
+  t = std::chrono::time_point<Clock, Duration>(dur);
 }
 
 // -----------------------------

@@ -8,8 +8,8 @@ roles:
 overrides:
   ceph:
     pre-mgr-commands:
-      - sudo ceph config set mgr mgr/devicehealth/enable_monitoring false --force
-    log-whitelist:
+      - sudo ceph config set mgr mgr_pool false --force
+    log-ignorelist:
     - but it is still running
     - overall HEALTH_
     - \(POOL_APP_NOT_ENABLED\)
@@ -17,6 +17,8 @@ overrides:
 tasks:
 - install:
 - ceph:
+    log-ignorelist:
+    - \(POOL_APP_NOT_ENABLED\)
 - workunit:
     clients:
       all:

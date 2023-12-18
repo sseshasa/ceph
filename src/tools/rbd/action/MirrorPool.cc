@@ -818,8 +818,7 @@ int get_mirror_image_status(
 void get_peer_bootstrap_create_arguments(po::options_description *positional,
                                          po::options_description *options) {
   at::add_pool_options(positional, options, false);
-  options->add_options()
-    (SITE_NAME.c_str(), po::value<std::string>(), "local site name");
+  add_site_name_optional(options);
 }
 
 int execute_peer_bootstrap_create(
@@ -827,7 +826,7 @@ int execute_peer_bootstrap_create(
     const std::vector<std::string> &ceph_global_init_args) {
   std::string pool_name;
   size_t arg_index = 0;
-  int r = utils::get_pool_and_namespace_names(vm, true, true, &pool_name,
+  int r = utils::get_pool_and_namespace_names(vm, true, &pool_name,
                                               nullptr, &arg_index);
   if (r < 0) {
     return r;
@@ -871,8 +870,7 @@ int execute_peer_bootstrap_create(
 void get_peer_bootstrap_import_arguments(po::options_description *positional,
                                          po::options_description *options) {
   at::add_pool_options(positional, options, false);
-  options->add_options()
-    (SITE_NAME.c_str(), po::value<std::string>(), "local site name");
+  add_site_name_optional(options);
   positional->add_options()
     ("token-path", po::value<std::string>(),
      "bootstrap token file (or '-' for stdin)");
@@ -887,7 +885,7 @@ int execute_peer_bootstrap_import(
     const std::vector<std::string> &ceph_global_init_args) {
   std::string pool_name;
   size_t arg_index = 0;
-  int r = utils::get_pool_and_namespace_names(vm, true, true, &pool_name,
+  int r = utils::get_pool_and_namespace_names(vm, true, &pool_name,
                                               nullptr, &arg_index);
   if (r < 0) {
     return r;
@@ -913,7 +911,7 @@ int execute_peer_bootstrap_import(
 
   int fd = STDIN_FILENO;
   if (token_path != "-") {
-    fd = open(token_path.c_str(), O_RDONLY);
+    fd = open(token_path.c_str(), O_RDONLY|O_BINARY);
     if (fd < 0) {
       r = -errno;
       std::cerr << "rbd: error opening " << token_path << std::endl;
@@ -980,7 +978,7 @@ int execute_peer_add(const po::variables_map &vm,
                      const std::vector<std::string> &ceph_global_init_args) {
   std::string pool_name;
   size_t arg_index = 0;
-  int r = utils::get_pool_and_namespace_names(vm, true, true, &pool_name,
+  int r = utils::get_pool_and_namespace_names(vm, true, &pool_name,
                                               nullptr, &arg_index);
   if (r < 0) {
     return r;
@@ -1071,7 +1069,7 @@ int execute_peer_remove(const po::variables_map &vm,
                         const std::vector<std::string> &ceph_global_init_args) {
   std::string pool_name;
   size_t arg_index = 0;
-  int r = utils::get_pool_and_namespace_names(vm, true, true, &pool_name,
+  int r = utils::get_pool_and_namespace_names(vm, true, &pool_name,
                                               nullptr, &arg_index);
   if (r < 0) {
     return r;
@@ -1119,7 +1117,7 @@ int execute_peer_set(const po::variables_map &vm,
                      const std::vector<std::string> &ceph_global_init_args) {
   std::string pool_name;
   size_t arg_index = 0;
-  int r = utils::get_pool_and_namespace_names(vm, true, true, &pool_name,
+  int r = utils::get_pool_and_namespace_names(vm, true, &pool_name,
                                               nullptr, &arg_index);
   if (r < 0) {
     return r;
@@ -1290,7 +1288,7 @@ int execute_disable(const po::variables_map &vm,
   std::string pool_name;
   std::string namespace_name;
   size_t arg_index = 0;
-  int r = utils::get_pool_and_namespace_names(vm, true, true, &pool_name,
+  int r = utils::get_pool_and_namespace_names(vm, true, &pool_name,
                                               &namespace_name, &arg_index);
   if (r < 0) {
     return r;
@@ -1313,7 +1311,7 @@ int execute_enable(const po::variables_map &vm,
   std::string pool_name;
   std::string namespace_name;
   size_t arg_index = 0;
-  int r = utils::get_pool_and_namespace_names(vm, true, true, &pool_name,
+  int r = utils::get_pool_and_namespace_names(vm, true, &pool_name,
                                               &namespace_name, &arg_index);
   if (r < 0) {
     return r;
@@ -1369,7 +1367,7 @@ int execute_info(const po::variables_map &vm,
   std::string pool_name;
   std::string namespace_name;
   size_t arg_index = 0;
-  int r = utils::get_pool_and_namespace_names(vm, true, false, &pool_name,
+  int r = utils::get_pool_and_namespace_names(vm, false, &pool_name,
                                               &namespace_name, &arg_index);
   if (r < 0) {
     return r;
@@ -1465,7 +1463,7 @@ int execute_status(const po::variables_map &vm,
   std::string pool_name;
   std::string namespace_name;
   size_t arg_index = 0;
-  int r = utils::get_pool_and_namespace_names(vm, true, false, &pool_name,
+  int r = utils::get_pool_and_namespace_names(vm, false, &pool_name,
                                               &namespace_name, &arg_index);
   if (r < 0) {
     return r;
@@ -1655,7 +1653,7 @@ int execute_promote(const po::variables_map &vm,
   std::string pool_name;
   std::string namespace_name;
   size_t arg_index = 0;
-  int r = utils::get_pool_and_namespace_names(vm, true, true, &pool_name,
+  int r = utils::get_pool_and_namespace_names(vm, true, &pool_name,
                                               &namespace_name, &arg_index);
   if (r < 0) {
     return r;
@@ -1694,7 +1692,7 @@ int execute_demote(const po::variables_map &vm,
   std::string pool_name;
   std::string namespace_name;
   size_t arg_index = 0;
-  int r = utils::get_pool_and_namespace_names(vm, true, true, &pool_name,
+  int r = utils::get_pool_and_namespace_names(vm, true, &pool_name,
                                               &namespace_name, &arg_index);
   if (r < 0) {
     return r;
@@ -1726,7 +1724,7 @@ Shell::Action action_bootstrap_create(
   {"mirror", "pool", "peer", "bootstrap", "create"}, {},
   "Create a peer bootstrap token to import in a remote cluster", "",
   &get_peer_bootstrap_create_arguments, &execute_peer_bootstrap_create);
-Shell::Action action_bootstreap_import(
+Shell::Action action_bootstrap_import(
   {"mirror", "pool", "peer", "bootstrap", "import"}, {},
   "Import a peer bootstrap token created from a remote cluster", "",
   &get_peer_bootstrap_import_arguments, &execute_peer_bootstrap_import);

@@ -1,9 +1,7 @@
 import errno
 import json
 import logging
-from time import sleep
 
-from teuthology.exceptions import CommandFailedError
 
 from .mgr_test_case import MgrTestCase
 
@@ -125,8 +123,7 @@ data_devices:
         self._orch_cmd('daemon', 'add', 'rgw', 'realm', 'zone')
 
     def test_nfs_add(self):
-        self._orch_cmd('daemon', 'add', "nfs", "service_name", "pool", "--namespace", "ns")
-        self._orch_cmd('daemon', 'add', "nfs", "service_name", "pool")
+        self._orch_cmd('daemon', 'add', "nfs", "service_name")
 
     def test_osd_rm(self):
         self._orch_cmd('daemon', "rm", "osd.0", '--force')
@@ -163,8 +160,10 @@ data_devices:
         self._orch_cmd("apply", "nfs", "service_name", "2")
 
     def test_error(self):
-        ret = self._orch_cmd_result("host", "add", "raise_no_support")
-        self.assertEqual(ret, errno.ENOENT)
+        ret = self._orch_cmd_result("host", "add", "raise_validation_error")
+        self.assertEqual(ret, errno.EINVAL)
+        ret = self._orch_cmd_result("host", "add", "raise_error")
+        self.assertEqual(ret, errno.EINVAL)
         ret = self._orch_cmd_result("host", "add", "raise_bug")
         self.assertEqual(ret, errno.EINVAL)
         ret = self._orch_cmd_result("host", "add", "raise_not_implemented")

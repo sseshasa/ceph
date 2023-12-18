@@ -1,5 +1,3 @@
-
-
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab ft=cpp
 
@@ -27,7 +25,7 @@
 class RGWRados;
 
 class RGWRadosThread {
-  class Worker : public Thread {
+  class Worker : public Thread, public DoutPrefixProvider {
     CephContext *cct;
     RGWRadosThread *processor;
     ceph::mutex lock = ceph::make_mutex("RGWRadosThread::Worker");
@@ -50,6 +48,11 @@ class RGWRadosThread {
       std::lock_guard l{lock};
       cond.notify_all();
     }
+
+  CephContext *get_cct() const { return cct; }
+  unsigned get_subsys() const { return ceph_subsys_rgw; }
+  std::ostream& gen_prefix(std::ostream& out) const { return out << "rgw rados thread: "; }
+
   };
 
   Worker *worker;
@@ -60,19 +63,19 @@ protected:
 
   std::atomic<bool> down_flag = { false };
 
-  string thread_name;
+  std::string thread_name;
 
   virtual uint64_t interval_msec() = 0;
   virtual void stop_process() {}
 public:
-  RGWRadosThread(RGWRados *_store, const string& thread_name = "radosgw")
+  RGWRadosThread(RGWRados *_store, const std::string& thread_name = "radosgw")
     : worker(NULL), cct(_store->ctx()), store(_store), thread_name(thread_name) {}
   virtual ~RGWRadosThread() {
     stop();
   }
 
-  virtual int init() { return 0; }
-  virtual int process() = 0;
+  virtual int init(const DoutPrefixProvider *dpp) { return 0; }
+  virtual int process(const DoutPrefixProvider *dpp) = 0;
 
   bool going_down() { return down_flag; }
 

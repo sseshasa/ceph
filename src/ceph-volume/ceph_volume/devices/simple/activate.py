@@ -35,29 +35,15 @@ class Activate(object):
         try:
             objectstore = json_config['type']
         except KeyError:
-            if {'data', 'journal'}.issubset(set(devices)):
-                logger.warning(
-                    '"type" key not found, assuming "filestore" since journal key is present'
-                )
-                objectstore = 'filestore'
-            else:
-                logger.warning(
-                    '"type" key not found, assuming "bluestore" since journal key is not present'
-                )
-                objectstore = 'bluestore'
+            logger.warning(
+                '"type" key not found, assuming "bluestore" since journal key is not present'
+            )
+            objectstore = 'bluestore'
 
         # Go through all the device combinations that are absolutely required,
         # raise an error describing what was expected and what was found
         # otherwise.
-        if objectstore == 'filestore':
-            if {'data', 'journal'}.issubset(set(devices)):
-                return True
-            else:
-                found = [i for i in devices if i in ['data', 'journal']]
-                mlogger.error("Required devices (data, and journal) not present for filestore")
-                mlogger.error('filestore devices found: %s', found)
-                raise RuntimeError('Unable to activate filestore OSD due to missing devices')
-        else:
+        if objectstore == 'bluestore':
             # This is a bit tricky, with newer bluestore we don't need data, older implementations
             # do (e.g. with ceph-disk). ceph-volume just uses a tmpfs that doesn't require data.
             if {'block', 'data'}.issubset(set(devices)):
@@ -169,7 +155,12 @@ class Activate(object):
 
         # XXX there is no support for LVM here
         data_device = self.get_device(data_uuid)
-        journal_device = self.get_device(osd_metadata.get('journal', {}).get('uuid'))
+
+        if not data_device:
+            raise RuntimeError("osd fsid {} doesn't exist, this file will "
+                "be skipped, consider cleaning legacy "
+                "json file {}".format(osd_metadata['fsid'], args.json_config))
+
         block_device = self.get_device(osd_metadata.get('block', {}).get('uuid'))
         block_db_device = self.get_device(osd_metadata.get('block.db', {}).get('uuid'))
         block_wal_device = self.get_device(osd_metadata.get('block.wal', {}).get('uuid'))
@@ -178,7 +169,6 @@ class Activate(object):
             process.run(['mount', '-v', data_device, osd_dir])
 
         device_map = {
-            'journal': journal_device,
             'block': block_device,
             'block.db': block_db_device,
             'block.wal': block_wal_device
@@ -277,7 +267,10 @@ class Activate(object):
             for json_config in json_configs:
                 mlogger.info('activating OSD specified in {}'.format(json_config))
                 args.json_config = json_config
-                self.activate(args)
+                try:
+                    self.activate(args)
+                except RuntimeError as e:
+                    terminal.warning(e.message)
         else:
             if args.file:
                 json_config = args.file

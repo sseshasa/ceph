@@ -30,6 +30,8 @@
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
 
+using namespace std;
+
 namespace {
   librgw_t rgw = nullptr;
   string userid("testuser");
@@ -47,7 +49,7 @@ namespace {
   bool do_verify = false;
   bool do_hexdump = false;
 
-  string bucket_name = "sorry_dave";
+  string bucket_name = "sorrydave";
   string object_name = "jocaml";
 
   struct rgw_file_handle *bucket_fh = nullptr;
@@ -91,11 +93,11 @@ namespace {
       } // page_ix
     }
 
-    int size() { return pages.size(); }
+    int size() const { return pages.size(); }
 
     struct iovec* get_iovs() { return iovs; }
 
-    bool operator==(const ZPageSet& rhs) {
+    bool operator==(const ZPageSet& rhs) const {
       int n = size();
       for (int page_ix = 0; page_ix < n; ++page_ix) {
 	ZPage* p1 = pages[page_ix];
@@ -333,6 +335,14 @@ TEST(LibRGW, DELETE_OBJECT) {
   }
 }
 
+TEST(LibRGW, DELETE_BUCKET) {
+  if (do_delete) {
+    int ret = rgw_unlink(fs, fs->root_fh, bucket_name.c_str(),
+			 RGW_UNLINK_FLAG_NONE);
+    ASSERT_EQ(ret, 0);
+  }
+}
+
 TEST(LibRGW, CLEANUP) {
   int ret;
   if (object_fh) {
@@ -357,14 +367,10 @@ TEST(LibRGW, SHUTDOWN) {
 
 int main(int argc, char *argv[])
 {
-  char *v{nullptr};
-  string val;
-  vector<const char*> args;
-
-  argv_to_vec(argc, const_cast<const char**>(argv), args);
+  auto args = argv_to_vec(argc, argv);
   env_to_vec(args);
 
-  v = getenv("AWS_ACCESS_KEY_ID");
+  char* v = getenv("AWS_ACCESS_KEY_ID");
   if (v) {
     access_key = v;
   }
@@ -373,6 +379,8 @@ int main(int argc, char *argv[])
   if (v) {
     secret_key = v;
   }
+
+  string val;
 
   for (auto arg_iter = args.begin(); arg_iter != args.end();) {
     if (ceph_argparse_witharg(args, arg_iter, &val, "--access",

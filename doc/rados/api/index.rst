@@ -1,10 +1,12 @@
+.. _rados api:
+
 ===========================
  Ceph Storage Cluster APIs
 ===========================
 
 The :term:`Ceph Storage Cluster` has a messaging layer protocol that enables
 clients to interact with a :term:`Ceph Monitor` and a :term:`Ceph OSD Daemon`.
-``librados`` provides this functionality to :term:`Ceph Clients` in the form of
+``librados`` provides this functionality to :term:`Ceph Client`\s in the form of
 a library.  All Ceph Clients either use ``librados`` or the same functionality
 encapsulated in ``librados`` to interact with the object store.  For example,
 ``librbd`` and ``libcephfs`` leverage this functionality. You may use
@@ -19,4 +21,5 @@ Ceph, your own interface to Ceph, etc.).
    librados (C) <librados>
    librados (C++) <libradospp>
    librados (Python) <python>
+   libcephsqlite (SQLite) <libcephsqlite>
    object class <objclass-sdk>

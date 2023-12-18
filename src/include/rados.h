@@ -90,6 +90,8 @@ struct ceph_pg {
  *
  * b <= bmask and bmask=(2**n)-1
  * e.g., b=12 -> bmask=15, b=123 -> bmask=127
+ *
+ * ** This function is released to the public domain by the author. **
  */
 static inline int ceph_stable_mod(int x, int b, int bmask)
 {
@@ -170,6 +172,7 @@ extern const char *ceph_osd_state_name(int s);
 #define CEPH_OSDMAP_PURGED_SNAPDIRS  (1<<20) /* osds have converted snapsets */
 #define CEPH_OSDMAP_NOSNAPTRIM       (1<<21) /* disable snap trimming */
 #define CEPH_OSDMAP_PGLOG_HARDLIMIT  (1<<22) /* put a hard limit on pg log length */
+#define CEPH_OSDMAP_NOAUTOSCALE      (1<<23)  /* block pg autoscale */
 
 /* these are hidden in 'ceph status' view */
 #define CEPH_OSDMAP_SEMIHIDDEN_FLAGS (CEPH_OSDMAP_REQUIRE_JEWEL|	\
@@ -202,7 +205,9 @@ extern const char *ceph_osd_state_name(int s);
 #define CEPH_RELEASE_NAUTILUS   14
 #define CEPH_RELEASE_OCTOPUS    15
 #define CEPH_RELEASE_PACIFIC    16
-#define CEPH_RELEASE_MAX        17  /* highest + 1 */
+#define CEPH_RELEASE_QUINCY     17
+#define CEPH_RELEASE_REEF       18
+#define CEPH_RELEASE_MAX        19  /* highest + 1 */
 
 /*
  * The error code to return when an OSD can't handle a write
@@ -323,10 +328,11 @@ extern const char *ceph_osd_state_name(int s);
 									    \
 	/* Extensible */						    \
 	f(SET_REDIRECT,	__CEPH_OSD_OP(WR, DATA, 39),	"set-redirect")	    \
-	f(SET_CHUNK,	__CEPH_OSD_OP(WR, DATA, 40),	"set-chunk")	    \
+	f(SET_CHUNK,	__CEPH_OSD_OP(CACHE, DATA, 40),	"set-chunk")	    \
 	f(TIER_PROMOTE,	__CEPH_OSD_OP(WR, DATA, 41),	"tier-promote")	    \
 	f(UNSET_MANIFEST, __CEPH_OSD_OP(WR, DATA, 42),	"unset-manifest")   \
-	f(TIER_FLUSH, __CEPH_OSD_OP(WR, DATA, 43),	"tier-flush")	    \
+	f(TIER_FLUSH, __CEPH_OSD_OP(CACHE, DATA, 43),	"tier-flush")	    \
+	f(TIER_EVICT, __CEPH_OSD_OP(CACHE, DATA, 44),	"tier-evict")	    \
 									    \
 	/** attrs **/							    \
 	/* read */							    \
@@ -472,6 +478,7 @@ enum {
 	CEPH_OSD_FLAG_FULL_FORCE = 0x1000000,  /* force op despite full flag */
 	CEPH_OSD_FLAG_IGNORE_REDIRECT = 0x2000000,  /* ignore redirection */
 	CEPH_OSD_FLAG_RETURNVEC = 0x4000000, /* allow overall result >= 0, and return >= 0 and buffer for each op in opvec */
+	CEPH_OSD_FLAG_SUPPORTSPOOLEIO = 0x8000000,   /* client understands pool EIO flag */
 };
 
 enum {
@@ -487,7 +494,8 @@ enum {
 };
 
 #define EOLDSNAPC    85  /* ORDERSNAP flag set; writer has old snapc*/
-#define EBLACKLISTED 108 /* blacklisted */
+#define EBLOCKLISTED 108 /* blocklisted */
+#define EBLACKLISTED 108 /* deprecated */
 
 /* xattr comparison */
 enum {

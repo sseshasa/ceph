@@ -24,6 +24,8 @@
 
 #include <atomic>
 
+using namespace std;
+
 // XXX: Only tests default namespace
 struct op_data {
   op_data(const std::string &oid, uint64_t offset, uint64_t len, bool read)
@@ -93,7 +95,7 @@ int stress_test(uint64_t num_ops, uint64_t num_objs,
     // no zero-length operations
     uint64_t length = random() % (std::max<uint64_t>(max_len - 1, 1)) + 1;
     std::string oid = "test" + stringify(random() % num_objs);
-    bool is_read = random() < percent_reads * RAND_MAX;
+    bool is_read = random() < percent_reads * float(RAND_MAX);
     std::shared_ptr<op_data> op(new op_data(oid, offset, length, is_read));
     ops.push_back(op);
     std::cout << "op " << i << " " << (is_read ? "read" : "write")
@@ -113,7 +115,7 @@ int stress_test(uint64_t num_ops, uint64_t num_objs,
 	ceph_assert(r == 0);
     } else {
       ObjectCacher::OSDWrite *wr = obc.prepare_write(snapc, bl,
-						     ceph::real_time::min(), 0,
+						     ceph::real_clock::zero(), 0,
 						     ++journal_tid);
       wr->extents.push_back(op->extent);
       lock.lock();
@@ -201,7 +203,7 @@ int correctness_test(uint64_t delay_ns)
   std::map<int, C_SaferCond> create_finishers;
   for (int i = 0; i < 4; ++i) {
     ObjectCacher::OSDWrite *wr = obc.prepare_write(snapc, zeroes_bl,
-						   ceph::real_time::min(), 0,
+						   ceph::real_clock::zero(), 0,
 						   ++journal_tid);
     ObjectExtent extent(oid, 0, zeroes_bl.length()*i, zeroes_bl.length(), 0);
     extent.oloc.pool = 0;
@@ -220,7 +222,7 @@ int correctness_test(uint64_t delay_ns)
   ones_bl.append(ones);
   for (int i = 1<<18; i < 1<<22; i+=1<<18) {
     ObjectCacher::OSDWrite *wr = obc.prepare_write(snapc, ones_bl,
-						   ceph::real_time::min(), 0,
+						   ceph::real_clock::zero(), 0,
 						   ++journal_tid);
     ObjectExtent extent(oid, 0, i, ones_bl.length(), 0);
     extent.oloc.pool = 0;
@@ -287,7 +289,7 @@ int correctness_test(uint64_t delay_ns)
   std::cout << "Data (correctly) not available without fetching" << std::endl;
 
   ObjectCacher::OSDWrite *verify_wr = obc.prepare_write(snapc, ones_bl,
-							ceph::real_time::min(), 0,
+							ceph::real_clock::zero(), 0,
 							++journal_tid);
   ObjectExtent verify_extent(oid, 0, (1<<18)+(1<<16), ones_bl.length(), 0);
   verify_extent.oloc.pool = 0;
@@ -351,9 +353,8 @@ int correctness_test(uint64_t delay_ns)
 
 int main(int argc, const char **argv)
 {
-  std::vector<const char*> args;
-  argv_to_vec(argc, argv, args);
-  auto cct = global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT,
+  auto args = argv_to_vec(argc, argv);
+  auto cct = global_init(nullptr, args, CEPH_ENTITY_TYPE_CLIENT,
 			 CODE_ENVIRONMENT_UTILITY,
 			 CINIT_FLAG_NO_DEFAULT_CONFIG_FILE);
 

@@ -1,8 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef RGW_REALM_WATCHER_H
-#define RGW_REALM_WATCHER_H
+#pragma once
 
 #include "include/rados/librados.hpp"
 #include "include/ceph_assert.h"
@@ -36,7 +35,7 @@ class RGWRealmWatcher : public librados::WatchCtx2 {
                                bufferlist::const_iterator& p) = 0;
   };
 
-  RGWRealmWatcher(CephContext* cct, const RGWRealm& realm);
+  RGWRealmWatcher(const DoutPrefixProvider *dpp, CephContext* cct, const RGWRealm& realm);
   ~RGWRealmWatcher() override;
 
   /// register a watcher for the given notification type
@@ -59,11 +58,9 @@ class RGWRealmWatcher : public librados::WatchCtx2 {
   uint64_t watch_handle = 0;
   std::string watch_oid;
 
-  int watch_start(const RGWRealm& realm);
+  int watch_start(const DoutPrefixProvider *dpp, const RGWRealm& realm);
   int watch_restart();
   void watch_stop();
 
   std::map<RGWRealmNotify, Watcher&> watchers;
 };
-
-#endif // RGW_REALM_WATCHER_H

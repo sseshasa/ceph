@@ -26,6 +26,8 @@
 #include "mon/MgrMap.h"
 #include "mon/MonCommand.h"
 #include "mon/mon_types.h"
+#include "mon/ConfigMap.h"
+#include "mgr/TTLCache.h"
 
 #include "DaemonState.h"
 #include "ClusterState.h"
@@ -39,9 +41,14 @@ class PyModuleRegistry;
 
 class ActivePyModules
 {
+  // module class instances not yet created
+  std::set<std::string, std::less<>> pending_modules;
+  // module class instances already created
   std::map<std::string, std::shared_ptr<ActivePyModule>> modules;
   PyModuleConfig &module_config;
+  bool have_local_config_map = false;
   std::map<std::string, std::string> store_cache;
+  ConfigMap config_map;  ///< derived from store_cache config/ keys
   DaemonStateIndex &daemon_state;
   ClusterState &cluster_state;
   MonClient &monc;
@@ -49,22 +56,25 @@ class ActivePyModules
   Objecter &objecter;
   Client   &client;
   Finisher &finisher;
+  TTLCache<std::string, PyObject*> ttl_cache;
 public:
   Finisher cmd_finisher;
 private:
   DaemonServer &server;
   PyModuleRegistry &py_module_registry;
 
-  map<std::string,ProgressEvent> progress_events;
+  std::map<std::string,ProgressEvent> progress_events;
 
   mutable ceph::mutex lock = ceph::make_mutex("ActivePyModules::lock");
 
 public:
-  ActivePyModules(PyModuleConfig &module_config,
-            std::map<std::string, std::string> store_data,
-            DaemonStateIndex &ds, ClusterState &cs, MonClient &mc,
-            LogChannelRef clog_, LogChannelRef audit_clog_, Objecter &objecter_, Client &client_,
-            Finisher &f, DaemonServer &server, PyModuleRegistry &pmr);
+  ActivePyModules(
+    PyModuleConfig &module_config,
+    std::map<std::string, std::string> store_data,
+    bool mon_provides_kv_sub,
+    DaemonStateIndex &ds, ClusterState &cs, MonClient &mc,
+    LogChannelRef clog_, LogChannelRef audit_clog_, Objecter &objecter_, Client &client_,
+    Finisher &f, DaemonServer &server, PyModuleRegistry &pmr);
 
   ~ActivePyModules();
 
@@ -72,6 +82,7 @@ public:
   MonClient &get_monc() {return monc;}
   Objecter  &get_objecter() {return objecter;}
   Client    &get_client() {return client;}
+  PyObject *cacheable_get_python(const std::string &what);
   PyObject *get_python(const std::string &what);
   PyObject *get_server_python(const std::string &hostname);
   PyObject *list_servers_python();
@@ -90,8 +101,10 @@ public:
   PyObject *get_perf_schema_python(
      const std::string &svc_type,
      const std::string &svc_id);
+  PyObject *get_rocksdb_version();
   PyObject *get_context();
   PyObject *get_osdmap();
+  /// @note @c fct is not allowed to acquire locks when holding GIL
   PyObject *with_perf_counters(
       std::function<void(
         PerfCounterInstance& counter_instance,
@@ -107,21 +120,31 @@ public:
   void remove_osd_perf_query(MetricQueryID query_id);
   PyObject *get_osd_perf_counters(MetricQueryID query_id);
 
+  MetricQueryID add_mds_perf_query(
+      const MDSPerfMetricQuery &query,
+      const std::optional<MDSPerfMetricLimit> &limit);
+  void remove_mds_perf_query(MetricQueryID query_id);
+  void reregister_mds_perf_queries();
+  PyObject *get_mds_perf_counters(MetricQueryID query_id);
+
   bool get_store(const std::string &module_name,
       const std::string &key, std::string *val) const;
   PyObject *get_store_prefix(const std::string &module_name,
 			      const std::string &prefix) const;
   void set_store(const std::string &module_name,
-      const std::string &key, const boost::optional<std::string> &val);
+      const std::string &key, const std::optional<std::string> &val);
 
   bool get_config(const std::string &module_name,
       const std::string &key, std::string *val) const;
-  void set_config(const std::string &module_name,
-      const std::string &key, const boost::optional<std::string> &val);
+  std::pair<int, std::string> set_config(const std::string &module_name,
+      const std::string &key, const std::optional<std::string> &val);
 
   PyObject *get_typed_config(const std::string &module_name,
 			     const std::string &key,
 			     const std::string &prefix = "") const;
+  PyObject *get_foreign_config(
+    const std::string& who,
+    const std::string& name);
 
   void set_health_checks(const std::string& module_name,
 			 health_check_map_t&& checks);
@@ -129,17 +152,19 @@ public:
 
   void update_progress_event(const std::string& evid,
 			     const std::string& desc,
-			     float progress);
+			     float progress,
+			     bool add_to_ceph_s);
   void complete_progress_event(const std::string& evid);
   void clear_all_progress_events();
   void get_progress_events(std::map<std::string,ProgressEvent>* events);
 
-  void register_client(std::string_view name, std::string addrs);
+  void register_client(std::string_view name, std::string addrs, bool replace);
   void unregister_client(std::string_view name, std::string addrs);
 
   void config_notify();
 
   void set_uri(const std::string& module_name, const std::string &uri);
+  void set_device_wear_level(const std::string& devid, float wear_level);
 
   int handle_command(
     const ModuleCommand& module_command,
@@ -151,6 +176,12 @@ public:
 
   std::map<std::string, std::string> get_services() const;
 
+  void update_kv_data(
+    const std::string prefix,
+    bool incremental,
+    const map<std::string, std::optional<bufferlist>, std::less<>>& data);
+  void _refresh_config_map();
+
   // Public so that MonCommandCompletion can use it
   // FIXME: for send_command completion notifications,
   // send it to only the module that sent the command, not everyone
@@ -158,6 +189,13 @@ public:
                   const std::string &notify_id);
   void notify_all(const LogEntry &log_entry);
 
+  auto& get_module_finisher(const std::string &name) {
+    return modules.at(name)->finisher;
+  }
+
+  bool is_pending(std::string_view name) const {
+    return pending_modules.count(name) > 0;
+  }
   bool module_exists(const std::string &name) const
   {
     return modules.count(name) > 0;
@@ -178,7 +216,6 @@ public:
       std::string *err);
 
   int init();
-  void shutdown();
 
   void start_one(PyModuleRef py_module);
 
@@ -188,4 +225,9 @@ public:
 
   void cluster_log(const std::string &channel, clog_type prio,
     const std::string &message);
+  PyObject* get_daemon_health_metrics();
+
+  bool inject_python_on() const;
+  void update_cache_metrics();
 };
+

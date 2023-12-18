@@ -72,18 +72,24 @@ public:
   }
 
   // modifiers
-  void add(const EntityName& name, EntityAuth &a) {
+  void add(const EntityName& name, const EntityAuth &a) {
     keys[name] = a;
   }
-  void add(const EntityName& name, CryptoKey &k) {
+  void add(const EntityName& name, const CryptoKey &k) {
     EntityAuth a;
     a.key = k;
+    keys[name] = a;
+  }
+  void add(const EntityName& name, const CryptoKey &k, const CryptoKey &pk) {
+    EntityAuth a;
+    a.key = k;
+    a.pending_key = pk;
     keys[name] = a;
   }
   void remove(const EntityName& name) {
     keys.erase(name);
   }
-  void set_caps(EntityName& name, std::map<std::string, ceph::buffer::list>& caps) {
+  void set_caps(const EntityName& name, std::map<std::string, ceph::buffer::list>& caps) {
     keys[name].caps = caps;
   }
   void set_key(EntityName& ename, CryptoKey& key) {
@@ -91,7 +97,7 @@ public:
   }
   void import(CephContext *cct, KeyRing& other);
 
-  // encoders
+  // decode as plaintext
   void decode(ceph::buffer::list::const_iterator& bl);
 
   void encode_plaintext(ceph::buffer::list& bl);

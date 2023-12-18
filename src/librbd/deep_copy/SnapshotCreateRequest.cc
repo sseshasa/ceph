@@ -33,6 +33,14 @@ SnapshotCreateRequest<I>::SnapshotCreateRequest(
     m_snap_namespace(snap_namespace), m_size(size),
     m_parent_spec(spec), m_parent_overlap(parent_overlap),
     m_on_finish(on_finish), m_cct(dst_image_ctx->cct) {
+
+  ldout(m_cct, 20) << "dst_image_id=" << m_dst_image_ctx->id
+                   << ", snap_name=" << m_snap_name
+                   << ", snap_namespace=" << m_snap_namespace
+                   << ", size=" << m_size
+                   << ", parent_spec=" << m_parent_spec
+                   << ", parent_overlap=" << m_parent_overlap
+		   << dendl;
 }
 
 template <typename I>
@@ -80,10 +88,11 @@ void SnapshotCreateRequest<I>::send_create_snap() {
       handle_create_snap(r);
       finish_op_ctx->complete(0);
     });
+  uint64_t flags = SNAP_CREATE_FLAG_SKIP_OBJECT_MAP |
+                   SNAP_CREATE_FLAG_SKIP_NOTIFY_QUIESCE;
   std::shared_lock owner_locker{m_dst_image_ctx->owner_lock};
-  m_dst_image_ctx->operations->execute_snap_create(m_snap_namespace,
-                                                   m_snap_name.c_str(), ctx, 0U,
-                                                   true, m_prog_ctx);
+  m_dst_image_ctx->operations->execute_snap_create(
+      m_snap_namespace, m_snap_name.c_str(), ctx, 0U, flags, m_prog_ctx);
 }
 
 template <typename I>

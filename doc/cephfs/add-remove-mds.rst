@@ -1,3 +1,12 @@
+.. _cephfs_add_remote_mds:
+
+.. note::
+   It is highly recommended to use :doc:`/cephadm/index` or another Ceph
+   orchestrator for setting up the ceph cluster. Use this approach only if you
+   are setting up the ceph cluster manually. If one still intends to use the
+   manual way for deploying MDS daemons, :doc:`/cephadm/services/mds/` can
+   also be used.
+
 ============================
  Deploying Metadata Servers
 ============================
@@ -28,7 +37,7 @@ The other dimension to MDS performance is the available RAM for caching. The
 MDS necessarily manages a distributed and cooperative metadata cache among all
 clients and other active MDSs. Therefore it is essential to provide the MDS
 with sufficient RAM to enable faster metadata access and mutation. The default
-MDS cache size (see also :doc:`/cephfs/cache-size-limits`) is 4GB. It is
+MDS cache size (see also :doc:`/cephfs/cache-configuration`) is 4GB. It is
 recommended to provision at least 8GB of RAM for the MDS to support this cache
 size.
 
@@ -62,7 +71,7 @@ means limiting its cache size.
 Adding an MDS
 =============
 
-#. Create an mds data point ``/var/lib/ceph/mds/ceph-${id}``. The daemon only uses this directory to store its keyring.
+#. Create an mds directory ``/var/lib/ceph/mds/ceph-${id}``. The daemon only uses this directory to store its keyring.
 
 #. Create the authentication key, if you use CephX: ::
 

@@ -1,6 +1,10 @@
+import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 
-import { configureTestBed } from '../../../../testing/unit-test-helper';
+import { NgbPopoverModule } from '@ng-bootstrap/ng-bootstrap';
+
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { InfoGroupComponent } from './info-group.component';
 
 describe('InfoGroupComponent', () => {
@@ -8,6 +12,7 @@ describe('InfoGroupComponent', () => {
   let fixture: ComponentFixture<InfoGroupComponent>;
 
   configureTestBed({
+    imports: [NgbPopoverModule, SharedModule, HttpClientTestingModule],
     declarations: [InfoGroupComponent]
   });
 

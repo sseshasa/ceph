@@ -14,10 +14,8 @@
 
 #pragma once
 
-#include <seastar/core/future.hh>
-
 #include "Fwd.h"
-#include "crimson/thread/Throttle.h"
+#include "crimson/common/throttle.h"
 #include "msg/Message.h"
 #include "msg/Policy.h"
 
@@ -34,45 +32,40 @@ namespace crimson::net {
 class Interceptor;
 #endif
 
-using Throttle = crimson::thread::Throttle;
+using Throttle = crimson::common::Throttle;
 using SocketPolicy = ceph::net::Policy<Throttle>;
 
 class Messenger {
-  entity_name_t my_name;
-  entity_addrvec_t my_addrs;
-  uint32_t crc_flags = 0;
-  crimson::auth::AuthClient* auth_client = nullptr;
-  crimson::auth::AuthServer* auth_server = nullptr;
-  bool require_authorizer = true;
-
 public:
-  Messenger(const entity_name_t& name)
-    : my_name(name)
-  {}
+  Messenger() {}
+
   virtual ~Messenger() {}
 
-#ifdef UNIT_TESTS_BUILT
-  Interceptor *interceptor = nullptr;
-#endif
+  virtual const entity_name_t& get_myname() const = 0;
 
-  entity_type_t get_mytype() const { return my_name.type(); }
-  const entity_name_t& get_myname() const { return my_name; }
-  const entity_addrvec_t& get_myaddrs() const { return my_addrs; }
-  entity_addr_t get_myaddr() const { return my_addrs.front(); }
-  virtual seastar::future<> set_myaddrs(const entity_addrvec_t& addrs) {
-    my_addrs = addrs;
-    return seastar::now();
-  }
+  entity_type_t get_mytype() const { return get_myname().type(); }
 
+  virtual const entity_addrvec_t &get_myaddrs() const = 0;
+
+  entity_addr_t get_myaddr() const { return get_myaddrs().front(); }
+
+  virtual void set_myaddrs(const entity_addrvec_t& addrs) = 0;
+
+  virtual bool set_addr_unknowns(const entity_addrvec_t &addrs) = 0;
+
+  virtual void set_auth_client(crimson::auth::AuthClient *) = 0;
+
+  virtual void set_auth_server(crimson::auth::AuthServer *) = 0;
+
+  using bind_ertr = crimson::errorator<
+    crimson::ct_error::address_in_use, // The address (range) is already bound
+    crimson::ct_error::address_not_available
+    >;
   /// bind to the given address
-  virtual seastar::future<> bind(const entity_addrvec_t& addr) = 0;
-
-  /// try to bind to the first unused port of given address
-  virtual seastar::future<> try_bind(const entity_addrvec_t& addr,
-                                     uint32_t min_port, uint32_t max_port) = 0;
+  virtual bind_ertr::future<> bind(const entity_addrvec_t& addr) = 0;
 
   /// start the messenger
-  virtual seastar::future<> start(Dispatcher *dispatcher) = 0;
+  virtual seastar::future<> start(const dispatchers_t&) = 0;
 
   /// either return an existing connection to the peer,
   /// or a new pending connection
@@ -86,33 +79,21 @@ public:
     return connect(peer_addr, entity_name_t(peer_type, -1));
   }
 
+  virtual bool owns_connection(Connection &) const = 0;
+
   // wait for messenger shutdown
   virtual seastar::future<> wait() = 0;
 
-  /// stop listenening and wait for all connections to close. safe to destruct
-  /// after this future becomes available
+  // stop dispatching events and messages
+  virtual void stop() = 0;
+
+  virtual bool is_started() const = 0;
+
+  // free internal resources before destruction, must be called after stopped,
+  // and must be called if is bound.
   virtual seastar::future<> shutdown() = 0;
 
-  uint32_t get_crc_flags() const {
-    return crc_flags;
-  }
-  void set_crc_data() {
-    crc_flags |= MSG_CRC_DATA;
-  }
-  void set_crc_header() {
-    crc_flags |= MSG_CRC_HEADER;
-  }
-
-  crimson::auth::AuthClient* get_auth_client() const { return auth_client; }
-  void set_auth_client(crimson::auth::AuthClient *ac) {
-    auth_client = ac;
-  }
-  crimson::auth::AuthServer* get_auth_server() const { return auth_server; }
-  void set_auth_server(crimson::auth::AuthServer *as) {
-    auth_server = as;
-  }
-
-  virtual void print(ostream& out) const = 0;
+  virtual void print(std::ostream& out) const = 0;
 
   virtual SocketPolicy get_policy(entity_type_t peer_type) const = 0;
 
@@ -124,21 +105,18 @@ public:
 
   virtual void set_policy_throttler(entity_type_t peer_type, Throttle* throttle) = 0;
 
-  // allow unauthenticated connections.  This is needed for compatibility with
-  // pre-nautilus OSDs, which do not authenticate the heartbeat sessions.
-  bool get_require_authorizer() const {
-    return require_authorizer;
-  }
-  void set_require_authorizer(bool r) {
-    require_authorizer = r;
-  }
   static MessengerRef
   create(const entity_name_t& name,
          const std::string& lname,
-         const uint64_t nonce);
+         uint64_t nonce,
+         bool dispatch_only_on_this_shard);
+
+#ifdef UNIT_TESTS_BUILT
+  virtual void set_interceptor(Interceptor *) = 0;
+#endif
 };
 
-inline ostream& operator<<(ostream& out, const Messenger& msgr) {
+inline std::ostream& operator<<(std::ostream& out, const Messenger& msgr) {
   out << "[";
   msgr.print(out);
   out << "]";
@@ -146,3 +124,7 @@ inline ostream& operator<<(ostream& out, const Messenger& msgr) {
 }
 
 } // namespace crimson::net
+
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<crimson::net::Messenger> : fmt::ostream_formatter {};
+#endif

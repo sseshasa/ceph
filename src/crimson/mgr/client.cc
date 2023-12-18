@@ -38,46 +38,62 @@ seastar::future<> Client::start()
 
 seastar::future<> Client::stop()
 {
-  return gate.close().then([this] {
-    if (conn) {
-      conn->mark_down();
+  logger().info("{}", __func__);
+  report_timer.cancel();
+  auto fut = gate.close();
+  if (conn) {
+    conn->mark_down();
+  }
+  return fut;
+}
+
+std::optional<seastar::future<>>
+Client::ms_dispatch(crimson::net::ConnectionRef conn, MessageRef m)
+{
+  bool dispatched = true;
+  gate.dispatch_in_background(__func__, *this, [this, conn, &m, &dispatched] {
+    switch(m->get_type()) {
+    case MSG_MGR_MAP:
+      return handle_mgr_map(conn, boost::static_pointer_cast<MMgrMap>(m));
+    case MSG_MGR_CONFIGURE:
+      return handle_mgr_conf(conn, boost::static_pointer_cast<MMgrConfigure>(m));
+    default:
+      dispatched = false;
+      return seastar::now();
+    }
+  });
+  return (dispatched ? std::make_optional(seastar::now()) : std::nullopt);
+}
+
+void Client::ms_handle_connect(
+    crimson::net::ConnectionRef c,
+    seastar::shard_id prv_shard)
+{
+  ceph_assert_always(prv_shard == seastar::this_shard_id());
+  gate.dispatch_in_background(__func__, *this, [this, c] {
+    if (conn == c) {
+      // ask for the mgrconfigure message
+      auto m = crimson::make_message<MMgrOpen>();
+      m->daemon_name = local_conf()->name.get_id();
+      local_conf().get_config_bl(0, &m->config_bl, &last_config_bl_version);
+      local_conf().get_defaults_bl(&m->config_defaults_bl);
+      return conn->send(std::move(m));
+    } else {
+      return seastar::now();
     }
   });
 }
 
-seastar::future<> Client::ms_dispatch(crimson::net::Connection* conn,
-                                      MessageRef m)
+void Client::ms_handle_reset(crimson::net::ConnectionRef c, bool /* is_replace */)
 {
-  switch(m->get_type()) {
-  case MSG_MGR_MAP:
-    return handle_mgr_map(conn, boost::static_pointer_cast<MMgrMap>(m));
-  case MSG_MGR_CONFIGURE:
-    return handle_mgr_conf(conn, boost::static_pointer_cast<MMgrConfigure>(m));
-  default:
-    return seastar::now();
-  }
-}
-
-seastar::future<> Client::ms_handle_connect(crimson::net::ConnectionRef c)
-{
-  if (conn == c) {
-    // ask for the mgrconfigure message
-    auto m = ceph::make_message<MMgrOpen>();
-    m->daemon_name = local_conf()->name.get_id();
-    return conn->send(std::move(m));
-  } else {
-    return seastar::now();
-  }
-}
-
-seastar::future<> Client::ms_handle_reset(crimson::net::ConnectionRef c, bool is_replace)
-{
-  if (conn == c) {
-    report_timer.cancel();
-    return reconnect();
-  } else {
-    return seastar::now();
-  }
+  gate.dispatch_in_background(__func__, *this, [this, c] {
+    if (conn == c) {
+      report_timer.cancel();
+      return reconnect();
+    } else {
+      return seastar::now();
+    }
+  });
 }
 
 seastar::future<> Client::reconnect()
@@ -95,12 +111,18 @@ seastar::future<> Client::reconnect()
   auto a_while = std::chrono::duration_cast<seastar::steady_clock_type::duration>(
     retry_interval);
   return seastar::sleep(a_while).then([this] {
-    auto peer = mgrmap.get_active_addrs().front();
+    auto peer = mgrmap.get_active_addrs().pick_addr(msgr.get_myaddr().get_type());
+    if (peer == entity_addr_t{}) {
+      // crimson msgr only uses the first bound addr
+      logger().error("mgr.{} does not have an addr compatible with me",
+                     mgrmap.get_active_name());
+      return;
+    }
     conn = msgr.connect(peer, CEPH_ENTITY_TYPE_MGR);
   });
 }
 
-seastar::future<> Client::handle_mgr_map(crimson::net::Connection*,
+seastar::future<> Client::handle_mgr_map(crimson::net::ConnectionRef,
                                          Ref<MMgrMap> m)
 {
   mgrmap = m->get_map();
@@ -114,7 +136,7 @@ seastar::future<> Client::handle_mgr_map(crimson::net::Connection*,
   }
 }
 
-seastar::future<> Client::handle_mgr_conf(crimson::net::Connection* conn,
+seastar::future<> Client::handle_mgr_conf(crimson::net::ConnectionRef,
                                           Ref<MMgrConfigure> m)
 {
   logger().info("{} {}", __func__, *m);
@@ -134,11 +156,21 @@ seastar::future<> Client::handle_mgr_conf(crimson::net::Connection* conn,
 
 void Client::report()
 {
-  (void) seastar::with_gate(gate, [this] {
-    assert(conn);
-    auto pg_stats = with_stats.get_stats();
-    return conn->send(std::move(pg_stats));
+  gate.dispatch_in_background(__func__, *this, [this] {
+    if (!conn) {
+      logger().warn("report: no conn available; raport skipped");
+      return seastar::now();
+    }
+    return with_stats.get_stats(
+    ).then([this](auto &&pg_stats) {
+      return conn->send(std::move(pg_stats));
+    });
   });
+}
+
+void Client::print(std::ostream& out) const
+{
+  out << "mgrc ";
 }
 
 }

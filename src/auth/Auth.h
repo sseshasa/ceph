@@ -16,6 +16,7 @@
 #define CEPH_AUTHTYPES_H
 
 #include "Crypto.h"
+#include "common/ceph_json.h"
 #include "common/entity_name.h"
 
 // The _MAX values are a bit wonky here because we are overloading the first
@@ -34,14 +35,16 @@ enum {
 struct EntityAuth {
   CryptoKey key;
   std::map<std::string, ceph::buffer::list> caps;
+  CryptoKey pending_key; ///< new but uncommitted key
 
   void encode(ceph::buffer::list& bl) const {
-    __u8 struct_v = 2;
+    __u8 struct_v = 3;
     using ceph::encode;
     encode(struct_v, bl);
     encode((uint64_t)CEPH_AUTH_UID_DEFAULT, bl);
     encode(key, bl);
     encode(caps, bl);
+    encode(pending_key, bl);
   }
   void decode(ceph::buffer::list::const_iterator& bl) {
     using ceph::decode;
@@ -53,12 +56,29 @@ struct EntityAuth {
     }
     decode(key, bl);
     decode(caps, bl);
+    if (struct_v >= 3) {
+      decode(pending_key, bl);
+    }
+  }
+  void dump(ceph::Formatter *f) const {
+    f->dump_object("key", key);
+    encode_json("caps", caps, f);
+    f->dump_object("pending_key", pending_key);
+  }
+  static void generate_test_instances(std::list<EntityAuth*>& ls) {
+    ls.push_back(new EntityAuth);
   }
 };
 WRITE_CLASS_ENCODER(EntityAuth)
 
-inline std::ostream& operator<<(std::ostream& out, const EntityAuth& a) {
-  return out << "auth(key=" << a.key << ")";
+inline std::ostream& operator<<(std::ostream& out, const EntityAuth& a)
+{
+  out << "auth(key=" << a.key;
+  if (!a.pending_key.empty()) {
+    out << " pending_key=" << a.pending_key;
+  }
+  out << ")";
+  return out;
 }
 
 struct AuthCapsInfo {
@@ -83,6 +103,19 @@ struct AuthCapsInfo {
     decode(a, bl);
     allow_all = (bool)a;
     decode(caps, bl);
+  }
+  void dump(ceph::Formatter *f) const {
+    f->dump_bool("allow_all", allow_all);
+    encode_json("caps", caps, f);
+    f->dump_unsigned("caps_len", caps.length());
+  }
+  static void generate_test_instances(std::list<AuthCapsInfo*>& ls) {
+    ls.push_back(new AuthCapsInfo);
+    ls.push_back(new AuthCapsInfo);
+    ls.back()->allow_all = true;
+    ls.push_back(new AuthCapsInfo);
+    ls.back()->caps.append("foo");
+    ls.back()->caps.append("bar");
   }
 };
 WRITE_CLASS_ENCODER(AuthCapsInfo)
@@ -135,6 +168,25 @@ struct AuthTicket {
     decode(expires, bl);
     decode(caps, bl);
     decode(flags, bl);
+  }
+  void dump(ceph::Formatter *f) const {
+    f->dump_object("name", name);
+    f->dump_unsigned("global_id", global_id);
+    f->dump_stream("created") << created;
+    f->dump_stream("renew_after") << renew_after;
+    f->dump_stream("expires") << expires;
+    f->dump_object("caps", caps);
+    f->dump_unsigned("flags", flags);
+  }
+  static void generate_test_instances(std::list<AuthTicket*>& ls) {
+    ls.push_back(new AuthTicket);
+    ls.push_back(new AuthTicket);
+    ls.back()->name.set_id("client.123");
+    ls.back()->global_id = 123;
+    ls.back()->init_timestamps(utime_t(123, 456), 7);
+    ls.back()->caps.caps.append("foo");
+    ls.back()->caps.caps.append("bar");
+    ls.back()->flags = 0x12345678;
   }
 };
 WRITE_CLASS_ENCODER(AuthTicket)
@@ -192,6 +244,9 @@ struct AuthConnectionMeta {
 
   std::unique_ptr<AuthAuthorizer> authorizer;
   std::unique_ptr<AuthAuthorizerChallenge> authorizer_challenge;
+
+  ///< set if msgr1 peer doesn't support CEPHX_V2
+  bool skip_authorizer_challenge = false;
 };
 
 /*
@@ -216,6 +271,16 @@ struct ExpiringCryptoKey {
     decode(struct_v, bl);
     decode(key, bl);
     decode(expiration, bl);
+  }
+  void dump(ceph::Formatter *f) const {
+    f->dump_object("key", key);
+    f->dump_stream("expiration") << expiration;
+  }
+  static void generate_test_instances(std::list<ExpiringCryptoKey*>& ls) {
+    ls.push_back(new ExpiringCryptoKey);
+    ls.push_back(new ExpiringCryptoKey);
+    ls.back()->key.set_secret(
+      CEPH_CRYPTO_AES, bufferptr("1234567890123456", 16), utime_t(123, 456));
   }
 };
 WRITE_CLASS_ENCODER(ExpiringCryptoKey)
@@ -281,6 +346,15 @@ struct RotatingSecrets {
   }
 
   void dump();
+  void dump(ceph::Formatter *f) const {
+    encode_json("secrets", secrets, f);
+  }
+  static void generate_test_instances(std::list<RotatingSecrets*>& ls) {
+    ls.push_back(new RotatingSecrets);
+    ls.push_back(new RotatingSecrets);
+    auto eck = new ExpiringCryptoKey;
+    ls.back()->add(*eck);
+  }
 };
 WRITE_CLASS_ENCODER(RotatingSecrets)
 

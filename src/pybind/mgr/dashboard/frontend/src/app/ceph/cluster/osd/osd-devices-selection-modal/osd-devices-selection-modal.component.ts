@@ -1,16 +1,24 @@
-import { AfterViewInit, Component, EventEmitter, Output, ViewChild } from '@angular/core';
+import {
+  AfterViewInit,
+  ChangeDetectorRef,
+  Component,
+  EventEmitter,
+  Output,
+  ViewChild
+} from '@angular/core';
 
-import * as _ from 'lodash';
-import { BsModalRef } from 'ngx-bootstrap/modal';
-
+import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
 import { TableColumnProp } from '@swimlane/ngx-datatable';
-import { ActionLabelsI18n } from '../../../../shared/constants/app.constants';
-import { Icons } from '../../../../shared/enum/icons.enum';
-import { CdFormBuilder } from '../../../../shared/forms/cd-form-builder';
-import { CdFormGroup } from '../../../../shared/forms/cd-form-group';
-import { CdTableColumnFiltersChange } from '../../../../shared/models/cd-table-column-filters-change';
-import { InventoryDevice } from '../../inventory/inventory-devices/inventory-device.model';
-import { InventoryDevicesComponent } from '../../inventory/inventory-devices/inventory-devices.component';
+import _ from 'lodash';
+
+import { InventoryDevice } from '~/app/ceph/cluster/inventory/inventory-devices/inventory-device.model';
+import { InventoryDevicesComponent } from '~/app/ceph/cluster/inventory/inventory-devices/inventory-devices.component';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { CdFormBuilder } from '~/app/shared/forms/cd-form-builder';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { CdTableColumnFiltersChange } from '~/app/shared/models/cd-table-column-filters-change';
+import { WizardStepsService } from '~/app/shared/services/wizard-steps.service';
 
 @Component({
   selector: 'cd-osd-devices-selection-modal',
@@ -18,7 +26,7 @@ import { InventoryDevicesComponent } from '../../inventory/inventory-devices/inv
   styleUrls: ['./osd-devices-selection-modal.component.scss']
 })
 export class OsdDevicesSelectionModalComponent implements AfterViewInit {
-  @ViewChild('inventoryDevices', { static: false })
+  @ViewChild('inventoryDevices')
   inventoryDevices: InventoryDevicesComponent;
 
   @Output()
@@ -29,6 +37,7 @@ export class OsdDevicesSelectionModalComponent implements AfterViewInit {
 
   hostname: string;
   deviceType: string;
+  diskType: string;
   formGroup: CdFormGroup;
   action: string;
 
@@ -41,8 +50,10 @@ export class OsdDevicesSelectionModalComponent implements AfterViewInit {
 
   constructor(
     private formBuilder: CdFormBuilder,
-    public bsModalRef: BsModalRef,
-    public actionLabels: ActionLabelsI18n
+    private cdRef: ChangeDetectorRef,
+    public activeModal: NgbActiveModal,
+    public actionLabels: ActionLabelsI18n,
+    public wizardStepService: WizardStepsService
   ) {
     this.action = actionLabels.ADD;
     this.createForm();
@@ -54,7 +65,10 @@ export class OsdDevicesSelectionModalComponent implements AfterViewInit {
     const cols = _.filter(this.inventoryDevices.columns, (col) => {
       return this.filterColumns.includes(col.prop) && col.prop !== 'hostname';
     });
-    this.requiredFilters = _.map(cols, 'name');
+    // Fixes 'ExpressionChangedAfterItHasBeenCheckedError'
+    setTimeout(() => {
+      this.requiredFilters = _.map(cols, 'name');
+    }, 0);
   }
 
   createForm() {
@@ -78,10 +92,11 @@ export class OsdDevicesSelectionModalComponent implements AfterViewInit {
       this.capacity = _.sumBy(this.filteredDevices, 'sys_api.size');
       this.event = event;
     }
+    this.cdRef.detectChanges();
   }
 
   onSubmit() {
     this.submitAction.emit(this.event);
-    this.bsModalRef.hide();
+    this.activeModal.close();
   }
 }

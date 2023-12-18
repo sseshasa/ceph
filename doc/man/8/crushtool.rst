@@ -108,6 +108,16 @@ pools; it only runs simulations by mapping values in the range
    shows that value **24** is mapped to devices **[11,6]** by rule
    **1**.
 
+   One of the following is required when using the ``--show-mappings`` option:
+   
+        (a) ``--num-rep`` 
+        (b) both ``--min-rep`` and ``--max-rep``
+
+   ``--num-rep`` stands for "number of replicas, indicates the number of
+   replicas in a pool, and is used to specify an exact number of replicas (for
+   example ``--num-rep 5``). ``--min-rep`` and ``--max-rep`` are used together
+   to specify a range of replicas (for example, ``--min-rep 1 --max-rep 10``).
+
 .. option:: --show-bad-mappings
 
    Displays which value failed to be mapped to the required number of
@@ -264,7 +274,7 @@ Reclassify
 The *reclassify* function allows users to transition from older maps that
 maintain parallel hierarchies for OSDs of different types to a modern CRUSH
 map that makes use of the *device class* feature.  For more information,
-see http://docs.ceph.com/docs/master/rados/operations/crush-map-edits/#migrating-from-a-legacy-ssd-rule-to-device-classes.
+see https://docs.ceph.com/en/latest/rados/operations/crush-map-edits/#migrating-from-a-legacy-ssd-rule-to-device-classes.
 
 Example output from --test
 ==========================
@@ -276,7 +286,7 @@ Availability
 ============
 
 **crushtool** is part of Ceph, a massively scalable, open-source, distributed storage system. Please
-refer to the Ceph documentation at http://ceph.com/docs for more
+refer to the Ceph documentation at https://docs.ceph.com for more
 information.
 
 

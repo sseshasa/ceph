@@ -487,7 +487,7 @@ Syntax
 
 ::
 
-    PUT /<bucket name>?notification HTTP/1.1
+    PUT /{bucket}?notification HTTP/1.1
 
 
 Request Entities
@@ -537,7 +537,8 @@ Parameters are XML encoded in the body of the request, in the following format:
 | ``Topic``                     | String    | Topic ARN. Topic must be created beforehand                                          | Yes      |
 +-------------------------------+-----------+--------------------------------------------------------------------------------------+----------+
 | ``Event``                     | String    | List of supported events see: `S3 Notification Compatibility`_.  Multiple ``Event``  | No       |
-|                               |           | entities can be used. If omitted, all events are handled                             |          |
+|                               |           | entities can be used. If omitted, all "Created" and "Removed" events are handled.    |          |
+|                               |           | "Lifecycle" and "Synced" event types must be specified explicitly.                   |          |
 +-------------------------------+-----------+--------------------------------------------------------------------------------------+----------+
 | ``Filter``                    | Container | Holding ``S3Key``, ``S3Metadata`` and ``S3Tags`` entities                            | No       |
 +-------------------------------+-----------+--------------------------------------------------------------------------------------+----------+
@@ -598,7 +599,7 @@ Syntax
 
 ::
 
-    DELETE /bucket?notification[=<notification-id>] HTTP/1.1
+    DELETE /{bucket}?notification[=<notification-id>] HTTP/1.1
 
 
 Parameters
@@ -629,7 +630,7 @@ Syntax
 
 ::
 
-    GET /bucket?notification[=<notification-id>] HTTP/1.1 
+    GET /{bucket}?notification[=<notification-id>] HTTP/1.1 
 
 
 Parameters

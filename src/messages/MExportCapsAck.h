@@ -16,10 +16,9 @@
 #ifndef CEPH_MEXPORTCAPSACK_H
 #define CEPH_MEXPORTCAPSACK_H
 
-#include "msg/Message.h"
+#include "messages/MMDSOp.h"
 
-
-class MExportCapsAck : public SafeMessage {
+class MExportCapsAck final : public MMDSOp {
  static constexpr int HEAD_VERSION = 1;
  static constexpr int COMPAT_VERSION = 1;
 
@@ -29,10 +28,10 @@ public:
 
 protected:
   MExportCapsAck() :
-    SafeMessage{MSG_MDS_EXPORTCAPSACK, HEAD_VERSION, COMPAT_VERSION} {}
+    MMDSOp{MSG_MDS_EXPORTCAPSACK, HEAD_VERSION, COMPAT_VERSION} {}
   MExportCapsAck(inodeno_t i) :
-    SafeMessage{MSG_MDS_EXPORTCAPSACK, HEAD_VERSION, COMPAT_VERSION}, ino(i) {}
-  ~MExportCapsAck() override {}
+    MMDSOp{MSG_MDS_EXPORTCAPSACK, HEAD_VERSION, COMPAT_VERSION}, ino(i) {}
+  ~MExportCapsAck() final {}
 
 public:
   std::string_view get_type_name() const override { return "export_caps_ack"; }
@@ -54,6 +53,8 @@ public:
 private:
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 };
 
 #endif

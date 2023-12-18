@@ -8,7 +8,14 @@ function(build_rocksdb)
   list(APPEND rocksdb_CMAKE_ARGS -DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH_ALT_SEP})
   if(CMAKE_TOOLCHAIN_FILE)
     list(APPEND rocksdb_CMAKE_ARGS
-         -DCMAKE_TOOLCHAIN_FILE=$CMAKE_TOOLCHAIN_FILE)
+         -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE})
+  endif()
+
+  list(APPEND rocksdb_CMAKE_ARGS -DWITH_LIBURING=${WITH_LIBURING})
+  if(WITH_LIBURING)
+    list(APPEND rocksdb_CMAKE_ARGS -During_INCLUDE_DIR=${URING_INCLUDE_DIR})
+    list(APPEND rocksdb_CMAKE_ARGS -During_LIBRARIES=${URING_LIBRARY_DIR})
+    list(APPEND rocksdb_INTERFACE_LINK_LIBRARIES uring::uring)
   endif()
 
   if(ALLOCATOR STREQUAL "jemalloc")
@@ -16,9 +23,6 @@ function(build_rocksdb)
     list(APPEND rocksdb_INTERFACE_LINK_LIBRARIES JeMalloc::JeMalloc)
   endif()
 
-  if (WITH_CCACHE AND CCACHE_FOUND)
-    list(APPEND rocksdb_CMAKE_ARGS -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
-  endif()
   list(APPEND rocksdb_CMAKE_ARGS -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER})
 
   list(APPEND rocksdb_CMAKE_ARGS -DWITH_SNAPPY=${SNAPPY_FOUND})
@@ -35,8 +39,8 @@ function(build_rocksdb)
   if(LZ4_FOUND)
     list(APPEND rocksdb_INTERFACE_LINK_LIBRARIES LZ4::LZ4)
     # When cross compiling, cmake may fail to locate lz4.
-    list(APPEND rocksdb_CMAKE_ARGS -DLZ4_INCLUDE_DIR=${LZ4_INCLUDE_DIR})
-    list(APPEND rocksdb_CMAKE_ARGS -DLZ4_LIBRARIES=${LZ4_LIBRARY})
+    list(APPEND rocksdb_CMAKE_ARGS -Dlz4_INCLUDE_DIRS=${LZ4_INCLUDE_DIR})
+    list(APPEND rocksdb_CMAKE_ARGS -Dlz4_LIBRARIES=${LZ4_LIBRARY})
   endif()
 
   list(APPEND rocksdb_CMAKE_ARGS -DWITH_ZLIB=${ZLIB_FOUND})
@@ -49,7 +53,6 @@ function(build_rocksdb)
   list(APPEND rocksdb_CMAKE_ARGS -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE})
   list(APPEND rocksdb_CMAKE_ARGS -DFAIL_ON_WARNINGS=OFF)
   list(APPEND rocksdb_CMAKE_ARGS -DUSE_RTTI=1)
-  list(APPEND rocksdb_CMAKE_ARGS -G${CMAKE_GENERATOR})
   CHECK_C_COMPILER_FLAG("-Wno-stringop-truncation" HAS_WARNING_STRINGOP_TRUNCATION)
   if(HAS_WARNING_STRINGOP_TRUNCATION)
     list(APPEND rocksdb_CMAKE_ARGS -DCMAKE_C_FLAGS=-Wno-stringop-truncation)
@@ -84,10 +87,12 @@ function(build_rocksdb)
     CMAKE_ARGS ${rocksdb_CMAKE_ARGS}
     BINARY_DIR "${rocksdb_BINARY_DIR}"
     BUILD_COMMAND "${make_cmd}"
-    BUILD_ALWAYS TRUE
     BUILD_BYPRODUCTS "${rocksdb_LIBRARY}"
-    INSTALL_COMMAND "true"
+    INSTALL_COMMAND ""
     LIST_SEPARATOR !)
+
+  # make sure all the link libraries are built first
+  add_dependencies(rocksdb_ext ${rocksdb_INTERFACE_LINK_LIBRARIES})
 
   add_library(RocksDB::RocksDB STATIC IMPORTED)
   add_dependencies(RocksDB::RocksDB rocksdb_ext)

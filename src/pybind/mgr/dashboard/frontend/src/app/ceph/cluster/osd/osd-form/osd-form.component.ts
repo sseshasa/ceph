@@ -1,19 +1,27 @@
-import { Component, OnInit, ViewChild } from '@angular/core';
-import { FormControl, Validators } from '@angular/forms';
+import { Component, EventEmitter, Input, OnInit, Output, ViewChild } from '@angular/core';
+import { UntypedFormControl } from '@angular/forms';
 import { Router } from '@angular/router';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
-import { BsModalService } from 'ngx-bootstrap/modal';
+import _ from 'lodash';
 
-import { OrchestratorService } from '../../../../shared/api/orchestrator.service';
-import { SubmitButtonComponent } from '../../../../shared/components/submit-button/submit-button.component';
-import { ActionLabelsI18n } from '../../../../shared/constants/app.constants';
-import { Icons } from '../../../../shared/enum/icons.enum';
-import { CdFormGroup } from '../../../../shared/forms/cd-form-group';
-import { CdTableColumn } from '../../../../shared/models/cd-table-column';
-import { AuthStorageService } from '../../../../shared/services/auth-storage.service';
-import { InventoryDevice } from '../../inventory/inventory-devices/inventory-device.model';
+import { InventoryDevice } from '~/app/ceph/cluster/inventory/inventory-devices/inventory-device.model';
+import { HostService } from '~/app/shared/api/host.service';
+import { OrchestratorService } from '~/app/shared/api/orchestrator.service';
+import { OsdService } from '~/app/shared/api/osd.service';
+import { FormButtonPanelComponent } from '~/app/shared/components/form-button-panel/form-button-panel.component';
+import { ActionLabelsI18n, URLVerbs } from '~/app/shared/constants/app.constants';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { CdForm } from '~/app/shared/forms/cd-form';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { CdTableColumn } from '~/app/shared/models/cd-table-column';
+import { FinishedTask } from '~/app/shared/models/finished-task';
+import {
+  DeploymentOptions,
+  OsdDeploymentOptions
+} from '~/app/shared/models/osd-deployment-options';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
 import { OsdCreationPreviewModalComponent } from '../osd-creation-preview-modal/osd-creation-preview-modal.component';
 import { DevicesSelectionChangeEvent } from '../osd-devices-selection-groups/devices-selection-change-event.interface';
 import { DevicesSelectionClearEvent } from '../osd-devices-selection-groups/devices-selection-clear-event.interface';
@@ -26,25 +34,36 @@ import { OsdFeature } from './osd-feature.interface';
   templateUrl: './osd-form.component.html',
   styleUrls: ['./osd-form.component.scss']
 })
-export class OsdFormComponent implements OnInit {
-  @ViewChild('dataDeviceSelectionGroups', { static: false })
+export class OsdFormComponent extends CdForm implements OnInit {
+  @ViewChild('dataDeviceSelectionGroups')
   dataDeviceSelectionGroups: OsdDevicesSelectionGroupsComponent;
 
-  @ViewChild('walDeviceSelectionGroups', { static: false })
+  @ViewChild('walDeviceSelectionGroups')
   walDeviceSelectionGroups: OsdDevicesSelectionGroupsComponent;
 
-  @ViewChild('dbDeviceSelectionGroups', { static: false })
+  @ViewChild('dbDeviceSelectionGroups')
   dbDeviceSelectionGroups: OsdDevicesSelectionGroupsComponent;
 
-  @ViewChild('previewButton', { static: false })
-  previewButton: SubmitButtonComponent;
+  @ViewChild('previewButtonPanel')
+  previewButtonPanel: FormButtonPanelComponent;
+
+  @Input()
+  hideTitle = false;
+
+  @Input()
+  hideSubmitBtn = false;
+
+  @Output() emitDriveGroup: EventEmitter<DriveGroup> = new EventEmitter();
+
+  @Output() emitDeploymentOption: EventEmitter<object> = new EventEmitter();
+
+  @Output() emitMode: EventEmitter<boolean> = new EventEmitter();
 
   icons = Icons;
 
   form: CdFormGroup;
   columns: Array<CdTableColumn> = [];
 
-  loading = false;
   allDevices: InventoryDevice[] = [];
 
   availDevices: InventoryDevice[] = [];
@@ -60,23 +79,30 @@ export class OsdFormComponent implements OnInit {
   features: { [key: string]: OsdFeature };
   featureList: OsdFeature[] = [];
 
-  hasOrchestrator = false;
-  docsUrl: string;
+  hasOrchestrator = true;
+
+  simpleDeployment = true;
+
+  deploymentOptions: DeploymentOptions;
+  optionNames = Object.values(OsdDeploymentOptions);
 
   constructor(
     public actionLabels: ActionLabelsI18n,
     private authStorageService: AuthStorageService,
-    private i18n: I18n,
     private orchService: OrchestratorService,
+    private hostService: HostService,
     private router: Router,
-    private bsModalService: BsModalService
+    private modalService: ModalService,
+    private osdService: OsdService,
+    private taskWrapper: TaskWrapperService
   ) {
-    this.resource = this.i18n('OSDs');
+    super();
+    this.resource = $localize`OSDs`;
     this.action = this.actionLabels.CREATE;
     this.features = {
       encrypted: {
         key: 'encrypted',
-        desc: this.i18n('Encryption')
+        desc: $localize`Encryption`
       }
     };
     this.featureList = _.map(this.features, (o, key) => Object.assign(o, { key: key }));
@@ -86,11 +112,21 @@ export class OsdFormComponent implements OnInit {
   ngOnInit() {
     this.orchService.status().subscribe((status) => {
       this.hasOrchestrator = status.available;
-      if (this.hasOrchestrator) {
+      if (status.available) {
         this.getDataDevices();
+      } else {
+        this.loadingNone();
       }
     });
 
+    this.osdService.getDeploymentOptions().subscribe((options) => {
+      this.deploymentOptions = options;
+      this.form.get('deploymentOption').setValue(this.deploymentOptions?.recommended_option);
+
+      if (this.deploymentOptions?.recommended_option) {
+        this.enableFeatures();
+      }
+    });
     this.form.get('walSlots').valueChanges.subscribe((value) => this.setSlots('wal', value));
     this.form.get('dbSlots').valueChanges.subscribe((value) => this.setSlots('db', value));
     _.each(this.features, (feature) => {
@@ -103,39 +139,30 @@ export class OsdFormComponent implements OnInit {
 
   createForm() {
     this.form = new CdFormGroup({
-      walSlots: new FormControl(0, {
-        updateOn: 'blur',
-        validators: [Validators.min(0)]
-      }),
-      dbSlots: new FormControl(0, {
-        updateOn: 'blur',
-        validators: [Validators.min(0)]
-      }),
+      walSlots: new UntypedFormControl(0),
+      dbSlots: new UntypedFormControl(0),
       features: new CdFormGroup(
         this.featureList.reduce((acc: object, e) => {
           // disable initially because no data devices are selected
-          acc[e.key] = new FormControl({ value: false, disabled: true });
+          acc[e.key] = new UntypedFormControl({ value: false, disabled: true });
           return acc;
         }, {})
-      )
+      ),
+      deploymentOption: new UntypedFormControl(0)
     });
   }
 
   getDataDevices() {
-    if (this.loading) {
-      return;
-    }
-    this.loading = true;
-    this.orchService.inventoryDeviceList().subscribe(
+    this.hostService.inventoryDeviceList().subscribe(
       (devices: InventoryDevice[]) => {
         this.allDevices = _.filter(devices, 'available');
         this.availDevices = [...this.allDevices];
-        this.loading = false;
+        this.loadingReady();
       },
       () => {
         this.allDevices = [];
         this.availDevices = [];
-        this.loading = false;
+        this.loadingError();
       }
     );
   }
@@ -186,10 +213,13 @@ export class OsdFormComponent implements OnInit {
       this.enableFeatures();
     }
     this.driveGroup.setDeviceSelection(event.type, event.filters);
+
+    this.emitDriveGroup.emit(this.driveGroup);
   }
 
   onDevicesCleared(event: DevicesSelectionClearEvent) {
     if (event.type === 'data') {
+      this.hostname = '';
       this.availDevices = [...this.allDevices];
       this.walDeviceSelectionGroups.devices = [];
       this.dbDeviceSelectionGroups.devices = [];
@@ -205,16 +235,52 @@ export class OsdFormComponent implements OnInit {
     }
   }
 
+  emitDeploymentSelection() {
+    const option = this.form.get('deploymentOption').value;
+    const encrypted = this.form.get('encrypted').value;
+    this.emitDeploymentOption.emit({ option: option, encrypted: encrypted });
+  }
+
+  emitDeploymentMode() {
+    this.simpleDeployment = !this.simpleDeployment;
+    if (!this.simpleDeployment && this.dataDeviceSelectionGroups.devices.length === 0) {
+      this.disableFeatures();
+    } else {
+      this.enableFeatures();
+    }
+    this.emitMode.emit(this.simpleDeployment);
+  }
+
   submit() {
-    // use user name and timestamp for drive group name
-    const user = this.authStorageService.getUsername();
-    this.driveGroup.setName(`dashboard-${user}-${_.now()}`);
-    const modalRef = this.bsModalService.show(OsdCreationPreviewModalComponent, {
-      initialState: { driveGroups: [this.driveGroup.spec] }
-    });
-    modalRef.content.submitAction.subscribe(() => {
-      this.router.navigate(['/osd']);
-    });
-    this.previewButton.loading = false;
+    if (this.simpleDeployment) {
+      const option = this.form.get('deploymentOption').value;
+      const encrypted = this.form.get('encrypted').value;
+      const deploymentSpec = { option: option, encrypted: encrypted };
+      const title = this.deploymentOptions.options[deploymentSpec.option].title;
+      const trackingId = `${title} deployment`;
+      this.taskWrapper
+        .wrapTaskAroundCall({
+          task: new FinishedTask('osd/' + URLVerbs.CREATE, {
+            tracking_id: trackingId
+          }),
+          call: this.osdService.create([deploymentSpec], trackingId, 'predefined')
+        })
+        .subscribe({
+          complete: () => {
+            this.router.navigate(['/osd']);
+          }
+        });
+    } else {
+      // use user name and timestamp for drive group name
+      const user = this.authStorageService.getUsername();
+      this.driveGroup.setName(`dashboard-${user}-${_.now()}`);
+      const modalRef = this.modalService.show(OsdCreationPreviewModalComponent, {
+        driveGroups: [this.driveGroup.spec]
+      });
+      modalRef.componentInstance.submitAction.subscribe(() => {
+        this.router.navigate(['/osd']);
+      });
+      this.previewButtonPanel.submitButton.loading = false;
+    }
   }
 }

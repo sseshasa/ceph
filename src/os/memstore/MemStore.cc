@@ -29,7 +29,7 @@
 #include "include/compat.h"
 
 #define dout_context cct
-#define dout_subsys ceph_subsys_filestore
+#define dout_subsys ceph_subsys_memstore
 #undef dout_prefix
 #define dout_prefix *_dout << "memstore(" << path << ") "
 
@@ -384,7 +384,7 @@ int MemStore::getattr(CollectionHandle &c_, const ghobject_t& oid,
 }
 
 int MemStore::getattrs(CollectionHandle &c_, const ghobject_t& oid,
-		       std::map<std::string,ceph::buffer::ptr>& aset)
+		       std::map<std::string,ceph::buffer::ptr,std::less<>>& aset)
 {
   Collection *c = static_cast<Collection*>(c_.get());
   dout(10) << __func__ << " " << c->cid << " " << oid << dendl;
@@ -536,6 +536,30 @@ int MemStore::omap_get_values(
   }
   return 0;
 }
+
+#ifdef WITH_SEASTAR
+int MemStore::omap_get_values(
+  CollectionHandle& ch,                    ///< [in] Collection containing oid
+  const ghobject_t &oid,       ///< [in] Object containing omap
+  const std::optional<std::string> &start_after,     ///< [in] Keys to get
+  std::map<std::string, ceph::buffer::list> *out ///< [out] Returned keys and values
+  )
+{
+  dout(10) << __func__ << " " << ch->cid << " " << oid << dendl;
+  Collection *c = static_cast<Collection*>(ch.get());
+  ObjectRef o = c->get_object(oid);
+  if (!o)
+    return -ENOENT;
+  assert(start_after);
+  std::lock_guard lock{o->omap_mutex};
+  for (auto it = o->omap.upper_bound(*start_after);
+       it != std::end(o->omap);
+       ++it) {
+    out->insert(*it);
+  }
+  return 0;
+}
+#endif
 
 int MemStore::omap_check_keys(
   CollectionHandle& ch,                ///< [in] Collection containing oid
@@ -800,7 +824,7 @@ void MemStore::_do_transaction(Transaction& t)
     case Transaction::OP_COLL_HINT:
       {
         coll_t cid = i.get_cid(op->cid);
-        uint32_t type = op->hint_type;
+        uint32_t type = op->hint;
         ceph::buffer::list hint;
         i.decode_bl(hint);
         auto hiter = hint.cbegin();
@@ -1517,7 +1541,7 @@ int BufferlistObject::write(uint64_t offset, const ceph::buffer::list &src)
     newdata.append(tail);
   }
 
-  data.claim(newdata);
+  data = std::move(newdata);
   return 0;
 }
 
@@ -1546,7 +1570,7 @@ int BufferlistObject::truncate(uint64_t size)
   if (get_size() > size) {
     ceph::buffer::list bl;
     bl.substr_of(data, 0, size);
-    data.claim(bl);
+    data = std::move(bl);
   } else if (get_size() == size) {
     // do nothing
   } else {
@@ -1796,5 +1820,5 @@ int MemStore::PageSetObject::truncate(uint64_t size)
 MemStore::ObjectRef MemStore::Collection::create_object() const {
   if (use_page_set)
     return ceph::make_ref<PageSetObject>(cct->_conf->memstore_page_size);
-  return new BufferlistObject();
+  return make_ref<BufferlistObject>();
 }

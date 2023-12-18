@@ -4,10 +4,11 @@
 
 #include "svc_meta.h"
 
-#include "rgw/rgw_metadata.h"
+#include "rgw_metadata.h"
 
 #define dout_subsys ceph_subsys_rgw
 
+using namespace std;
 
 RGWSI_Meta::RGWSI_Meta(CephContext *cct) : RGWServiceInstance(cct) {
 }

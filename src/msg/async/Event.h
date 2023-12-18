@@ -30,6 +30,10 @@
 #define HAVE_KQUEUE 1
 #endif
 
+#ifdef _WIN32
+#define HAVE_POLL 1
+#endif
+
 #ifdef __sun
 #include <sys/feature_tests.h>
 #ifdef _DTRACE_VERSION
@@ -201,7 +205,7 @@ class EventCenter {
 
   // Used by internal thread
   int create_file_event(int fd, int mask, EventCallbackRef ctxt);
-  uint64_t create_time_event(uint64_t milliseconds, EventCallbackRef ctxt);
+  uint64_t create_time_event(uint64_t microseconds, EventCallbackRef ctxt);
   void delete_file_event(int fd, int mask);
   void delete_time_event(uint64_t id);
   int process_events(unsigned timeout_microseconds, ceph::timespan *working_dur = nullptr);

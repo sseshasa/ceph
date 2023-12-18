@@ -17,69 +17,13 @@ logger = logging.getLogger(__name__)
 def prepare_dmcrypt(key, device, device_type, tags):
     """
     Helper for devices that are encrypted. The operations needed for
-    block, db, wal, or data/journal devices are all the same
+    block, db, wal devices are all the same
     """
     if not device:
         return ''
     tag_name = 'ceph.%s_uuid' % device_type
     uuid = tags[tag_name]
-    # format data device
-    encryption_utils.luks_format(
-        key,
-        device
-    )
-    encryption_utils.luks_open(
-        key,
-        device,
-        uuid
-    )
-
-    return '/dev/mapper/%s' % uuid
-
-
-def prepare_filestore(device, journal, secrets, tags, osd_id, fsid):
-    """
-    :param device: The name of the logical volume to work with
-    :param journal: similar to device but can also be a regular/plain disk
-    :param secrets: A dict with the secrets needed to create the osd (e.g. cephx)
-    :param id_: The OSD id
-    :param fsid: The OSD fsid, also known as the OSD UUID
-    """
-    cephx_secret = secrets.get('cephx_secret', prepare_utils.create_key())
-
-    # encryption-only operations
-    if secrets.get('dmcrypt_key'):
-        # format and open ('decrypt' devices) and re-assign the device and journal
-        # variables so that the rest of the process can use the mapper paths
-        key = secrets['dmcrypt_key']
-        device = prepare_dmcrypt(key, device, 'data', tags)
-        journal = prepare_dmcrypt(key, journal, 'journal', tags)
-
-    # vdo detection
-    is_vdo = api.is_vdo(device)
-    # create the directory
-    prepare_utils.create_osd_path(osd_id)
-    # format the device
-    prepare_utils.format_device(device)
-    # mount the data device
-    prepare_utils.mount_osd(device, osd_id, is_vdo=is_vdo)
-    # symlink the journal
-    prepare_utils.link_journal(journal, osd_id)
-    # get the latest monmap
-    prepare_utils.get_monmap(osd_id)
-    # prepare the osd filesystem
-    prepare_utils.osd_mkfs_filestore(osd_id, fsid, cephx_secret)
-    # write the OSD keyring if it doesn't exist already
-    prepare_utils.write_keyring(osd_id, cephx_secret)
-    if secrets.get('dmcrypt_key'):
-        # if the device is going to get activated right away, this can be done
-        # here, otherwise it will be recreated
-        encryption_utils.write_lockbox_keyring(
-            osd_id,
-            fsid,
-            tags['ceph.cephx_lockbox_secret']
-        )
-
+    return encryption_utils.prepare_dmcrypt(key, device, uuid)
 
 def prepare_bluestore(block, wal, db, secrets, tags, osd_id, fsid):
     """
@@ -135,22 +79,7 @@ class Prepare(object):
             raise RuntimeError('unable to use device')
         return uuid
 
-    def get_lv(self, argument):
-        """
-        Perform some parsing of the command-line value so that the process
-        can determine correctly if it got a device path or an lv.
-
-        :param argument: The command-line value that will need to be split to
-                         retrieve the actual lv
-        """
-        #TODO is this efficient?
-        try:
-            vg_name, lv_name = argument.split('/')
-        except (ValueError, AttributeError):
-            return None
-        return api.get_lv(lv_name=lv_name, vg_name=vg_name)
-
-    def setup_device(self, device_type, device_name, tags, size):
+    def setup_device(self, device_type, device_name, tags, size, slots):
         """
         Check if ``device`` is an lv, if so, set the tags, making sure to
         update the tags with the lv_uuid and lv_path which the incoming tags
@@ -163,41 +92,50 @@ class Prepare(object):
             return '', '', tags
         tags['ceph.type'] = device_type
         tags['ceph.vdo'] = api.is_vdo(device_name)
-        lv = self.get_lv(device_name)
+
+        try:
+            vg_name, lv_name = device_name.split('/')
+            lv = api.get_single_lv(filters={'lv_name': lv_name,
+                                            'vg_name': vg_name})
+        except ValueError:
+            lv = None
+
         if lv:
-            uuid = lv.lv_uuid
+            lv_uuid = lv.lv_uuid
             path = lv.lv_path
-            tags['ceph.%s_uuid' % device_type] = uuid
+            tags['ceph.%s_uuid' % device_type] = lv_uuid
             tags['ceph.%s_device' % device_type] = path
             lv.set_tags(tags)
         elif disk.is_device(device_name):
             # We got a disk, create an lv
             lv_type = "osd-{}".format(device_type)
-            uuid = system.generate_uuid()
-            tags['ceph.{}_uuid'.format(device_type)] = uuid
+            name_uuid = system.generate_uuid()
             kwargs = {
                 'device': device_name,
                 'tags': tags,
-                'slots': getattr(self.args,
-                                 'block_{}_slots'.format(device_type),
-                                 1),
+                'slots': slots
             }
+            #TODO use get_block_db_size and co here to get configured size in
+            #conf file
             if size != 0:
-                kwargs['size'] = disk.Size.parse(size)
+                kwargs['size'] = size
             lv = api.create_lv(
                 lv_type,
-                uuid,
+                name_uuid,
                 **kwargs)
             path = lv.lv_path
             tags['ceph.{}_device'.format(device_type)] = path
+            tags['ceph.{}_uuid'.format(device_type)] = lv.lv_uuid
+            lv_uuid = lv.lv_uuid
             lv.set_tags(tags)
         else:
             # otherwise assume this is a regular disk partition
-            uuid = self.get_ptuuid(device_name)
+            name_uuid = self.get_ptuuid(device_name)
             path = device_name
-            tags['ceph.%s_uuid' % device_type] = uuid
+            tags['ceph.%s_uuid' % device_type] = name_uuid
             tags['ceph.%s_device' % device_type] = path
-        return path, uuid, tags
+            lv_uuid = name_uuid
+        return path, lv_uuid, tags
 
     def prepare_data_device(self, device_type, osd_uuid):
         """
@@ -207,7 +145,7 @@ class Prepare(object):
         a device or partition will result in error.
 
         :param arg: The value of ``--data`` when parsing args
-        :param device_type: Usually, either ``data`` or ``block`` (filestore vs. bluestore)
+        :param device_type: Usually ``block``
         :param osd_uuid: The OSD uuid
         """
         device = self.args.data
@@ -220,7 +158,7 @@ class Prepare(object):
                      }
             logger.debug('data device size: {}'.format(self.args.data_size))
             if self.args.data_size != 0:
-                kwargs['size'] = disk.Size.parse(self.args.data_size)
+                kwargs['size'] = self.args.data_size
             return api.create_lv(
                 lv_name_prefix,
                 osd_uuid,
@@ -243,7 +181,15 @@ class Prepare(object):
         """
         if args is not None:
             self.args = args
-        if api.is_ceph_device(self.get_lv(self.args.data)):
+
+        try:
+            vgname, lvname = self.args.data.split('/')
+            lv = api.get_single_lv(filters={'lv_name': lvname,
+                                            'vg_name': vgname})
+        except ValueError:
+            lv = None
+
+        if api.is_ceph_device(lv):
             logger.info("device {} is already used".format(self.args.data))
             raise RuntimeError("skipping {}, it is already prepared".format(self.args.data))
         try:
@@ -296,38 +242,14 @@ class Prepare(object):
             'ceph.crush_device_class': crush_device_class,
             'ceph.osdspec_affinity': prepare_utils.get_osdspec_affinity()
         }
-        if self.args.filestore:
-            #TODO: allow auto creation of journal on passed device, only works
-            # when physical device is passed, not LV
-            if not self.args.journal:
-                raise RuntimeError('--journal is required when using --filestore')
+        if self.args.bluestore:
+            try:
+                vg_name, lv_name = self.args.data.split('/')
+                block_lv = api.get_single_lv(filters={'lv_name': lv_name,
+                                                      'vg_name': vg_name})
+            except ValueError:
+                block_lv = None
 
-            data_lv = self.get_lv(self.args.data)
-            if not data_lv:
-                data_lv = self.prepare_data_device('data', osd_fsid)
-
-            tags['ceph.data_device'] = data_lv.lv_path
-            tags['ceph.data_uuid'] = data_lv.lv_uuid
-            tags['ceph.cephx_lockbox_secret'] = cephx_lockbox_secret
-            tags['ceph.encrypted'] = encrypted
-            tags['ceph.vdo'] = api.is_vdo(data_lv.lv_path)
-
-            journal_device, journal_uuid, tags = self.setup_device(
-                'journal', self.args.journal, tags, self.args.journal_size)
-
-            tags['ceph.type'] = 'data'
-            data_lv.set_tags(tags)
-
-            prepare_filestore(
-                data_lv.lv_path,
-                journal_device,
-                secrets,
-                tags,
-                self.osd_id,
-                osd_fsid,
-            )
-        elif self.args.bluestore:
-            block_lv = self.get_lv(self.args.data)
             if not block_lv:
                 block_lv = self.prepare_data_device('block', osd_fsid)
 
@@ -338,9 +260,17 @@ class Prepare(object):
             tags['ceph.vdo'] = api.is_vdo(block_lv.lv_path)
 
             wal_device, wal_uuid, tags = self.setup_device(
-                'wal', self.args.block_wal, tags, self.args.block_wal_size)
+                'wal',
+                self.args.block_wal,
+                tags,
+                self.args.block_wal_size,
+                self.args.block_wal_slots)
             db_device, db_uuid, tags = self.setup_device(
-                'db', self.args.block_db, tags, self.args.block_db_size)
+                'db',
+                self.args.block_db,
+                tags,
+                self.args.block_db_size,
+                self.args.block_db_slots)
 
             tags['ceph.type'] = 'block'
             block_lv.set_tags(tags)
@@ -388,15 +318,10 @@ class Prepare(object):
         if len(self.argv) == 0:
             print(sub_command_help)
             return
-        exclude_group_options(parser, argv=self.argv, groups=['filestore', 'bluestore'])
+        exclude_group_options(parser, argv=self.argv, groups=['bluestore'])
         self.args = parser.parse_args(self.argv)
-        # the unfortunate mix of one superset for both filestore and bluestore
-        # makes this validation cumbersome
-        if self.args.filestore:
-            if not self.args.journal:
-                raise SystemExit('--journal is required when using --filestore')
         # Default to bluestore here since defaulting it in add_argument may
         # cause both to be True
-        if not self.args.bluestore and not self.args.filestore:
+        if not self.args.bluestore:
             self.args.bluestore = True
         self.safe_prepare()

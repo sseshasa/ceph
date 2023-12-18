@@ -1,10 +1,7 @@
 import logging
 from boto.s3.deletemarker import DeleteMarker
 
-try:
-    from itertools import izip_longest as zip_longest  # type: ignore
-except ImportError:
-    from itertools import zip_longest
+from itertools import zip_longest  # type: ignore
 
 from nose.tools import eq_ as eq
 
@@ -106,6 +103,31 @@ class RadosZone(Zone):
             log.info('success, bucket identical: bucket=%s zones={%s, %s}', bucket_name, self.name, zone_conn.name)
 
             return True
+
+        def get_role(self, role_name):
+            return self.iam_conn.get_role(role_name)
+
+        def check_role_eq(self, zone_conn, role_name):
+            log.info('comparing role=%s zones={%s, %s}', role_name, self.name, zone_conn.name)
+            r1 = self.get_role(role_name)
+            r2 = zone_conn.get_role(role_name)
+
+            assert r1
+            assert r2
+            log.debug('comparing role name=%s', r1['get_role_response']['get_role_result']['role']['role_name'])
+            eq(r1['get_role_response']['get_role_result']['role']['role_name'], r2['get_role_response']['get_role_result']['role']['role_name'])
+            eq(r1['get_role_response']['get_role_result']['role']['role_id'], r2['get_role_response']['get_role_result']['role']['role_id'])
+            eq(r1['get_role_response']['get_role_result']['role']['path'], r2['get_role_response']['get_role_result']['role']['path'])
+            eq(r1['get_role_response']['get_role_result']['role']['arn'], r2['get_role_response']['get_role_result']['role']['arn'])
+            eq(r1['get_role_response']['get_role_result']['role']['max_session_duration'], r2['get_role_response']['get_role_result']['role']['max_session_duration'])
+            eq(r1['get_role_response']['get_role_result']['role']['assume_role_policy_document'], r2['get_role_response']['get_role_result']['role']['assume_role_policy_document'])
+
+            log.info('success, role identical: role=%s zones={%s, %s}', role_name, self.name, zone_conn.name)
+
+            return True
+
+        def create_role(self, path, rolename, policy_document, tag_list):
+            return self.iam_conn.create_role(rolename, policy_document, path)
 
     def get_conn(self, credentials):
         return self.Conn(self, credentials)

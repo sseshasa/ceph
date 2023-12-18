@@ -10,6 +10,11 @@
 #include "global/global_context.h"
 #include "common/dout.h"
 
+#include <unistd.h>
+
+#include <limits.h>
+
+using namespace std;
 using namespace ceph::logging;
 
 TEST(Log, Simple)
@@ -163,6 +168,125 @@ TEST(Log, ManyGather)
   }
   log.flush();
   log.stop();
+}
+
+static void readpipe(int fd, int verify)
+{
+  while (1) {
+    /* Use larger buffer on receiver as Linux will allow pipes buffers to
+     * exceed PIPE_BUF. We can't avoid tearing due to small read buffers from
+     * the Ceph side.
+     */
+
+    char buf[65536] = "";
+    int rc = read(fd, buf, (sizeof buf) - 1);
+    if (rc == 0) {
+      _exit(0);
+    } else if (rc == -1) {
+      _exit(1);
+    } else if (rc > 0) {
+      if (verify) {
+        char* p = strrchr(buf, '\n');
+        /* verify no torn writes */
+        if (p == NULL) {
+          _exit(2);
+        } else if (p[1] != '\0') {
+          write(2, buf, strlen(buf));
+          _exit(3);
+        }
+      }
+    } else _exit(100);
+    usleep(500);
+  }
+}
+
+TEST(Log, StderrPipeAtomic)
+{
+  int pfd[2] = {-1, -1};
+  int rc = pipe(pfd);
+  ASSERT_EQ(rc, 0);
+  pid_t pid = fork();
+  if (pid == 0) {
+    close(pfd[1]);
+    readpipe(pfd[0], 1);
+  } else if (pid == (pid_t)-1) {
+    ASSERT_EQ(0, 1);
+  }
+  close(pfd[0]);
+
+  SubsystemMap subs;
+  subs.set_log_level(1, 20);
+  subs.set_gather_level(1, 10);
+  Log log(&subs);
+  log.start();
+  log.set_log_file("");
+  log.reopen_log_file();
+  log.set_stderr_fd(pfd[1]);
+  log.set_stderr_level(1, 20);
+  /* -128 for prefix space */
+  for (int i = 0; i < PIPE_BUF-128; i++) {
+    MutableEntry e(1, 1);
+    auto& s = e.get_ostream();
+    for (int j = 0; j < i; j++) {
+      char c = 'a';
+      c += (j % 26);
+      s << c;
+    }
+    log.submit_entry(std::move(e));
+  }
+  log.flush();
+  log.stop();
+  close(pfd[1]);
+  int status;
+  pid_t waited = waitpid(pid, &status, 0);
+  ASSERT_EQ(pid, waited);
+  ASSERT_NE(WIFEXITED(status), 0);
+  ASSERT_EQ(WEXITSTATUS(status), 0);
+}
+
+TEST(Log, StderrPipeBig)
+{
+  int pfd[2] = {-1, -1};
+  int rc = pipe(pfd);
+  ASSERT_EQ(rc, 0);
+  pid_t pid = fork();
+  if (pid == 0) {
+    /* no verification as some reads will be torn due to size > PIPE_BUF */
+    close(pfd[1]);
+    readpipe(pfd[0], 0);
+  } else if (pid == (pid_t)-1) {
+    ASSERT_EQ(0, 1);
+  }
+  close(pfd[0]);
+
+  SubsystemMap subs;
+  subs.set_log_level(1, 20);
+  subs.set_gather_level(1, 10);
+  Log log(&subs);
+  log.start();
+  log.set_log_file("");
+  log.reopen_log_file();
+  log.set_stderr_fd(pfd[1]);
+  log.set_stderr_level(1, 20);
+  /* -128 for prefix space */
+  for (int i = 0; i < PIPE_BUF*2; i++) {
+    MutableEntry e(1, 1);
+    auto& s = e.get_ostream();
+    for (int j = 0; j < i; j++) {
+      char c = 'a';
+      c += (j % 26);
+      s << c;
+    }
+    log.submit_entry(std::move(e));
+  }
+  log.flush();
+  log.stop();
+  close(pfd[1]);
+  int status;
+  pid_t waited = waitpid(pid, &status, 0);
+  ASSERT_EQ(pid, waited);
+  ASSERT_NE(WIFEXITED(status), 0);
+  ASSERT_EQ(WEXITSTATUS(status), 0);
 }
 
 void do_segv()
@@ -362,16 +486,15 @@ TEST(Log, GarbleRecovery)
   log.flush();
   log.stop();
   struct stat file_status;
-  ASSERT_EQ(lstat(test_file, &file_status), 0);
+  ASSERT_EQ(stat(test_file, &file_status), 0);
   ASSERT_GT(file_status.st_size, 2000);
 }
 
 int main(int argc, char **argv)
 {
-  vector<const char*> args;
-  argv_to_vec(argc, (const char **)argv, args);
+  auto args = argv_to_vec(argc, argv);
 
-  auto cct = global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT,
+  auto cct = global_init(nullptr, args, CEPH_ENTITY_TYPE_CLIENT,
                          CODE_ENVIRONMENT_UTILITY,
 			 CINIT_FLAG_NO_DEFAULT_CONFIG_FILE);
   common_init_finish(g_ceph_context);

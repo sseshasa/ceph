@@ -1,7 +1,7 @@
 import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
 import { fakeAsync, TestBed, tick } from '@angular/core/testing';
 
-import { configureTestBed } from '../../../testing/unit-test-helper';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { SettingsService } from './settings.service';
 
 describe('SettingsService', () => {
@@ -11,17 +11,14 @@ describe('SettingsService', () => {
   const exampleUrl = 'api/settings/something';
   const exampleValue = 'http://localhost:3000';
 
-  configureTestBed(
-    {
-      providers: [SettingsService],
-      imports: [HttpClientTestingModule]
-    },
-    true
-  );
+  configureTestBed({
+    providers: [SettingsService],
+    imports: [HttpClientTestingModule]
+  });
 
   beforeEach(() => {
-    service = TestBed.get(SettingsService);
-    httpTesting = TestBed.get(HttpTestingController);
+    service = TestBed.inject(SettingsService);
+    httpTesting = TestBed.inject(HttpTestingController);
   });
 
   afterEach(() => {

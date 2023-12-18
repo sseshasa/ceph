@@ -5,7 +5,7 @@ Submitting Patches to Ceph
 Patches to Ceph can be divided into three categories:
 
     1. patches targeting Ceph kernel code
-    2. patches targeting the "master" branch
+    2. patches targeting the "main" branch
     3. patches targeting stable branches (e.g.: "nautilus")
 
 Some parts of Ceph - notably the RBD and CephFS kernel clients - are maintained
@@ -16,7 +16,7 @@ The rest of this document assumes that your patch relates to Ceph code that is
 maintained in the GitHub repository https://github.com/ceph/ceph
 
 If you have a patch that fixes an issue, feel free to open a GitHub pull request
-("PR") targeting the "master" branch, but do read this document first, as it
+("PR") targeting the "main" branch, but do read this document first, as it
 contains important information for ensuring that your PR passes code review
 smoothly.
 
@@ -66,7 +66,7 @@ then you just add a line saying ::
 
         Signed-off-by: Random J Developer <random@developer.example.org>
 
-using your real name (sorry, no pseudonyms or anonymous contributions.)
+using your real name (sorry, no pseudonyms or anonymous contributions).
 
 Git can sign off on your behalf
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -122,7 +122,13 @@ imperative mood in the commit title. Positive examples include::
      mds: add perf counter for finisher of MDSRank
      osd: make the ClassHandler::mutex private
 
-More positive examples can be obtained from the git history of the ``master``
+If the change only touches the files under ``doc`` directory, the title
+should start with "doc". For instance, a commit fixing a typo in
+``doc/mgr/dashboard.rst`` could have a title like::
+
+  doc/mgr/dashboard: fix a typo
+
+More positive examples can be obtained from the git history of the ``main``
 branch::
 
      git log
@@ -145,7 +151,7 @@ In the body of your commit message, be as specific as possible. If the commit
 message title was too short to fully state what the commit is doing, use the
 body to explain not just the "what", but also the "why".
 
-For positive examples, peruse ``git log`` in the ``master`` branch. A negative
+For positive examples, peruse ``git log`` in the ``main`` branch. A negative
 example would be a commit message that merely states the obvious. For example:
 "this patch includes updates for subsystem X. Please apply."
 
@@ -167,7 +173,7 @@ able to refer to the bug tracker easily.
 
 Here is an example showing a properly-formed commit message::
 
-     doc: add "--foo" option to bar
+     doc/rados/mumble: Add "--foo" option to bar
 
      This commit updates the man page for bar with the newly added "--foo"
      option.
@@ -189,7 +195,7 @@ PRs should be opened on branches contained in your fork of
 https://github.com/ceph/ceph.git - do not push branches directly to
 ``ceph/ceph.git``.
 
-PRs should target "master". If you need to add a patch to a stable branch, such
+PRs should target "main". If you need to add a patch to a stable branch, such
 as "nautilus", see the file ``SubmittingPatches-backports.rst``.
 
 In addition to a base, or "target" branch, PRs have several other components:
@@ -201,11 +207,16 @@ PR title
 
 If your PR has only one commit, the PR title can be the same as the commit title
 (and GitHub will suggest this). If the PR has multiple commits, do not accept
-the title GitHub suggest. Either use the title of the most relevant commit, or
+the title GitHub suggests. Either use the title of the most relevant commit, or
 write your own title. In the latter case, use the same "subsystem: short
 description" convention described in `Commit title`_ for the PR title, with
 the following difference: the PR title describes the entire set of changes,
 while the `Commit title`_ describes only the changes in a particular commit. 
+
+If GitHub suggests a PR title based on a very long commit message it will split
+the result with an elipsis (...) and fold the remainder into the PR description.
+In such a case, please edit the title to be more concise and the description to
+remove the elipsis.
 
 Keep in mind that the PR titles feed directly into the script that generates
 release notes and it is tedious to clean up non-conformant PR titles at release

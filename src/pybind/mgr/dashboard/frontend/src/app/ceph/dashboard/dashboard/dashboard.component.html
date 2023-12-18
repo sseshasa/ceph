@@ -1,13 +1,15 @@
-<div>
-  <cd-refresh-selector></cd-refresh-selector>
-  <tabset *ngIf="hasGrafana">
-    <tab i18n-heading
-         heading="Health">
-      <cd-health></cd-health>
-    </tab>
-    <tab i18n-heading
-         heading="Statistics">
-    </tab>
-  </tabset>
-  <cd-health *ngIf="!hasGrafana"></cd-health>
-</div>
+<main aria-label="Dashboard">
+  <a href="#main"
+     class="sr-only">skip to content</a>
+
+  <ng-container *ngIf="(enabledFeature$ | async)?.dashboard === false; else dashboardV3"
+                class="main-padding">
+    <cd-refresh-selector></cd-refresh-selector>
+
+    <cd-health id="main"></cd-health>
+  </ng-container>
+
+  <ng-template #dashboardV3>
+    <cd-dashboard-v3></cd-dashboard-v3>
+  </ng-template>
+</main>

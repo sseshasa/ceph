@@ -10,16 +10,6 @@ class RbdMirroringTest(DashboardTestCase):
     AUTH_ROLES = ['pool-manager', 'block-manager']
 
     @classmethod
-    def create_pool(cls, name, application='rbd'):
-        data = {
-            'pool': name,
-            'pg_num': 2**3,
-            'pool_type': 'replicated',
-            'application_metadata': [application]
-        }
-        cls._task_post("/api/pool", data)
-
-    @classmethod
     def get_pool(cls, pool):
         data = cls._get('/api/block/mirroring/pool/{}'.format(pool))
         if isinstance(data, dict):
@@ -65,7 +55,7 @@ class RbdMirroringTest(DashboardTestCase):
     @classmethod
     def setUpClass(cls):
         super(RbdMirroringTest, cls).setUpClass()
-        cls.create_pool('rbd')
+        cls.create_pool('rbd', 2**3, 'replicated')
 
     @classmethod
     def tearDownClass(cls):
@@ -199,7 +189,7 @@ class RbdMirroringTest(DashboardTestCase):
         self._task_post('/api/block/mirroring/pool/rbd/bootstrap/peer', import_data)
         self.assertStatus(400)
 
-        # cannot import "youself" as peer
+        # cannot import "yourself" as peer
         import_data['direction'] = 'rx'
         self._task_post('/api/block/mirroring/pool/rbd/bootstrap/peer', import_data)
         self.assertStatus(400)

@@ -17,10 +17,12 @@
 #ifndef CEPH_MSG_ASYNC_STACK_H
 #define CEPH_MSG_ASYNC_STACK_H
 
-#include "include/spinlock.h"
 #include "common/perf_counters.h"
-#include "msg/msg_types.h"
+#include "common/perf_counters_key.h"
+#include "include/spinlock.h"
 #include "msg/async/Event.h"
+#include "msg/msg_types.h"
+#include <string>
 
 class Worker;
 class ConnectedSocketImpl {
@@ -32,6 +34,7 @@ class ConnectedSocketImpl {
   virtual void shutdown() = 0;
   virtual void close() = 0;
   virtual int fd() const = 0;
+  virtual void set_priority(int sd, int prio, int domain) = 0;
 };
 
 class ConnectedSocket;
@@ -123,6 +126,10 @@ class ConnectedSocket {
     return _csi->fd();
   }
 
+  void set_priority(int sd, int prio, int domain) {
+    _csi->set_priority(sd, prio, domain);
+  }
+
   explicit operator bool() const {
     return _csi.get();
   }
@@ -203,7 +210,19 @@ enum {
   l_msgr_send_messages_queue_lat,
   l_msgr_handle_ack_lat,
 
+  l_msgr_recv_encrypted_bytes,
+  l_msgr_send_encrypted_bytes,
+
   l_msgr_last,
+};
+
+enum {
+  l_msgr_labeled_first = l_msgr_last + 1,
+
+  l_msgr_connection_ready_timeouts,
+  l_msgr_connection_idle_timeouts,
+
+  l_msgr_labeled_last,
 };
 
 class Worker {
@@ -216,6 +235,7 @@ class Worker {
 
   CephContext *cct;
   PerfCounters *perf_logger;
+  PerfCounters *perf_labeled_logger;
   unsigned id;
 
   std::atomic_uint references;
@@ -225,9 +245,11 @@ class Worker {
   Worker& operator=(const Worker&) = delete;
 
   Worker(CephContext *c, unsigned worker_id)
-    : cct(c), perf_logger(NULL), id(worker_id), references(0), center(c) {
+    : cct(c), id(worker_id), references(0), center(c) {
     char name[128];
-    sprintf(name, "AsyncMessenger::Worker-%u", id);
+    char name_prefix[] = "AsyncMessenger::Worker";
+    sprintf(name, "%s-%u", name_prefix, id);
+
     // initialize perf_logger
     PerfCountersBuilder plb(cct, name, l_msgr_first, l_msgr_last);
 
@@ -246,13 +268,39 @@ class Worker {
     plb.add_time_avg(l_msgr_send_messages_queue_lat, "msgr_send_messages_queue_lat", "Network sent messages lat");
     plb.add_time_avg(l_msgr_handle_ack_lat, "msgr_handle_ack_lat", "Connection handle ack lat");
 
+    plb.add_u64_counter(l_msgr_recv_encrypted_bytes, "msgr_recv_encrypted_bytes", "Network received encrypted bytes", NULL, 0, unit_t(UNIT_BYTES));
+    plb.add_u64_counter(l_msgr_send_encrypted_bytes, "msgr_send_encrypted_bytes", "Network sent encrypted bytes", NULL, 0, unit_t(UNIT_BYTES));
+
     perf_logger = plb.create_perf_counters();
     cct->get_perfcounters_collection()->add(perf_logger);
+
+    // Add labeled perfcounters
+    std::string labels = ceph::perf_counters::key_create(
+        name_prefix, {{"id", std::to_string(id)}});
+    PerfCountersBuilder plb_labeled(
+        cct, labels, l_msgr_labeled_first,
+        l_msgr_labeled_last);
+
+    plb_labeled.add_u64_counter(
+        l_msgr_connection_ready_timeouts, "msgr_connection_ready_timeouts",
+        "Number of not yet ready connections declared as dead", NULL,
+        PerfCountersBuilder::PRIO_USEFUL);
+    plb_labeled.add_u64_counter(
+        l_msgr_connection_idle_timeouts, "msgr_connection_idle_timeouts",
+        "Number of connections closed due to idleness", NULL,
+        PerfCountersBuilder::PRIO_USEFUL);
+
+    perf_labeled_logger = plb_labeled.create_perf_counters();
+    cct->get_perfcounters_collection()->add(perf_labeled_logger);
   }
   virtual ~Worker() {
     if (perf_logger) {
       cct->get_perfcounters_collection()->remove(perf_logger);
       delete perf_logger;
+    }
+    if (perf_labeled_logger) {
+      cct->get_perfcounters_collection()->remove(perf_labeled_logger);
+      delete perf_labeled_logger;
     }
   }
 
@@ -264,6 +312,7 @@ class Worker {
 
   virtual void initialize() {}
   PerfCounters *get_perf_counter() { return perf_logger; }
+  PerfCounters *get_labeled_perf_counter() { return perf_labeled_logger; }
   void release_worker() {
     int oldref = references.fetch_sub(1);
     ceph_assert(oldref > 0);
@@ -293,18 +342,24 @@ class Worker {
 };
 
 class NetworkStack {
-  std::string type;
-  unsigned num_workers = 0;
   ceph::spinlock pool_spin;
   bool started = false;
 
-  std::function<void ()> add_thread(unsigned i);
+  std::function<void ()> add_thread(Worker* w);
+
+  virtual Worker* create_worker(CephContext *c, unsigned i) = 0;
+  virtual void rename_thread(unsigned id) {
+    static constexpr int TASK_COMM_LEN = 16;
+    char tp_name[TASK_COMM_LEN];
+    sprintf(tp_name, "msgr-worker-%u", id);
+    ceph_pthread_setname(pthread_self(), tp_name);
+  }
 
  protected:
   CephContext *cct;
   std::vector<Worker*> workers;
 
-  explicit NetworkStack(CephContext *c, const std::string &t);
+  explicit NetworkStack(CephContext *c);
  public:
   NetworkStack(const NetworkStack &) = delete;
   NetworkStack& operator=(const NetworkStack &) = delete;
@@ -316,8 +371,6 @@ class NetworkStack {
   static std::shared_ptr<NetworkStack> create(
     CephContext *c, const std::string &type);
 
-  static Worker* create_worker(
-    CephContext *c, const std::string &t, unsigned i);
   // backend need to override this method if backend doesn't support shared
   // listen table.
   // For example, posix backend has in kernel global listen table. If one
@@ -335,11 +388,11 @@ class NetworkStack {
   }
   void drain();
   unsigned get_num_worker() const {
-    return num_workers;
+    return workers.size();
   }
 
   // direct is used in tests only
-  virtual void spawn_worker(unsigned i, std::function<void ()> &&) = 0;
+  virtual void spawn_worker(std::function<void ()> &&) = 0;
   virtual void join_worker(unsigned i) = 0;
 
   virtual bool is_ready() { return true; };

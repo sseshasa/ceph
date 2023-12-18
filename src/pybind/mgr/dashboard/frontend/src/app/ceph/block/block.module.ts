@@ -3,18 +3,14 @@ import { NgModule } from '@angular/core';
 import { FormsModule, ReactiveFormsModule } from '@angular/forms';
 import { RouterModule, Routes } from '@angular/router';
 
-import { TreeModule } from 'angular-tree-component';
-import { NgBootstrapFormValidationModule } from 'ng-bootstrap-form-validation';
-import { BsDatepickerModule } from 'ngx-bootstrap/datepicker';
-import { BsDropdownModule } from 'ngx-bootstrap/dropdown';
-import { ModalModule } from 'ngx-bootstrap/modal';
-import { ProgressbarModule } from 'ngx-bootstrap/progressbar';
-import { TabsModule } from 'ngx-bootstrap/tabs';
-import { TooltipModule } from 'ngx-bootstrap/tooltip';
+import { TreeModule } from '@circlon/angular-tree-component';
+import { NgbNavModule, NgbPopoverModule, NgbTooltipModule } from '@ng-bootstrap/ng-bootstrap';
+import { NgxPipeFunctionModule } from 'ngx-pipe-function';
 
-import { ActionLabels, URLVerbs } from '../../shared/constants/app.constants';
-import { FeatureTogglesGuardService } from '../../shared/services/feature-toggles-guard.service';
-import { SharedModule } from '../../shared/shared.module';
+import { ActionLabels, URLVerbs } from '~/app/shared/constants/app.constants';
+import { FeatureTogglesGuardService } from '~/app/shared/services/feature-toggles-guard.service';
+import { ModuleStatusGuardService } from '~/app/shared/services/module-status-guard.service';
+import { SharedModule } from '~/app/shared/shared.module';
 import { IscsiSettingComponent } from './iscsi-setting/iscsi-setting.component';
 import { IscsiTabsComponent } from './iscsi-tabs/iscsi-tabs.component';
 import { IscsiTargetDetailsComponent } from './iscsi-target-details/iscsi-target-details.component';
@@ -26,6 +22,7 @@ import { IscsiTargetListComponent } from './iscsi-target-list/iscsi-target-list.
 import { IscsiComponent } from './iscsi/iscsi.component';
 import { MirroringModule } from './mirroring/mirroring.module';
 import { OverviewComponent as RbdMirroringComponent } from './mirroring/overview/overview.component';
+import { PoolEditModeModalComponent } from './mirroring/pool-edit-mode-modal/pool-edit-mode-modal.component';
 import { RbdConfigurationFormComponent } from './rbd-configuration-form/rbd-configuration-form.component';
 import { RbdConfigurationListComponent } from './rbd-configuration-list/rbd-configuration-list.component';
 import { RbdDetailsComponent } from './rbd-details/rbd-details.component';
@@ -43,33 +40,18 @@ import { RbdTrashPurgeModalComponent } from './rbd-trash-purge-modal/rbd-trash-p
 import { RbdTrashRestoreModalComponent } from './rbd-trash-restore-modal/rbd-trash-restore-modal.component';
 
 @NgModule({
-  entryComponents: [
-    RbdDetailsComponent,
-    RbdNamespaceFormModalComponent,
-    RbdSnapshotFormModalComponent,
-    RbdTrashMoveModalComponent,
-    RbdTrashRestoreModalComponent,
-    RbdTrashPurgeModalComponent,
-    IscsiTargetDetailsComponent,
-    IscsiTargetImageSettingsModalComponent,
-    IscsiTargetIqnSettingsModalComponent,
-    IscsiTargetDiscoveryModalComponent
-  ],
   imports: [
     CommonModule,
     MirroringModule,
     FormsModule,
     ReactiveFormsModule,
-    TabsModule.forRoot(),
-    ProgressbarModule.forRoot(),
-    BsDropdownModule.forRoot(),
-    BsDatepickerModule.forRoot(),
-    TooltipModule.forRoot(),
-    ModalModule.forRoot(),
+    NgbNavModule,
+    NgbPopoverModule,
+    NgbTooltipModule,
+    NgxPipeFunctionModule,
     SharedModule,
     RouterModule,
-    NgBootstrapFormValidationModule,
-    TreeModule.forRoot()
+    TreeModule
   ],
   declarations: [
     RbdListComponent,
@@ -109,8 +91,19 @@ const routes: Routes = [
   { path: '', redirectTo: 'rbd', pathMatch: 'full' },
   {
     path: 'rbd',
-    canActivate: [FeatureTogglesGuardService],
-    data: { breadcrumbs: 'Images' },
+    canActivate: [FeatureTogglesGuardService, ModuleStatusGuardService],
+    data: {
+      moduleStatusGuardConfig: {
+        uiApiPath: 'block/rbd',
+        redirectTo: 'error',
+        header: $localize`Block Pool is not configured`,
+        button_name: $localize`Configure Default pool`,
+        button_route: '/pool/create',
+        component: 'Default Pool',
+        uiConfig: true
+      },
+      breadcrumbs: 'Images'
+    },
     children: [
       { path: '', component: RbdListComponent },
       {
@@ -158,8 +151,26 @@ const routes: Routes = [
   {
     path: 'mirroring',
     component: RbdMirroringComponent,
-    canActivate: [FeatureTogglesGuardService],
-    data: { breadcrumbs: 'Mirroring' }
+    canActivate: [FeatureTogglesGuardService, ModuleStatusGuardService],
+    data: {
+      moduleStatusGuardConfig: {
+        uiApiPath: 'block/mirroring',
+        redirectTo: 'error',
+        header: $localize`Block Mirroring is not configured`,
+        button_name: $localize`Configure Block Mirroring`,
+        button_title: $localize`This will create \"rbd-mirror\" service and a replicated Block pool`,
+        component: 'Block Mirroring',
+        uiConfig: true
+      },
+      breadcrumbs: 'Mirroring'
+    },
+    children: [
+      {
+        path: `${URLVerbs.EDIT}/:pool_name`,
+        component: PoolEditModeModalComponent,
+        outlet: 'modal'
+      }
+    ]
   },
   // iSCSI
   {

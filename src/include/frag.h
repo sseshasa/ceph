@@ -159,6 +159,15 @@ public:
     ceph::decode_raw(v, p);
     _enc = v;
   }
+  void dump(ceph::Formatter *f) const {
+    f->dump_unsigned("value", value());
+    f->dump_unsigned("bits", bits());
+  }
+  static void generate_test_instances(std::list<frag_t*>& ls) {
+    ls.push_back(new frag_t);
+    ls.push_back(new frag_t(10, 2));
+    ls.push_back(new frag_t(11, 3));
+  }
   bool operator<(const frag_t& b) const
   {
     if (value() != b.value())
@@ -169,6 +178,7 @@ public:
 private:
   _frag_t _enc = 0;
 };
+WRITE_CLASS_ENCODER(frag_t)
 
 inline std::ostream& operator<<(std::ostream& out, const frag_t& hb)
 {
@@ -182,8 +192,6 @@ inline std::ostream& operator<<(std::ostream& out, const frag_t& hb)
   return out << '*';
 }
 
-inline void encode(const frag_t &f, ceph::buffer::list& bl) { f.encode(bl); }
-inline void decode(frag_t &f, ceph::buffer::list::const_iterator& p) { f.decode(p); }
 
 using frag_vec_t = boost::container::small_vector<frag_t, 4>;
 
@@ -526,6 +534,11 @@ public:
     }
     f->close_section(); // splits
   }
+
+  static void generate_test_instances(std::list<fragtree_t*>& ls) {
+    ls.push_back(new fragtree_t);
+    ls.push_back(new fragtree_t);
+  }
 };
 WRITE_CLASS_ENCODER(fragtree_t)
 
@@ -558,8 +571,8 @@ class fragset_t {
 
 public:
   const std::set<frag_t> &get() const { return _set; }
-  std::set<frag_t>::iterator begin() { return _set.begin(); }
-  std::set<frag_t>::iterator end() { return _set.end(); }
+  std::set<frag_t>::const_iterator begin() const { return _set.begin(); }
+  std::set<frag_t>::const_iterator end() const { return _set.end(); }
 
   bool empty() const { return _set.empty(); }
 
@@ -569,6 +582,10 @@ public:
       if (f.bits() == 0) return false;
       f = f.parent();
     }
+  }
+
+  void clear() {
+    _set.clear();
   }
 
   void insert_raw(frag_t f){
@@ -593,7 +610,16 @@ public:
       }
     }
   }
+
+  void encode(ceph::buffer::list& bl) const {
+    ceph::encode(_set, bl);
+  }
+  void decode(ceph::buffer::list::const_iterator& p) {
+    ceph::decode(_set, p);
+  }
 };
+WRITE_CLASS_ENCODER(fragset_t)
+
 
 inline std::ostream& operator<<(std::ostream& out, const fragset_t& fs) 
 {

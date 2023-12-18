@@ -25,6 +25,8 @@
 #include "common/ceph_argparse.h"
 #include "global/global_init.h"
 
+using namespace std;
+
 static void usage(ostream &out)
 {
   out << "usage: get_command_descriptions [options ...]" << std::endl;
@@ -44,10 +46,9 @@ static void usage(ostream &out)
 static void json_print(const std::vector<MonCommand> &mon_commands)
 {
   bufferlist rdata;
-  Formatter *f = Formatter::create("json");
-  Monitor::format_command_descriptions(mon_commands, f,
+  auto f = Formatter::create_unique("json");
+  Monitor::format_command_descriptions(mon_commands, f.get(),
                                        CEPH_FEATURES_ALL, &rdata);
-  delete f;
   string data(rdata.c_str(), rdata.length());
   cout << data << std::endl;
 }
@@ -95,8 +96,7 @@ static void pull585()
 }
 
 int main(int argc, char **argv) {
-  vector<const char*> args;
-  argv_to_vec(argc, (const char **)argv, args);
+  auto args = argv_to_vec(argc, argv);
 
   auto cct = global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT,
 			 CODE_ENVIRONMENT_UTILITY,

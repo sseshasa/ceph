@@ -18,7 +18,7 @@
 
 #pragma once
 
-#include "rgw/rgw_service.h"
+#include "rgw_service.h"
 
 class RGWSI_ConfigKey : public RGWServiceInstance
 {
@@ -26,6 +26,6 @@ public:
   RGWSI_ConfigKey(CephContext *cct) : RGWServiceInstance(cct) {}
   virtual ~RGWSI_ConfigKey() {}
 
-  virtual int get(const string& key, bool secure, bufferlist *result) = 0;
+  virtual int get(const std::string& key, bool secure, bufferlist *result) = 0;
 };
 

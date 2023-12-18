@@ -2,12 +2,13 @@
  Configuration
 ===============
 
-Each Ceph process, daemon or utility draws its configuration from
-several sources on startup, include a local configuration, the
-monitors, the command line, or environment variables.  Configuration
-options may be set globally such that they apply to all daemons, to
-all daemons or services of a particular type, or only to a specific
-daemon, process, or client.
+Each Ceph process, daemon, or utility draws its configuration from several
+sources on startup. Such sources can include (1) a local configuration, (2) the
+monitors, (3) the command line, and (4) environment variables.
+
+Configuration options can be set globally so that they apply (1) to all
+daemons, (2) to all daemons or services of a particular type, or (3) to only a
+specific daemon, process, or client.
 
 .. raw:: html
 
@@ -39,11 +40,11 @@ To optimize the performance of your cluster, refer to the following:
    mon-lookup-dns
    Heartbeat Settings <mon-osd-interaction>
    OSD Settings <osd-config-ref>
+   DmClock Settings <mclock-config-ref>
    BlueStore Settings <bluestore-config-ref>
    FileStore Settings <filestore-config-ref>
    Journal Settings <journal-ref>
    Pool, PG & CRUSH Settings <pool-pg-config-ref.rst>
-   Messaging Settings <ms-ref>
    General Settings <general-config-ref>
 
    

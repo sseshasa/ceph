@@ -1,4 +1,4 @@
-<cd-modal [modalRef]="bsModalRef">
+<cd-modal [modalRef]="activeModal">
   <ng-container class="modal-title"
                 i18n>{{ deviceType }} devices</ng-container>
 
@@ -13,13 +13,15 @@
                         [showTitle]="false">
           <ng-container i18n>At least one of these filters must be applied in order to proceed:</ng-container>
           <span *ngFor="let filter of requiredFilters"
-                class="badge badge-dark ml-2">
+                class="badge badge-dark ms-2">
             {{ filter }}
           </span>
         </cd-alert-panel>
         <cd-inventory-devices #inventoryDevices
                               [devices]="devices"
                               [filterColumns]="filterColumns"
+                              [hostname]="hostname"
+                              [diskType]="diskType"
                               [hiddenColumns]="['available', 'osd_ids']"
                               (filterChange)="onFilterChange($event)">
         </cd-inventory-devices>
@@ -31,10 +33,10 @@
         </div>
       </div>
       <div class="modal-footer">
-        <cd-submit-button (submitAction)="onSubmit()"
-                          [form]="formGroup"
-                          [disabled]="!canSubmit || filteredDevices.length === 0">{{ action | titlecase }}</cd-submit-button>
-        <cd-back-button [back]="bsModalRef.hide"></cd-back-button>
+        <cd-form-button-panel (submitActionEvent)="onSubmit()"
+                              [form]="formGroup"
+                              [disabled]="!canSubmit || filteredDevices.length === 0"
+                              [submitText]="action | titlecase"></cd-form-button-panel>
       </div>
     </form>
   </ng-container>

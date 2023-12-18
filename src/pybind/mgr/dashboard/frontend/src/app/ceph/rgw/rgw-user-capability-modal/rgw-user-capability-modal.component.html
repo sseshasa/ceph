@@ -1,5 +1,5 @@
-<cd-modal [modalRef]="bsModalRef">
-  <ng-container i18n="form title|Example: Create Pool@@formTitle"
+<cd-modal [modalRef]="activeModal">
+  <ng-container i18n="form title"
                 class="modal-title">{{ action | titlecase }} {{ resource | upperFirst }}</ng-container>
 
   <ng-container class="modal-content">
@@ -21,7 +21,7 @@
                    [readonly]="true"
                    formControlName="type">
             <select id="type"
-                    class="form-control custom-select"
+                    class="form-select"
                     formControlName="type"
                     *ngIf="!editing"
                     autofocus>
@@ -44,7 +44,7 @@
                  i18n>Permission</label>
           <div class="cd-col-form-input">
             <select id="perm"
-                    class="form-control custom-select"
+                    class="form-select"
                     formControlName="perm">
               <option i18n
                       [ngValue]="null">-- Select a permission --</option>
@@ -61,10 +61,9 @@
       </div>
 
       <div class="modal-footer">
-        <cd-submit-button (submitAction)="onSubmit()"
-                          i18n="form action button|Example: Create Pool@@formActionButton"
-                          [form]="formGroup">{{ action | titlecase }} {{ resource | upperFirst }}</cd-submit-button>
-        <cd-back-button [back]="bsModalRef.hide"></cd-back-button>
+        <cd-form-button-panel (submitActionEvent)="onSubmit()"
+                              [form]="formGroup"
+                              [submitText]="(action | titlecase) + ' ' + (resource | upperFirst)"></cd-form-button-panel>
       </div>
     </form>
   </ng-container>

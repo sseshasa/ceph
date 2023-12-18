@@ -1,26 +1,22 @@
-<div dropdown
-     class="btn-group"
-     *ngIf="isDropdown">
-  <a dropdownToggle
-     class="dropdown-toggle"
-     data-toggle="dropdown"
+<div ngbDropdown
+     display="dynamic"
+     placement="bottom-right">
+  <a ngbDropdownToggle
      i18n-title
-     title="Select a Language">
-    {{ supportedLanguages[selectedLanguage] }}
+     id="toggle-language-button"
+     title="Select a Language"
+     role="button">
+    {{ allLanguages[selectedLanguage] }}
   </a>
-  <ul *dropdownMenu
-      class="dropdown-menu dropdown-menu-right">
-    <li *ngFor="let lang of supportedLanguages | keyvalue">
-      <a class="dropdown-item"
-         (click)="changeLanguage(lang.key)">{{ lang.value }}</a>
-    </li>
-  </ul>
+  <div ngbDropdownMenu
+       role="listbox"
+       aria-labelledby="toggle-language-button">
+    <ng-container *ngFor="let lang of supportedLanguages | keyvalue">
+      <button ngbDropdownItem
+              role="option"
+              (click)="changeLanguage(lang.key)">
+        {{ lang.value }}
+      </button>
+    </ng-container>
+  </div>
 </div>
-
-<select *ngIf="!isDropdown"
-        (change)="changeLanguage($event.target.value)"
-        [(ngModel)]="selectedLanguage"
-        class="form-control custom-select">
-  <option *ngFor="let lang of supportedLanguages | keyvalue"
-          [value]="lang.key">{{ lang.value }}</option>
-</select>

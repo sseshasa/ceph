@@ -27,7 +27,15 @@ This change also affects the rados object names of the bucket index shards, curr
 
 ## Bucket Index Log Resharding
 
-The bucket replication logs for multisite are stored in the same bucket index shards as the keys that they modify. However, we can't reshard these log entries like we do with with normal keys, because other zones need to track their position in the logs. If we shuffle the log entries around between shards, other zones no longer have a way to associate their old shard marker positions with the new shards, and their only recourse would be to restart a full sync. So when resharding buckets, we need to preserve the old bucket index logs so that other zones can finish processing their log entries, while any new events are recorded in the new bucket index logs.
+The bucket replication logs for multisite are stored in the same bucket index
+shards as the keys that they modify. However, we can't reshard these log
+entries like we do with normal keys, because other zones need to track their
+position in the logs. If we shuffle the log entries around between shards,
+other zones no longer have a way to associate their old shard marker positions
+with the new shards, and their only recourse would be to restart a full sync.
+So when resharding buckets, we need to preserve the old bucket index logs so
+that other zones can finish processing their log entries, while any new events
+are recorded in the new bucket index logs.
 
 An additional goal is to move replication logs out of omap (so out of the bucket index) into separate rados objects. To enable this, the bucket instance metadata should be able to describe a bucket whose *index layout* is different from its *log layout*. For existing buckets, the two layouts would be identical and share the bucket index objects. Alternate log layouts are otherwise out of scope for this design.
 
@@ -72,9 +80,18 @@ The distinction between *index layout* and *log layout* is important, because in
 * Full sync uses a single bucket-wide listing to fetch all objects.
     - Use a cls_lock to prevent different shards from duplicating this work.
 * When incremental sync gets to the end of a log shard (i.e. listing the log returns truncated=false):
-    - If the remote has a newer log generation, flag that shard as 'resharded' in the bucket sync status.
-    - Once all shards in the current generation reach that 'resharded' state, incremental bucket sync can advance to the next generation.
+    - If the remote has a newer log generation, flag that shard as 'done' in the bucket sync status.
+    - Once all shards in the current generation reach that 'done' state, incremental bucket sync can advance to the next generation.
     - Use cls_version on the bucket sync status object to detect racing writes from other shards.
+
+### Bucket Sync Disable/Enable
+
+Reframe in terms of log generations, instead of handling SYNCSTOP events with a special Stopped state:
+
+* radosgw-admin bucket sync enable: create a new log generation in the bucket instance metadata
+    - detect races with reshard: fail if reshard in progress, and write with cls_version to detect race with start of reshard
+    - if the current log generation is shared with the bucket index layout (BucketLogType::InIndex), the new log generation will point at the same index layout/generation. so the log generation increments, but the index objects keep the same generation
+* SYNCSTOP in incremental sync: flag the shard as 'done' and ignore datalog events on that bucket until we see a new generation
 
 ### Log Trimming
 
