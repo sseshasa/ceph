@@ -10923,6 +10923,7 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb)
     }
 
     work_item = sdata->scheduler->dequeue();
+    osd->logger->dec(l_osd_op_queue_size);
     if (osd->is_stopping()) {
       sdata->shard_lock.unlock();
       for (auto c : oncommits) {
@@ -11225,6 +11226,7 @@ void OSD::ShardedOpWQ::_enqueue(OpSchedulerItem&& item) {
       sdata->sdata_cond.notify_one();
     }
   }
+  osd->logger->inc(l_osd_op_queue_size);
 }
 
 void OSD::ShardedOpWQ::_enqueue_front(OpSchedulerItem&& item)

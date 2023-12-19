@@ -244,10 +244,12 @@ public:
 };
 
 class PGOpItem : public PGOpQueueable {
+  utime_t time_queued;
   OpRequestRef op;
 
 public:
-  PGOpItem(spg_t pg, OpRequestRef op) : PGOpQueueable(pg), op(std::move(op)) {}
+  PGOpItem(spg_t pg, OpRequestRef op)
+    : PGOpQueueable(pg), time_queued(ceph_clock_now()), op(std::move(op)) {}
 
   std::ostream &print(std::ostream &rhs) const final {
     return rhs << "PGOpItem(op=" << *(op->get_req()) << ")";
