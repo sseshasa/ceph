@@ -17,6 +17,9 @@
 #include "crimson/os/seastore/seastore_types.h"
 
 struct btree_lba_manager_test;
+struct lba_btree_test;
+struct btree_test_base;
+struct cache_test_t;
 
 namespace crimson::os::seastore {
 
@@ -426,8 +429,15 @@ public:
   /// Returns true if extent is stable and shared among transactions
   bool is_stable() const {
     return is_stable_written() ||
+	   // MUTATION_PENDING and under-io extents are to-be-stable extents,
+	   // for the sake of caveats that checks the correctness of extents
+	   // states, we consider them stable.
            (is_mutation_pending() &&
             is_pending_io());
+  }
+
+  bool is_data_stable() const {
+    return is_stable() || is_exist_clean();
   }
 
   /// Returns true if extent has a pending delta
@@ -536,7 +546,7 @@ public:
   }
 
   /// Returns crc32c of buffer
-  uint32_t get_crc32c() {
+  virtual uint32_t calc_crc32c() const {
     return ceph_crc32c(
       1,
       reinterpret_cast<const unsigned char *>(get_bptr().c_str()),
@@ -544,11 +554,11 @@ public:
   }
 
   /// Get ref to raw buffer
-  bufferptr &get_bptr() {
+  virtual bufferptr &get_bptr() {
     assert(ptr.has_value());
     return *ptr;
   }
-  const bufferptr &get_bptr() const {
+  virtual const bufferptr &get_bptr() const {
     assert(ptr.has_value());
     return *ptr;
   }
@@ -587,12 +597,19 @@ public:
     rewrite_generation = gen;
   }
 
+  void set_inplace_rewrite_generation() {
+    user_hint = placement_hint_t::REWRITE;
+    rewrite_generation = OOL_GENERATION;
+  }
+
   bool is_inline() const {
     return poffset.is_relative();
   }
 
   paddr_t get_prior_paddr_and_reset() {
-    assert(prior_poffset);
+    if (!prior_poffset) {
+      return poffset;
+    }
     auto ret = *prior_poffset;
     prior_poffset.reset();
     return ret;
@@ -604,6 +621,15 @@ public:
   // and a mutation_pending extent has a valid prior_instance
   CachedExtentRef get_prior_instance() const {
     return prior_instance;
+  }
+
+  uint32_t get_last_committed_crc() const {
+    return last_committed_crc;
+  }
+
+  /// Returns true if the extent part of the open transaction
+  bool is_pending_in_trans(transaction_id_t id) const {
+    return is_pending() && pending_for_transaction == id;
   }
 
 private:
@@ -629,16 +655,6 @@ private:
 
   bool is_linked() {
     return extent_index_hook.is_linked();
-  }
-
-  /// set bufferptr
-  void set_bptr(ceph::bufferptr &&nptr) {
-    ptr = nptr;
-  }
-
-  /// Returns true if the extent part of the open transaction
-  bool is_pending_in_trans(transaction_id_t id) const {
-    return is_pending() && pending_for_transaction == id;
   }
 
   /// hook for intrusive ref list (mainly dirty or lru list)
@@ -774,6 +790,13 @@ protected:
     prior_instance.reset();
   }
 
+  /**
+   * Called when updating extents' last_committed_crc, some extents may
+   * have in-extent checksum fields, like LBA/backref nodes, which are
+   * supposed to be updated in this method.
+   */
+  virtual void update_in_extent_chksum_field(uint32_t) {}
+
   /// Sets last_committed_crc
   void set_last_committed_crc(uint32_t crc) {
     last_committed_crc = crc;
@@ -785,6 +808,11 @@ protected:
       prior_poffset = poffset;
     }
     poffset = offset;
+  }
+
+  /// set bufferptr
+  void set_bptr(ceph::bufferptr &&nptr) {
+    ptr = nptr;
   }
 
   /**
@@ -820,6 +848,9 @@ protected:
   template <typename, typename>
   friend class BtreeNodeMapping;
   friend class ::btree_lba_manager_test;
+  friend class ::lba_btree_test;
+  friend class ::btree_test_base;
+  friend class ::cache_test_t;
 };
 
 std::ostream &operator<<(std::ostream &, CachedExtent::extent_state_t);
@@ -1040,6 +1071,10 @@ public:
   virtual key_t get_intermediate_key() const { return min_max_t<key_t>::null; }
   virtual key_t get_intermediate_base() const { return min_max_t<key_t>::null; }
   virtual extent_len_t get_intermediate_length() const { return 0; }
+  virtual uint32_t get_checksum() const {
+    ceph_abort("impossible");
+    return 0;
+  }
   // The start offset of the pin, must be 0 if the pin is not indirect
   virtual extent_len_t get_intermediate_offset() const {
     return std::numeric_limits<extent_len_t>::max();
@@ -1053,7 +1088,10 @@ public:
     child_pos->link_child(c);
   }
 
+  // For reserved mappings, the return values are
+  // undefined although it won't crash
   virtual bool is_stable() const = 0;
+  virtual bool is_data_stable() const = 0;
   virtual bool is_clone() const = 0;
   bool is_zero_reserved() const {
     return !get_val().is_real();
@@ -1226,7 +1264,7 @@ public:
   void apply_delta_and_adjust_crc(
     paddr_t base, const ceph::bufferlist &bl) final {
     apply_delta(bl);
-    set_last_committed_crc(get_crc32c());
+    set_last_committed_crc(calc_crc32c());
   }
 
   bool is_logical() const final {
@@ -1235,12 +1273,23 @@ public:
 
   std::ostream &_print_detail(std::ostream &out) const final;
 
-  void on_replace_prior(Transaction &t) final;
+  struct modified_region_t {
+    extent_len_t offset;
+    extent_len_t len;
+  };
+  virtual std::optional<modified_region_t> get_modified_region() {
+    return std::nullopt;
+  }
+
+  virtual void clear_modified_region() {}
 
   virtual ~LogicalCachedExtent();
+
 protected:
+  void on_replace_prior(Transaction &t) final;
 
   virtual void apply_delta(const ceph::bufferlist &bl) = 0;
+
   virtual std::ostream &print_detail_l(std::ostream &out) const {
     return out;
   }

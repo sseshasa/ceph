@@ -64,6 +64,15 @@ void bluefs_layout_t::dump(Formatter *f) const
   f->dump_stream("dedicated_wal") << dedicated_wal;
 }
 
+void bluefs_layout_t::generate_test_instances(list<bluefs_layout_t*>& ls)
+{
+  ls.push_back(new bluefs_layout_t);
+  ls.push_back(new bluefs_layout_t);
+  ls.back()->shared_bdev = 1;
+  ls.back()->dedicated_db = true;
+  ls.back()->dedicated_wal = true;
+}
+
 // bluefs_super_t
 
 void bluefs_super_t::encode(bufferlist& bl) const
@@ -219,21 +228,15 @@ std::ostream& operator<<(std::ostream& out, const bluefs_fnode_delta_t& delta)
 
 // bluefs_transaction_t
 
-DENC_HELPERS
 void bluefs_transaction_t::bound_encode(size_t &s) const {
-  uint32_t crc = op_bl.crc32c(-1);
-  DENC_START(1, 1, s);
+  uint32_t crc = -1;
+  s += 1; // version
+  s += 1; // compat
+  s += 4; // size
   denc(uuid, s);
-  denc_varint(seq, s);
-  // not using bufferlist encode method, as it merely copies the bufferptr and not
-  // contents, meaning we're left with fragmented target bl
-  __u32 len = op_bl.length();
-  denc(len, s);
-  for (auto& it : op_bl.buffers()) {
-    s += it.length();
-  }
+  denc(seq, s);
+  denc(op_bl, s);
   denc(crc, s);
-  DENC_FINISH(s);
 }
 
 void bluefs_transaction_t::encode(bufferlist& bl) const

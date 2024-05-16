@@ -87,20 +87,8 @@ Main Scrubber interfaces:
 namespace Scrub {
 class ScrubMachine;
 struct BuildMap;
+class LocalResourceWrapper;
 
-
-/**
- *  wraps the local OSD scrub resource reservation in an RAII wrapper
- */
-class LocalReservation {
-  OSDService* m_osds;
-  bool m_holding_local_reservation{false};
-
- public:
-  explicit LocalReservation(OSDService* osds);
-  ~LocalReservation();
-  bool is_reserved() const { return m_holding_local_reservation; }
-};
 
 /**
  * Once all replicas' scrub maps are received, we go on to compare the maps.
@@ -239,6 +227,8 @@ class PgScrubber : public ScrubPgIF,
 
   void send_scrub_is_finished(epoch_t epoch_queued) final;
 
+  void send_granted_by_reserver(const AsyncScrubResData& req) final;
+
   /**
    *  we allow some number of preemptions of the scrub, which mean we do
    *  not block.  Then we start to block.  Once we start blocking, we do
@@ -264,7 +254,7 @@ class PgScrubber : public ScrubPgIF,
 
   void rm_from_osd_scrubbing() final;
 
-  void on_pg_activate(const requested_scrub_t& request_flags) final;
+  void schedule_scrub_with_osd() final;
 
   scrub_level_t scrub_requested(
       scrub_level_t scrub_level,
@@ -326,9 +316,9 @@ class PgScrubber : public ScrubPgIF,
 
   void on_new_interval() final;
 
-  void on_replica_activate() final;
+  void on_primary_active_clean() final;
 
-  void scrub_clear_state() final;
+  void on_replica_activate() final;
 
   bool is_queued_or_active() const final;
 
@@ -375,9 +365,9 @@ class PgScrubber : public ScrubPgIF,
   int get_whoami() const final;
   spg_t get_spgid() const final { return m_pg->get_pgid(); }
   PG* get_pg() const final { return m_pg; }
+  PerfCounters& get_counters_set() const final;
 
-  // temporary interface (to be discarded in a follow-up PR)
-  /// set the 'resources_failure' flag in the scrub-job object
+  /// delay next retry of this PG after a replica reservation failure
   void flag_reservations_failure();
 
   scrubber_callback_cancel_token_t schedule_callback_after(
@@ -430,10 +420,7 @@ class PgScrubber : public ScrubPgIF,
   void on_replica_init() final;
   void replica_handling_done() final;
 
-  /// the version of 'scrub_clear_state()' that does not try to invoke FSM
-  /// services (thus can be called from FSM reactions)
   void clear_pgscrub_state() final;
-
 
   std::chrono::milliseconds get_scrub_sleep_time() const final;
   void queue_for_scrub_resched(Scrub::scrub_prio_t prio) final;
@@ -443,6 +430,8 @@ class PgScrubber : public ScrubPgIF,
   void on_digest_updates() final;
 
   void scrub_finish() final;
+
+  void penalize_next_scrub(Scrub::delay_cause_t cause) final;
 
   ScrubMachineListener::MsgAndEpoch prep_replica_map_msg(
     Scrub::PreemptionNoted was_preempted) final;
@@ -482,11 +471,8 @@ class PgScrubber : public ScrubPgIF,
 
   std::string dump_awaited_maps() const final;
 
-  void set_scrub_begin_time() final;
+  void set_scrub_duration(std::chrono::milliseconds duration) final;
 
-  void set_scrub_duration() final;
-
-  utime_t scrub_begin_stamp;
   std::ostream& gen_prefix(std::ostream& out) const final;
 
   /// facilitate scrub-backend access to SnapMapper mappings
@@ -568,7 +554,7 @@ class PgScrubber : public ScrubPgIF,
    *  - the epoch when started;
    *  - the depth of the scrub requested (from the PG_STATE variable)
    */
-  void reset_epoch(epoch_t epoch_queued);
+  void reset_epoch() final;
 
   void run_callbacks();
 
@@ -628,12 +614,18 @@ class PgScrubber : public ScrubPgIF,
 
   epoch_t m_last_aborted{};  // last time we've noticed a request to abort
 
-  // 'optional', as 'LocalReservation' is
-  // 'RAII-designed' to guarantee un-reserving when deleted.
-  std::optional<Scrub::LocalReservation> m_local_osd_resource;
+  /**
+   * once we acquire the local OSD resource, this is set to a wrapper that
+   * guarantees that the resource will be released when the scrub is done
+   */
+  std::unique_ptr<Scrub::LocalResourceWrapper> m_local_osd_resource;
 
-  void cleanup_on_finish();  // scrub_clear_state() as called for a Primary when
-			     // Active->NotActive
+  /**
+   * clearing the scrubber state & the PG's scrub-related flags
+   * (calls clear_pgscrub_state()).
+   * Also - publishes the PG stats.
+   */
+  void cleanup_on_finish();
 
  protected:
   PG* const m_pg;
@@ -778,6 +770,8 @@ class PgScrubber : public ScrubPgIF,
 
   void update_op_mode_text();
 
+  std::string_view get_op_mode_text() const final;
+
  private:
   /**
    * initiate a deep-scrub after the current scrub ended with errors.
@@ -789,6 +783,15 @@ class PgScrubber : public ScrubPgIF,
    * of scrub-related parameters.
    */
   Scrub::sched_conf_t populate_config_params() const;
+
+  /**
+   * determine the time when the next scrub should be scheduled
+   *
+   * based on the planned scrub's flags, time of last scrub, and
+   * the pool's scrub configuration.
+   */
+  Scrub::sched_params_t determine_scrub_time(
+      const pool_opts_t& pool_conf) const;
 
   /*
    * Select a range of objects to scrub.

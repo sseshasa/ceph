@@ -19,12 +19,12 @@ log = logging.getLogger(__name__)
 # internal metadata directory
 DEBUGFS_META_DIR = 'meta'
 
-class KernelMount(CephFSMount):
+class KernelMountBase(CephFSMount):
     def __init__(self, ctx, test_dir, client_id, client_remote,
                  client_keyring_path=None, hostfs_mntpt=None,
                  cephfs_name=None, cephfs_mntpt=None, brxnet=None,
                  client_config={}):
-        super(KernelMount, self).__init__(ctx=ctx, test_dir=test_dir,
+        super(KernelMountBase, self).__init__(ctx=ctx, test_dir=test_dir,
             client_id=client_id, client_remote=client_remote,
             client_keyring_path=client_keyring_path, hostfs_mntpt=hostfs_mntpt,
             cephfs_name=cephfs_name, cephfs_mntpt=cephfs_mntpt, brxnet=brxnet,
@@ -204,11 +204,6 @@ class KernelMount(CephFSMount):
         """
         assert self.is_mounted()
 
-    def teardown(self):
-        super(KernelMount, self).teardown()
-        if self.is_mounted():
-            self.umount()
-
     def _get_debug_dir(self):
         """
         Get the debugfs folder for this mount
@@ -260,9 +255,10 @@ class KernelMount(CephFSMount):
                 import json
 
                 def get_id_to_dir():
-                    result = {}
+                    meta_dir = "{meta_dir}"
+                    result = dict()
                     for dir in glob.glob("/sys/kernel/debug/ceph/*"):
-                        if os.path.basename(dir) == DEBUGFS_META_DIR:
+                        if os.path.basename(dir) == meta_dir:
                             continue
                         mds_sessions_lines = open(os.path.join(dir, "mds_sessions")).readlines()
                         global_id = mds_sessions_lines[0].split()[1].strip('"')
@@ -270,7 +266,7 @@ class KernelMount(CephFSMount):
                         result[client_id] = global_id
                     return result
                 print(json.dumps(get_id_to_dir()))
-            """)
+            """.format(meta_dir=DEBUGFS_META_DIR))
 
             output = self.client_remote.sh([
                 'sudo', 'python3', '-c', pyscript
@@ -342,7 +338,7 @@ echo '{fdata}' | sudo tee /sys/kernel/debug/dynamic_debug/control
         if self.inst is not None:
             return self.inst
 
-        client_gid = "client%d" % self.get_global_id()
+        client_gid = "client%d" % int(self.get_global_id())
         self.inst = " ".join([client_gid, self._global_addr])
         return self.inst
 
@@ -392,3 +388,5 @@ echo '{fdata}' | sudo tee /sys/kernel/debug/dynamic_debug/control
             else:
                 return 0
         return int(re.findall(r'read.*', buf)[0].split()[1])
+
+KernelMount = KernelMountBase

@@ -46,11 +46,14 @@ if(NOT WIN32)
     add_subdirectory(cls_journal)
     add_subdirectory(cls_rbd)
   endif(WITH_RBD)
+  if(WITH_RADOSGW)
+    add_subdirectory(cls_rgw)
+    add_subdirectory(cls_rgw_gc)
+    add_subdirectory(cls_user)
+  endif(WITH_RADOSGW)
   add_subdirectory(cls_refcount)
-  add_subdirectory(cls_rgw)
   add_subdirectory(cls_version)
   add_subdirectory(cls_lua)
-  add_subdirectory(cls_rgw_gc)
   add_subdirectory(cls_queue)
   add_subdirectory(cls_2pc_queue)
   add_subdirectory(cls_cmpomap)
@@ -287,6 +290,7 @@ install(TARGETS ceph_test_librgw_file DESTINATION ${CMAKE_INSTALL_BINDIR})
 add_dependencies(ceph_test_librgw_file
   ceph_test_librgw_file_cd
   ceph_test_librgw_file_gp
+  ceph_test_librgw_file_rename
   ceph_test_librgw_file_nfsns
   ceph_test_librgw_file_aw
   ceph_test_librgw_file_marker)
@@ -390,6 +394,20 @@ target_link_libraries(ceph_test_librgw_file_xattr
   ${ALLOC_LIBS}
   )
 target_link_libraries(ceph_test_librgw_file_xattr spawn)
+
+# ceph_test_librgw_file_rename (mv/rename tests)
+add_executable(ceph_test_librgw_file_rename
+  librgw_file_rename.cc
+  )
+target_link_libraries(ceph_test_librgw_file_rename
+  rgw
+  librados
+  ceph-common
+  ${UNITTEST_LIBS}
+  ${EXTRALIBS}
+  ${ALLOC_LIBS}
+  )
+install(TARGETS ceph_test_librgw_file_rename DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # ceph_test_rgw_token
 add_executable(ceph_test_rgw_token

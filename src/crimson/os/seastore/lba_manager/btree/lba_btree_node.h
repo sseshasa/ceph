@@ -35,14 +35,14 @@ struct lba_map_val_t {
   extent_len_t len = 0;  ///< length of mapping
   pladdr_t pladdr;         ///< physical addr of mapping or
 			   //	laddr of a physical lba mapping(see btree_lba_manager.h)
-  uint32_t refcount = 0; ///< refcount
+  extent_ref_count_t refcount = 0; ///< refcount
   uint32_t checksum = 0; ///< checksum of original block written at paddr (TODO)
 
   lba_map_val_t() = default;
   lba_map_val_t(
     extent_len_t len,
     pladdr_t pladdr,
-    uint32_t refcount,
+    extent_ref_count_t refcount,
     uint32_t checksum)
     : len(len), pladdr(pladdr), refcount(refcount), checksum(checksum) {}
   bool operator==(const lba_map_val_t&) const = default;
@@ -63,8 +63,8 @@ using lba_node_meta_le_t = fixed_kv_node_meta_le_t<laddr_le_t>;
  * LBA Tree.
  *
  * Layout (4k):
+ *   checksum   :                            4b
  *   size       : uint32_t[1]                4b
- *   (padding)  :                            4b
  *   meta       : lba_node_meta_le_t[3]      (1*24)b
  *   keys       : laddr_t[255]               (254*8)b
  *   values     : paddr_t[255]               (254*8)b
@@ -101,8 +101,8 @@ using LBAInternalNodeRef = LBAInternalNode::Ref;
  * LBA Tree.
  *
  * Layout (4k):
+ *   checksum   :                            4b
  *   size       : uint32_t[1]                4b
- *   (padding)  :                            4b
  *   meta       : lba_node_meta_le_t[3]      (1*24)b
  *   keys       : laddr_t[170]               (140*8)b
  *   values     : lba_map_val_t[170]         (140*21)b
@@ -121,7 +121,7 @@ constexpr size_t LEAF_NODE_CAPACITY = 140;
 struct lba_map_val_le_t {
   extent_len_le_t len = init_extent_len_le(0);
   pladdr_le_t pladdr;
-  ceph_le32 refcount{0};
+  extent_ref_count_le_t refcount{0};
   ceph_le32 checksum{0};
 
   lba_map_val_le_t() = default;

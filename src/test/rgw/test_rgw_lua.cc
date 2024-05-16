@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "common/async/context_pool.h"
 #include "common/ceph_context.h"
 #include "rgw_common.h"
 #include "rgw_auth_registry.h"
@@ -7,6 +8,7 @@
 #include "rgw_lua_request.h"
 #include "rgw_lua_background.h"
 #include "rgw_lua_data_filter.h"
+#include "rgw_sal_config.h"
 
 using namespace std;
 using namespace rgw;
@@ -31,15 +33,19 @@ class FakeIdentity : public Identity {
 public:
   FakeIdentity() = default;
 
+  ACLOwner get_aclowner() const override {
+    return {};
+  }
+
   uint32_t get_perms_from_aclspec(const DoutPrefixProvider* dpp, const aclspec_t& aclspec) const override {
     return 0;
   };
 
-  bool is_admin_of(const rgw_user& uid) const override {
+  bool is_admin_of(const rgw_owner& o) const override {
     return false;
   }
 
-  bool is_owner_of(const rgw_user& uid) const override {
+  bool is_owner_of(const rgw_owner& uid) const override {
     return false;
   }
 
@@ -59,11 +65,21 @@ public:
     return "";
   }
 
+  const std::string& get_tenant() const override {
+    static std::string empty;
+    return empty;
+  }
+
+  const std::optional<RGWAccountInfo>& get_account() const override {
+    static const std::optional<RGWAccountInfo> empty;
+    return empty;
+  }
+
   void to_str(std::ostream& out) const override {
     return;
   }
 
-  bool is_identity(const flat_set<Principal>& ids) const override {
+  bool is_identity(const Principal& p) const override {
     return false;
   }
 };
@@ -79,18 +95,6 @@ public:
   }
 
   virtual int read_attrs(const DoutPrefixProvider *dpp, optional_yield y) override {
-    return 0;
-  }
-
-  virtual int read_stats(const DoutPrefixProvider *dpp, optional_yield y, RGWStorageStats* stats, ceph::real_time *last_stats_sync, ceph::real_time *last_stats_update) override {
-    return 0;
-  }
-
-  virtual int read_stats_async(const DoutPrefixProvider *dpp, boost::intrusive_ptr<sal::ReadStatsCB> cb) override {
-    return 0;
-  }
-
-  virtual int complete_flush_stats(const DoutPrefixProvider *dpp, optional_yield y) override {
     return 0;
   }
 
@@ -117,6 +121,11 @@ public:
     return 0;
   }
   virtual int verify_mfa(const std::string& mfa_str, bool* verified, const DoutPrefixProvider* dpp, optional_yield y) override {
+    return 0;
+  }
+  int list_groups(const DoutPrefixProvider* dpp, optional_yield y,
+                  std::string_view marker, uint32_t max_items,
+                  rgw::sal::GroupList& listing) override {
     return 0;
   }
   virtual ~TestUser() = default;
@@ -159,11 +168,24 @@ CctCleaner cleaner(g_cct);
 
 tracing::Tracer tracer;
 
-#define MAKE_STORE auto store = std::unique_ptr<sal::RadosStore>(new sal::RadosStore); \
-                        store->setRados(new RGWRados);
+inline std::unique_ptr<sal::RadosStore> make_store() {
+  auto context_pool = std::make_unique<ceph::async::io_context_pool>(
+    g_cct->_conf->rgw_thread_pool_size);
+
+  struct StoreBundle : public sal::RadosStore {
+    std::unique_ptr<ceph::async::io_context_pool> context_pool;
+    StoreBundle(std::unique_ptr<ceph::async::io_context_pool> context_pool_)
+      : sal::RadosStore(*context_pool_.get()),
+        context_pool(std::move(context_pool_)) {
+      setRados(new RGWRados);
+    }
+    virtual ~StoreBundle() = default;
+  };
+  return std::make_unique<StoreBundle>(std::move(context_pool));
+};
 
 #define DEFINE_REQ_STATE RGWProcessEnv pe; \
-  MAKE_STORE; \
+  auto store = make_store();                   \
   pe.lua.manager = store->get_lua_manager(""); \
   RGWEnv e; \
   req_state s(g_cct, pe, &e, 0);
@@ -343,8 +365,7 @@ TEST(TestRGWLua, Bucket)
   info.bucket.name = "myname";
   info.bucket.marker = "mymarker";
   info.bucket.bucket_id = "myid";
-  info.owner.id = "myuser";
-  info.owner.tenant = "mytenant";
+  info.owner = rgw_user{"mytenant", "myuser"};
   s.bucket.reset(new sal::RadosBucket(nullptr, info));
 
   const auto rc = lua::request::execute(nullptr, nullptr, nullptr, &s, nullptr, script);
@@ -648,8 +669,7 @@ TEST(TestRGWLua, Acl)
     end
 
     assert(Request.UserAcl.Owner.DisplayName == "jack black", Request.UserAcl.Owner.DisplayName)
-    assert(Request.UserAcl.Owner.User.Id == "black", Request.UserAcl.Owner.User.Id)
-    assert(Request.UserAcl.Owner.User.Tenant == "jack", Request.UserAcl.Owner.User.Tenant)
+    assert(Request.UserAcl.Owner.User == "jack$black", Request.UserAcl.Owner.User)
     assert(#Request.UserAcl.Grants == 7)
     print_grant("", Request.UserAcl.Grants[""])
     for k, v in pairs(Request.UserAcl.Grants) do
@@ -711,8 +731,7 @@ TEST(TestRGWLua, UseFunction)
 	const std::string script = R"(
 		function print_owner(owner)
   		print("Owner Display Name: " .. owner.DisplayName)
-  		print("Owner Id: " .. owner.User.Id)
-  		print("Owner Tenanet: " .. owner.User.Tenant)
+  		print("Owner Id: " .. owner.User)
 		end
 
 		print_owner(Request.ObjectOwner)
@@ -858,7 +877,7 @@ public:
 
 TEST(TestRGWLuaBackground, Start)
 {
-  MAKE_STORE;
+  auto store = make_store();
   auto manager = store->get_lua_manager("");
   {
     // ctr and dtor without running
@@ -892,7 +911,7 @@ TEST(TestRGWLuaBackground, Script)
     RGW[key] = value
   )";
 
-  MAKE_STORE;
+  auto store = make_store();
   auto manager = store->get_lua_manager("");
   TestBackground lua_background(store.get(), script, manager.get());
   lua_background.start();
@@ -945,7 +964,7 @@ TEST(TestRGWLuaBackground, Pause)
     end
   )";
 
-  MAKE_STORE;
+  auto store = make_store();
   auto manager = store->get_lua_manager("");
   TestBackground lua_background(store.get(), script, manager.get());
   lua_background.start();
@@ -971,7 +990,7 @@ TEST(TestRGWLuaBackground, PauseWhileReading)
     end
   )";
 
-  MAKE_STORE;
+  auto store = make_store();
   auto manager = store->get_lua_manager("");
   TestBackground lua_background(store.get(), script, manager.get(), 2);
   lua_background.start();
@@ -993,7 +1012,7 @@ TEST(TestRGWLuaBackground, ReadWhilePaused)
     RGW[key] = value
   )";
 
-  MAKE_STORE;
+  auto store = make_store();
   auto manager = store->get_lua_manager("");
   TestBackground lua_background(store.get(), script, manager.get());
   lua_background.pause();
@@ -1017,7 +1036,7 @@ TEST(TestRGWLuaBackground, PauseResume)
     end
   )";
 
-  MAKE_STORE;
+  auto store = make_store();
   auto manager = store->get_lua_manager("");
   TestBackground lua_background(store.get(), script, manager.get());
   lua_background.start();
@@ -1046,7 +1065,7 @@ TEST(TestRGWLuaBackground, MultipleStarts)
     end
   )";
 
-  MAKE_STORE;
+  auto store = make_store();
   auto manager = store->get_lua_manager("");
   TestBackground lua_background(store.get(), script, manager.get());
   lua_background.start();
@@ -1562,8 +1581,7 @@ TEST(TestRGWLua, DifferentContextUser)
   s.user.reset(new sal::RadosUser(nullptr, rgw_user("tenant1", "user1")));
   RGWBucketInfo info;
   info.bucket.name = "bucket1";
-  info.owner.id = "user2";
-  info.owner.tenant = "tenant2";
+  info.owner = rgw_user{"tenant2", "user2"};
   s.bucket.reset(new sal::RadosBucket(nullptr, info));
 
   const auto rc = lua::request::execute(nullptr, nullptr, nullptr, &s, nullptr, script);

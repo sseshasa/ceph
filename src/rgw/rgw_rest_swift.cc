@@ -42,6 +42,109 @@
 
 using namespace std;
 
+template <class HASHFLAVOR, rgw::auth::swift::SignatureFlavor SIGNATUREFLAVOR>
+class FormPostSignatureT: public rgw::auth::swift::FormatSignature<HASHFLAVOR,SIGNATUREFLAVOR>
+{
+  using UCHARPTR = const unsigned char*;
+  using base_t = rgw::auth::swift::SignatureHelperT<HASHFLAVOR>;
+  using format_signature_t = rgw::auth::swift::FormatSignature<HASHFLAVOR,SIGNATUREFLAVOR>;
+public:
+  const char* calc(const std::string& key,
+      const std::string_view& path_info,
+      const std::string_view& redirect,
+      const std::string_view& max_file_size,
+      const std::string_view& max_file_count,
+      const std::string_view& expires) {
+    HASHFLAVOR hmac((UCHARPTR) key.data(), key.size());
+
+    hmac.Update((UCHARPTR) path_info.data(), path_info.size());
+    hmac.Update((UCHARPTR) "\n", 1);
+
+    hmac.Update((UCHARPTR) redirect.data(), redirect.size());
+    hmac.Update((UCHARPTR) "\n", 1);
+
+    hmac.Update((UCHARPTR) max_file_size.data(), max_file_size.size());
+    hmac.Update((UCHARPTR) "\n", 1);
+
+    hmac.Update((UCHARPTR) max_file_count.data(), max_file_count.size());
+    hmac.Update((UCHARPTR) "\n", 1);
+
+    hmac.Update((UCHARPTR) expires.data(), expires.size());
+
+    hmac.Final(base_t::dest);
+
+    return format_signature_t::result();
+  }
+};
+class RGWFormPost::SignatureHelper {
+public:
+  virtual ~SignatureHelper() {};
+  virtual const char* calc(const std::string& key,
+    const std::string_view& path_info,
+    const std::string_view& redirect,
+    const std::string_view& max_file_size,
+    const std::string_view& max_file_count,
+    const std::string_view& expires) {
+    return nullptr;
+  };
+  virtual const char* get_signature() const {
+    return nullptr;
+  };
+  virtual bool is_equal_to(const std::string& rhs) {
+    return false;
+  };
+  static std::unique_ptr<SignatureHelper> get_sig_helper(std::string_view x);
+};
+template<typename HASHFLAVOR, rgw::auth::swift::SignatureFlavor SIGNATUREFLAVOR>
+class RGWFormPost::SignatureHelper_x : public RGWFormPost::SignatureHelper
+{
+  friend RGWFormPost;
+private:
+  FormPostSignatureT<HASHFLAVOR,SIGNATUREFLAVOR> d;
+public:
+  ~SignatureHelper_x() { };
+  SignatureHelper_x() {};
+  virtual const char* calc(const std::string& key,
+    const std::string_view& path_info,
+    const std::string_view& redirect,
+    const std::string_view& max_file_size,
+    const std::string_view& max_file_count,
+    const std::string_view& expires) {
+    return d.calc(key,path_info,redirect,
+      max_file_size,max_file_count,expires) ;
+  };
+  virtual const char* get_signature() const {
+    return d.get_signature();
+  };
+  virtual bool is_equal_to(const std::string& rhs) {
+    return d.is_equal_to(rhs);
+  };
+};
+
+std::unique_ptr<RGWFormPost::SignatureHelper> RGWFormPost::SignatureHelper::get_sig_helper(std::string_view x) {
+  size_t pos = x.find(':');
+  if (pos == x.npos || pos <= 0) {
+    switch(x.length()) {
+    case CEPH_CRYPTO_HMACSHA1_DIGESTSIZE*2:
+      return std::make_unique<SignatureHelper_x<ceph::crypto::HMACSHA1,rgw::auth::swift::SignatureFlavor::BARE_HEX>>();
+    case CEPH_CRYPTO_HMACSHA256_DIGESTSIZE*2:
+      return std::make_unique<SignatureHelper_x<ceph::crypto::HMACSHA256,rgw::auth::swift::SignatureFlavor::BARE_HEX>>();
+    case CEPH_CRYPTO_HMACSHA512_DIGESTSIZE*2:
+      return std::make_unique<SignatureHelper_x<ceph::crypto::HMACSHA512,rgw::auth::swift::SignatureFlavor::BARE_HEX>>();
+    }
+    return std::make_unique<BadSignatureHelper>();
+  }
+  std::string_view type { x.substr(0,pos) };
+  if (type == "sha1") {
+    return std::make_unique<SignatureHelper_x<ceph::crypto::HMACSHA1,rgw::auth::swift::SignatureFlavor::NAMED_BASE64>>();
+  } else if (type == "sha256") {
+    return std::make_unique<SignatureHelper_x<ceph::crypto::HMACSHA256,rgw::auth::swift::SignatureFlavor::NAMED_BASE64>>();
+  } else if (type == "sha512") {
+    return std::make_unique<SignatureHelper_x<ceph::crypto::HMACSHA512,rgw::auth::swift::SignatureFlavor::NAMED_BASE64>>();
+  }
+  return std::make_unique<BadSignatureHelper>();
+};
+
 int RGWListBuckets_ObjStore_SWIFT::get_params(optional_yield y)
 {
   prefix = s->info.args.get("prefix");
@@ -606,8 +709,7 @@ static int get_swift_container_settings(req_state * const s,
 
   if (read_list || write_list) {
     int r = rgw::swift::create_container_policy(s, driver,
-                                                s->user->get_id(),
-                                                s->user->get_display_name(),
+                                                s->owner,
                                                 read_list,
                                                 write_list,
                                                 *rw_mask,
@@ -720,7 +822,7 @@ int RGWCreateBucket_ObjStore_SWIFT::get_params(optional_yield y)
   }
 
   if (!has_policy) {
-    policy.create_default(s->user->get_id(), s->user->get_display_name());
+    policy.create_default(s->owner.id, s->owner.display_name);
   }
 
   location_constraint = driver->get_zone()->get_zonegroup().get_api_name();
@@ -945,7 +1047,7 @@ int RGWPutObj_ObjStore_SWIFT::get_params(optional_yield y)
     }
   }
 
-  policy.create_default(s->user->get_id(), s->user->get_display_name());
+  policy.create_default(s->owner.id, s->owner.display_name);
 
   int r = get_delete_at_param(s, delete_at);
   if (r < 0) {
@@ -1064,9 +1166,7 @@ static int get_swift_account_settings(req_state * const s,
 
   const char * const acl_attr = s->info.env->get("HTTP_X_ACCOUNT_ACCESS_CONTROL");
   if (acl_attr) {
-    int r = rgw::swift::create_account_policy(s, driver,
-                                              s->user->get_id(),
-                                              s->user->get_display_name(),
+    int r = rgw::swift::create_account_policy(s, driver, s->owner,
                                               acl_attr, policy);
     if (r < 0) {
       return r;
@@ -1374,7 +1474,7 @@ static void dump_object_metadata(const DoutPrefixProvider* dpp, req_state * cons
 
 int RGWCopyObj_ObjStore_SWIFT::init_dest_policy()
 {
-  dest_policy.create_default(s->user->get_id(), s->user->get_display_name());
+  dest_policy.create_default(s->owner.id, s->owner.display_name);
 
   return 0;
 }
@@ -2034,10 +2134,16 @@ bool RGWFormPost::is_non_expired()
 bool RGWFormPost::is_integral()
 {
   const std::string form_signature = get_part_str(ctrl_parts, "signature");
+  bool r = false;
 
   try {
-    get_owner_info(s, s->user->get_info());
-    s->auth.identity = rgw::auth::transform_old_authinfo(s);
+    s->user = get_owner_info(s);
+    auto result = rgw::auth::transform_old_authinfo(
+        this, s->yield, driver, s->user.get());
+    if (!result) {
+      return false;
+    }
+    s->auth.identity = std::move(result).value();
   } catch (...) {
     ldpp_dout(this, 5) << "cannot get user_info of account's owner" << dendl;
     return false;
@@ -2051,32 +2157,35 @@ bool RGWFormPost::is_integral()
       continue;
     }
 
-    SignatureHelper sig_helper;
-    sig_helper.calc(temp_url_key,
+    auto sig_helper{ RGWFormPost::SignatureHelper::get_sig_helper(form_signature) };
+    sig_helper->calc(temp_url_key,
                     s->info.request_uri,
                     get_part_str(ctrl_parts, "redirect"),
                     get_part_str(ctrl_parts, "max_file_size", "0"),
                     get_part_str(ctrl_parts, "max_file_count", "0"),
                     get_part_str(ctrl_parts, "expires", "0"));
 
-    const auto local_sig = sig_helper.get_signature();
+    const char* local_sig = sig_helper->get_signature();
+    if (!local_sig) local_sig = "???";
 
     ldpp_dout(this, 20) << "FormPost signature [" << temp_url_key_num << "]"
                       << " (calculated): " << local_sig << dendl;
 
-    if (sig_helper.is_equal_to(form_signature)) {
-      return true;
-    } else {
+    r = sig_helper->is_equal_to(form_signature);
+    if (!r) {
       ldpp_dout(this, 5) << "FormPost's signature mismatch: "
                        << local_sig << " != " << form_signature << dendl;
     }
+    if (r) {
+      break;
+    }
   }
 
-  return false;
+  return r;
 }
 
-void RGWFormPost::get_owner_info(const req_state* const s,
-                                   RGWUserInfo& owner_info) const
+auto RGWFormPost::get_owner_info(const req_state* const s) const
+  -> std::unique_ptr<rgw::sal::User>
 {
   /* We cannot use req_state::bucket_name because it isn't available
    * now. It will be initialized in RGWHandler_REST_SWIFT::postauth_init(). */
@@ -2123,15 +2232,22 @@ void RGWFormPost::get_owner_info(const req_state* const s,
     throw ret;
   }
 
-  ldpp_dout(this, 20) << "temp url user (bucket owner): " << bucket->get_info().owner
-                 << dendl;
+  const rgw_owner& owner = bucket->get_owner();
+  const rgw_user* uid = std::get_if<rgw_user>(&owner);
+  if (!uid) {
+    ldpp_dout(this, 20) << "bucket " << *bucket <<  " is not owned by a user "
+        "so has no temp url keys" << dendl;
+    throw -EPERM;
+  }
 
-  user = driver->get_user(bucket->get_info().owner);
+  ldpp_dout(this, 20) << "temp url user (bucket owner): " << *uid << dendl;
+
+  user = driver->get_user(*uid);
   if (user->load_user(s, s->yield) < 0) {
     throw -EPERM;
   }
 
-  owner_info = user->get_info();
+  return user;
 }
 
 int RGWFormPost::get_params(optional_yield y)
@@ -2142,7 +2258,7 @@ int RGWFormPost::get_params(optional_yield y)
     return ret;
   }
 
-  policy.create_default(s->user->get_id(), s->user->get_display_name());
+  policy.create_default(s->owner.id, s->owner.display_name);
 
   /* Let's start parsing the HTTP body by parsing each form part step-
    * by-step till encountering the first part with file data. */
@@ -2289,6 +2405,16 @@ int RGWFormPost::get_data(ceph::bufferlist& bl, bool& again)
   again = !boundary;
 
   return bl.length();
+}
+
+// override error_handler() to map error messages from abort_early(), which
+// doesn't end up calling our send_response()
+int RGWFormPost::error_handler(int err_no, std::string *error_content, optional_yield y)
+{
+  if (!err_msg.empty()) {
+    *error_content = err_msg;
+  }
+  return err_no;
 }
 
 void RGWFormPost::send_response()
@@ -2490,6 +2616,7 @@ RGWOp* RGWSwiftWebsiteHandler::get_ws_index_op()
   } else {
     s->object->set_name(s->bucket->get_info().website_conf.get_index_doc());
   }
+  s->object->set_bucket(s->bucket.get());
 
   auto getop = new RGWGetObj_ObjStore_SWIFT;
   getop->set_get_data(boost::algorithm::equals("GET", s->info.method));
@@ -2823,7 +2950,7 @@ int RGWHandler_REST_SWIFT::postauth_init(optional_yield y)
       && s->user->get_id().id == RGW_USER_ANON_ID) {
     s->bucket_tenant = s->account_name;
   } else {
-    s->bucket_tenant = s->user->get_tenant();
+    s->bucket_tenant = s->auth.identity->get_tenant();
   }
   s->bucket_name = t->url_bucket;
 

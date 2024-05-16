@@ -35,14 +35,23 @@ public:
 
   virtual paddr_t alloc_paddr(extent_len_t length) = 0;
 
+  virtual std::list<alloc_paddr_result> alloc_paddrs(extent_len_t length) = 0;
+
   using alloc_write_ertr = base_ertr;
   using alloc_write_iertr = trans_iertr<alloc_write_ertr>;
   virtual alloc_write_iertr::future<> alloc_write_ool_extents(
     Transaction &t,
-    std::list<LogicalCachedExtentRef> &extents) = 0;
+    std::list<CachedExtentRef> &extents) = 0;
 
   using close_ertr = base_ertr;
   virtual close_ertr::future<> close() = 0;
+
+  virtual bool can_inplace_rewrite(Transaction& t,
+    CachedExtentRef extent) = 0;
+
+#ifdef UNIT_TESTS_BUILT
+  virtual void prefill_fragmented_devices() {}
+#endif
 };
 using ExtentOolWriterRef = std::unique_ptr<ExtentOolWriter>;
 
@@ -65,7 +74,7 @@ public:
 
   alloc_write_iertr::future<> alloc_write_ool_extents(
     Transaction &t,
-    std::list<LogicalCachedExtentRef> &extents) final;
+    std::list<CachedExtentRef> &extents) final;
 
   close_ertr::future<> close() final {
     return write_guard.close().then([this] {
@@ -79,10 +88,19 @@ public:
     return make_delayed_temp_paddr(0);
   }
 
+  std::list<alloc_paddr_result> alloc_paddrs(extent_len_t length) final {
+    return {alloc_paddr_result{make_delayed_temp_paddr(0), length}};
+  }
+
+  bool can_inplace_rewrite(Transaction& t,
+    CachedExtentRef extent) final {
+    return false;
+  }
+
 private:
   alloc_write_iertr::future<> do_write(
     Transaction& t,
-    std::list<LogicalCachedExtentRef> &extent);
+    std::list<CachedExtentRef> &extent);
 
   alloc_write_ertr::future<> write_record(
     Transaction& t,
@@ -108,7 +126,7 @@ public:
 
   alloc_write_iertr::future<> alloc_write_ool_extents(
     Transaction &t,
-    std::list<LogicalCachedExtentRef> &extents) final;
+    std::list<CachedExtentRef> &extents) final;
 
   close_ertr::future<> close() final {
     return write_guard.close().then([this] {
@@ -122,10 +140,33 @@ public:
     return rb_cleaner->alloc_paddr(length);
   }
 
+  std::list<alloc_paddr_result> alloc_paddrs(extent_len_t length) final {
+    assert(rb_cleaner);
+    return rb_cleaner->alloc_paddrs(length);
+  }
+
+  bool can_inplace_rewrite(Transaction& t,
+    CachedExtentRef extent) final {
+    if (!extent->is_dirty()) {
+      return false;
+    }
+    assert(t.get_src() == transaction_type_t::TRIM_DIRTY);
+    ceph_assert_always(extent->get_type() == extent_types_t::ROOT ||
+	extent->get_paddr().is_absolute());
+    return crimson::os::seastore::can_inplace_rewrite(extent->get_type());
+  }
+
+#ifdef UNIT_TESTS_BUILT
+  void prefill_fragmented_devices() final {
+    LOG_PREFIX(RandomBlockOolWriter::prefill_fragmented_devices);
+    SUBDEBUG(seastore_epm, "");
+    return rb_cleaner->prefill_fragmented_devices();
+  }
+#endif
 private:
   alloc_write_iertr::future<> do_write(
     Transaction& t,
-    std::list<LogicalCachedExtentRef> &extent);
+    std::list<CachedExtentRef> &extent);
 
   RBMCleaner* rb_cleaner;
   seastar::gate write_guard;
@@ -182,7 +223,9 @@ class ExtentPlacementManager {
 public:
   ExtentPlacementManager()
     : ool_segment_seq_allocator(
-          std::make_unique<SegmentSeqAllocator>(segment_type_t::OOL))
+          std::make_unique<SegmentSeqAllocator>(segment_type_t::OOL)),
+      max_data_allocation_size(crimson::common::get_conf<Option::size_t>(
+	  "seastore_max_data_allocation_size"))
   {
     devices_by_id.resize(DEVICE_ID_MAX, nullptr);
   }
@@ -197,6 +240,14 @@ public:
 
   void set_extent_callback(ExtentCallbackInterface *cb) {
     background_process.set_extent_callback(cb);
+  }
+
+  bool can_inplace_rewrite(Transaction& t, CachedExtentRef extent) {
+    auto writer = get_writer(placement_hint_t::REWRITE,
+      get_extent_category(extent->get_type()),
+      OOL_GENERATION);
+    ceph_assert(writer);
+    return writer->can_inplace_rewrite(t, extent);
   }
 
   journal_type_t get_journal_type() const {
@@ -241,7 +292,7 @@ public:
     bufferptr bp;
     rewrite_gen_t gen;
   };
-  alloc_result_t alloc_new_extent(
+  std::optional<alloc_result_t> alloc_new_non_data_extent(
     Transaction& t,
     extent_types_t type,
     extent_len_t length,
@@ -260,11 +311,6 @@ public:
     data_category_t category = get_extent_category(type);
     gen = adjust_generation(category, type, hint, gen);
 
-    // XXX: bp might be extended to point to different memory (e.g. PMem)
-    // according to the allocator.
-    auto bp = ceph::bufferptr(
-      buffer::create_page_aligned(length));
-    bp.zero();
     paddr_t addr;
 #ifdef UNIT_TESTS_BUILT
     if (unlikely(external_paddr.has_value())) {
@@ -275,18 +321,103 @@ public:
     if (gen == INLINE_GENERATION) {
 #endif
       addr = make_record_relative_paddr(0);
-    } else if (category == data_category_t::DATA) {
-      assert(data_writers_by_gen[generation_to_writer(gen)]);
-      addr = data_writers_by_gen[
-	  generation_to_writer(gen)]->alloc_paddr(length);
     } else {
       assert(category == data_category_t::METADATA);
       assert(md_writers_by_gen[generation_to_writer(gen)]);
       addr = md_writers_by_gen[
 	  generation_to_writer(gen)]->alloc_paddr(length);
     }
-    return {addr, std::move(bp), gen};
+    assert(!(category == data_category_t::DATA));
+
+    if (addr.is_null()) {
+      return std::nullopt;
+    }
+
+    // XXX: bp might be extended to point to different memory (e.g. PMem)
+    // according to the allocator.
+    auto bp = ceph::bufferptr(
+      buffer::create_page_aligned(length));
+    bp.zero();
+
+    return alloc_result_t{addr, std::move(bp), gen};
   }
+
+  std::list<alloc_result_t> alloc_new_data_extents(
+    Transaction& t,
+    extent_types_t type,
+    extent_len_t length,
+    placement_hint_t hint,
+#ifdef UNIT_TESTS_BUILT
+    rewrite_gen_t gen,
+    std::optional<paddr_t> external_paddr = std::nullopt
+#else
+    rewrite_gen_t gen
+#endif
+  ) {
+    LOG_PREFIX(ExtentPlacementManager::alloc_new_data_extents);
+    assert(hint < placement_hint_t::NUM_HINTS);
+    assert(is_target_rewrite_generation(gen));
+    assert(gen == INIT_GENERATION || hint == placement_hint_t::REWRITE);
+
+    data_category_t category = get_extent_category(type);
+    gen = adjust_generation(category, type, hint, gen);
+    assert(gen != INLINE_GENERATION);
+
+    // XXX: bp might be extended to point to different memory (e.g. PMem)
+    // according to the allocator.
+    std::list<alloc_result_t> allocs;
+#ifdef UNIT_TESTS_BUILT
+    if (unlikely(external_paddr.has_value())) {
+      assert(external_paddr->is_fake());
+      auto bp = ceph::bufferptr(
+        buffer::create_page_aligned(length));
+      bp.zero();
+      allocs.emplace_back(alloc_result_t{*external_paddr, std::move(bp), gen});
+    } else {
+#else
+    {
+#endif
+      assert(category == data_category_t::DATA);
+      assert(data_writers_by_gen[generation_to_writer(gen)]);
+      auto addrs = data_writers_by_gen[
+          generation_to_writer(gen)]->alloc_paddrs(length);
+      for (auto &ext : addrs) {
+        auto left = ext.len;
+        while (left > 0) {
+          auto len = std::min(max_data_allocation_size, left);
+          auto bp = ceph::bufferptr(buffer::create_page_aligned(len));
+          bp.zero();
+          auto start = ext.start.is_delayed()
+                        ? ext.start
+                        : ext.start + (ext.len - left);
+          allocs.emplace_back(alloc_result_t{start, std::move(bp), gen});
+          SUBDEBUGT(seastore_epm,
+                    "allocated {} {}B extent at {}, hint={}, gen={}",
+                    t, type, len, start, hint, gen);
+          left -= len;
+        }
+      }
+    }
+    return allocs;
+  }
+
+#ifdef UNIT_TESTS_BUILT
+  void prefill_fragmented_devices() {
+    LOG_PREFIX(ExtentPlacementManager::prefill_fragmented_devices);
+    SUBDEBUG(seastore_epm, "");
+    for (auto &writer : writer_refs) {
+      writer->prefill_fragmented_devices();
+    }
+  }
+
+  void set_max_extent_size(extent_len_t len) {
+    max_data_allocation_size = len;
+  }
+
+  extent_len_t get_max_extent_size() const {
+    return max_data_allocation_size;
+  }
+#endif
 
   /**
    * dispatch_result_t
@@ -297,10 +428,10 @@ public:
    * usage is used to reserve projected space
    */
   using extents_by_writer_t =
-    std::map<ExtentOolWriter*, std::list<LogicalCachedExtentRef>>;
+    std::map<ExtentOolWriter*, std::list<CachedExtentRef>>;
   struct dispatch_result_t {
     extents_by_writer_t alloc_map;
-    std::list<LogicalCachedExtentRef> delayed_extents;
+    std::list<CachedExtentRef> delayed_extents;
     io_usage_t usage;
   };
 
@@ -329,7 +460,7 @@ public:
    */
   alloc_paddr_iertr::future<> write_preallocated_ool_extents(
     Transaction &t,
-    std::list<LogicalCachedExtentRef> extents);
+    std::list<CachedExtentRef> extents);
 
   seastar::future<> stop_background() {
     return background_process.stop_background();
@@ -452,7 +583,7 @@ private:
    * Specify the extent inline or ool
    * return true indicates inline otherwise ool
    */
-  bool dispatch_delayed_extent(LogicalCachedExtentRef& extent) {
+  bool dispatch_delayed_extent(CachedExtentRef& extent) {
     // TODO: all delayed extents are ool currently
     boost::ignore_unused(extent);
     return false;
@@ -663,15 +794,7 @@ private:
       }
     }
 
-    void maybe_wake_blocked_io() final {
-      if (!is_ready()) {
-        return;
-      }
-      if (!should_block_io() && blocking_io) {
-        blocking_io->set_value();
-        blocking_io = std::nullopt;
-      }
-    }
+    void maybe_wake_blocked_io() final;
 
   private:
     // reserve helpers
@@ -717,12 +840,16 @@ private:
         || trimmer->should_trim();
     }
 
+    bool main_cleaner_should_fast_evict() const {
+      return has_cold_tier() &&
+         main_cleaner->can_clean_space() &&
+         eviction_state.is_fast_mode();
+    }
+
     bool main_cleaner_should_run() const {
       assert(is_ready());
       return main_cleaner->should_clean_space() ||
-        (has_cold_tier() &&
-         main_cleaner->can_clean_space() &&
-         eviction_state.is_fast_mode());
+        main_cleaner_should_fast_evict();
     }
 
     bool cold_cleaner_should_run() const {
@@ -902,6 +1029,7 @@ private:
   BackgroundProcess background_process;
   // TODO: drop once paddr->journal_seq_t is introduced
   SegmentSeqAllocatorRef ool_segment_seq_allocator;
+  extent_len_t max_data_allocation_size = 0;
 
   friend class ::transaction_manager_test_t;
 };

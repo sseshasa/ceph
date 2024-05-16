@@ -53,6 +53,10 @@ namespace crimson::os::seastore {
   class TransactionConflictCondition;
 }
 
+namespace crimson::osd {
+  class IOInterruptCondition;
+}
+
 // GCC tries to instantiate
 // seastar::lw_shared_ptr<crimson::os::seastore::TransactionConflictCondition>.
 // but we *may* not have the definition of TransactionConflictCondition at this moment,
@@ -65,7 +69,6 @@ namespace seastar::internal {
   {};
 }
 
-SEASTAR_CONCEPT(
 namespace crimson::interruptible {
   template<typename InterruptCond, typename FutureType>
   class interruptible_future_detail;
@@ -75,7 +78,6 @@ namespace seastar::impl {
   struct is_tuple_of_futures<std::tuple<crimson::interruptible::interruptible_future_detail<InterruptCond, FutureType>, Rest...>>
     : is_tuple_of_futures<std::tuple<Rest...>> {};
 }
-)
 
 namespace crimson::interruptible {
 
@@ -135,6 +137,9 @@ struct interrupt_cond_t {
 
 template <typename InterruptCond>
 thread_local interrupt_cond_t<InterruptCond> interrupt_cond;
+
+extern template thread_local interrupt_cond_t<crimson::osd::IOInterruptCondition>
+interrupt_cond<crimson::osd::IOInterruptCondition>;
 
 extern template thread_local interrupt_cond_t<crimson::os::seastore::TransactionConflictCondition>
 interrupt_cond<crimson::os::seastore::TransactionConflictCondition>;
@@ -413,6 +418,10 @@ public:
     : core_type(std::move(base))
   {}
 
+  void set_coroutine(seastar::task& coroutine) noexcept {
+    core_type::set_coroutine(coroutine);
+  }
+
   using value_type = typename seastar::future<T>::value_type;
   using tuple_type = typename seastar::future<T>::tuple_type;
 
@@ -683,6 +692,12 @@ struct interruptible_errorator {
 	Errorator::template make_ready_future<ValueT>(
 	  std::forward<A>(value)...));
   }
+
+  template <template <typename> typename FutureType, typename ValueT>
+  static future<ValueT> make_interruptible(FutureType<ValueT> &&fut) {
+    return std::move(fut);
+  }
+
   static interruptible_future_detail<
     InterruptCond,
     typename Errorator::template future<>> now() {
@@ -704,6 +719,7 @@ class [[nodiscard]] interruptible_future_detail<
 {
 public:
   using core_type = ErroratedFuture<crimson::errorated_future_marker<T>>;
+  using core_type::unsafe_get0;
   using errorator_type = typename core_type::errorator_type;
   using interrupt_errorator_type =
     interruptible_errorator<InterruptCond, errorator_type>;
@@ -766,6 +782,10 @@ public:
     : core_type(::seastar::futurize<core_type>::make_exception_future(std::move(ep))) {
   }
 
+  void set_coroutine(seastar::task& coroutine) noexcept {
+    core_type::set_coroutine(coroutine);
+  }
+
   template<bool interruptible = true, typename ValueInterruptCondT, typename ErrorVisitorT,
 	   std::enable_if_t<!interruptible, int> = 0>
   [[gnu::always_inline]]
@@ -781,6 +801,9 @@ public:
     return safe_then_interruptible(std::forward<Args>(args)...);
   }
 
+  auto discard_result() noexcept {
+    return si_then([](auto &&) {});
+  }
 
   template<bool interruptible = true, typename ValueInterruptCondT, typename ErrorVisitorT,
 	   typename U = T, std::enable_if_t<!std::is_void_v<U> && interruptible, int> = 0>
@@ -1081,6 +1104,9 @@ struct interruptor
 public:
   using condition = InterruptCond;
 
+  template <typename T>
+  using future = interruptible_future<InterruptCond, T>;
+
   static const void *get_interrupt_cond() {
     return (const void*)interrupt_cond<InterruptCond>.interrupt_cond.get();
   }
@@ -1205,7 +1231,7 @@ public:
 	    (typename Iterator::reference x) mutable {
 	    return call_with_interruption(
 		      interrupt_condition,
-		      std::move(action),
+		      action,
 		      std::forward<decltype(*begin)>(x)).to_future();
 	  })
       );
@@ -1217,7 +1243,7 @@ public:
 	    (typename Iterator::reference x) mutable {
 	    return call_with_interruption(
 		      interrupt_condition,
-		      std::move(action),
+		      action,
 		      std::forward<decltype(*begin)>(x)).to_future();
 	  })
       );
@@ -1236,7 +1262,7 @@ public:
 	    (typename Iterator::reference x) mutable {
 	    return call_with_interruption(
 		      interrupt_condition,
-		      std::move(action),
+		      action,
 		      std::forward<decltype(*begin)>(x));
 	  })
       );
@@ -1248,7 +1274,7 @@ public:
 	    (typename Iterator::reference x) mutable {
 	    return call_with_interruption(
 		      interrupt_condition,
-		      std::move(action),
+		      action,
 		      std::forward<decltype(*begin)>(x));
 	  })
       );
@@ -1263,10 +1289,10 @@ public:
       return make_interruptible(
 	  ::seastar::repeat(
 	    [action=std::move(action),
-	    interrupt_condition=interrupt_cond<InterruptCond>.interrupt_cond] {
+	    interrupt_condition=interrupt_cond<InterruptCond>.interrupt_cond]() mutable {
 	    return call_with_interruption(
 		      interrupt_condition,
-		      std::move(action)).to_future();
+		      action).to_future();
 	  })
       );
     } else {
@@ -1276,7 +1302,7 @@ public:
 	    interrupt_condition=interrupt_cond<InterruptCond>.interrupt_cond]() mutable {
 	    return call_with_interruption(
 		      interrupt_condition,
-		      std::move(action)).to_future();
+		      action).to_future();
 	  })
       );
     }
@@ -1289,20 +1315,20 @@ public:
       return make_interruptible(
 	  ::seastar::repeat(
 	    [action=std::move(action),
-	    interrupt_condition=interrupt_cond<InterruptCond>.interrupt_cond] {
+	    interrupt_condition=interrupt_cond<InterruptCond>.interrupt_cond]() mutable {
 	    return call_with_interruption(
 		      interrupt_condition,
-		      std::move(action));
+		      action);
 	  })
       );
     } else {
       return make_interruptible(
 	  ::crimson::repeat(
 	    [action=std::move(action),
-	    interrupt_condition=interrupt_cond<InterruptCond>.interrupt_cond] {
+	    interrupt_condition=interrupt_cond<InterruptCond>.interrupt_cond]() mutable {
 	    return call_with_interruption(
 		      interrupt_condition,
-		      std::move(action));
+		      action);
 	  })
       );
     }

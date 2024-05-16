@@ -1125,7 +1125,7 @@ TEST(BlueFS, test_shared_alloc) {
   uint64_t shared_alloc_unit = 4096;
   shared_alloc.set(
     Allocator::create(g_ceph_context, g_ceph_context->_conf->bluefs_allocator,
-                      size, shared_alloc_unit, 0, 0, "test shared allocator"),
+                      size, shared_alloc_unit, "test shared allocator"),
     shared_alloc_unit);
   shared_alloc.a->init_add_free(0, size);
 
@@ -1174,13 +1174,19 @@ TEST(BlueFS, test_shared_alloc) {
     }
   }
   fs.compact_log();
-  auto *logger = fs.get_perf_counters();
-  ASSERT_NE(logger->get(l_bluefs_alloc_shared_dev_fallbacks), 0);
-  auto num_files = logger->get(l_bluefs_num_files);
-  fs.umount();
-  fs.mount();
-  ASSERT_EQ(num_files, logger->get(l_bluefs_num_files));
-  fs.umount();
+  uint64_t num_files = 0;
+  {
+    auto *logger = fs.get_perf_counters();
+    ASSERT_NE(logger->get(l_bluefs_alloc_shared_dev_fallbacks), 0);
+    num_files = logger->get(l_bluefs_num_files);
+    fs.umount();
+  }
+  {
+    fs.mount();
+    auto *logger = fs.get_perf_counters();
+    ASSERT_EQ(num_files, logger->get(l_bluefs_num_files));
+    fs.umount();
+  }
 }
 
 TEST(BlueFS, test_shared_alloc_sparse) {
@@ -1196,7 +1202,7 @@ TEST(BlueFS, test_shared_alloc_sparse) {
   bluefs_shared_alloc_context_t shared_alloc;
   shared_alloc.set(
     Allocator::create(g_ceph_context, g_ceph_context->_conf->bluefs_allocator,
-                      size, main_unit, 0, 0, "test shared allocator"),
+                      size, main_unit, "test shared allocator"),
     main_unit);
   // prepare sparse free space but let's have a continuous chunk at
   // the beginning to fit initial log's fnode into superblock,
@@ -1250,14 +1256,20 @@ TEST(BlueFS, test_shared_alloc_sparse) {
     }
   }
   fs.compact_log();
-  auto *logger = fs.get_perf_counters();
-  ASSERT_NE(logger->get(l_bluefs_alloc_shared_size_fallbacks), 0);
-  auto num_files = logger->get(l_bluefs_num_files);
-  fs.umount();
 
-  fs.mount();
-  ASSERT_EQ(num_files, logger->get(l_bluefs_num_files));
-  fs.umount();
+  uint64_t num_files = 0;
+  {
+    auto *logger = fs.get_perf_counters();
+    ASSERT_NE(logger->get(l_bluefs_alloc_shared_size_fallbacks), 0);
+    num_files = logger->get(l_bluefs_num_files);
+    fs.umount();
+  }
+  {
+    fs.mount();
+    auto *logger = fs.get_perf_counters();
+    ASSERT_EQ(num_files, logger->get(l_bluefs_num_files));
+    fs.umount();
+  }
 }
 
 TEST(BlueFS, test_4k_shared_alloc) {
@@ -1273,7 +1285,7 @@ TEST(BlueFS, test_4k_shared_alloc) {
   bluefs_shared_alloc_context_t shared_alloc;
   shared_alloc.set(
     Allocator::create(g_ceph_context, g_ceph_context->_conf->bluefs_allocator,
-                      size, main_unit, 0, 0, "test shared allocator"),
+                      size, main_unit, "test shared allocator"),
     main_unit);
   shared_alloc.a->init_add_free(bluefs_alloc_unit, size - bluefs_alloc_unit);
 
@@ -1320,15 +1332,21 @@ TEST(BlueFS, test_4k_shared_alloc) {
     }
   }
   fs.compact_log();
-  auto *logger = fs.get_perf_counters();
-  ASSERT_EQ(logger->get(l_bluefs_alloc_shared_dev_fallbacks), 0);
-  ASSERT_EQ(logger->get(l_bluefs_alloc_shared_size_fallbacks), 0);
-  auto num_files = logger->get(l_bluefs_num_files);
-  fs.umount();
 
-  fs.mount();
-  ASSERT_EQ(num_files, logger->get(l_bluefs_num_files));
-  fs.umount();
+  uint64_t num_files = 0;
+  {
+    auto *logger = fs.get_perf_counters();
+    ASSERT_EQ(logger->get(l_bluefs_alloc_shared_dev_fallbacks), 0);
+    ASSERT_EQ(logger->get(l_bluefs_alloc_shared_size_fallbacks), 0);
+    num_files = logger->get(l_bluefs_num_files);
+    fs.umount();
+  }
+  {
+    fs.mount();
+    auto *logger = fs.get_perf_counters();
+    ASSERT_EQ(num_files, logger->get(l_bluefs_num_files));
+    fs.umount();
+  }
 }
 
 void create_files(BlueFS &fs,

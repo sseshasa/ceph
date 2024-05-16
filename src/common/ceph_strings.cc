@@ -112,6 +112,8 @@ const char *ceph_release_name(int r)
 		return "quincy";
 	case CEPH_RELEASE_REEF:
 		return "reef";
+	case CEPH_RELEASE_SQUID:
+		return "squid";
 	default:
 		if (r < 0)
 			return "unspecified";
@@ -309,6 +311,8 @@ const char *ceph_mds_op_name(int op)
 	case CEPH_MDS_OP_ENQUEUE_SCRUB: return "enqueue_scrub";
 	case CEPH_MDS_OP_REPAIR_FRAGSTATS: return "repair_fragstats";
 	case CEPH_MDS_OP_REPAIR_INODESTATS: return "repair_inodestats";
+	case CEPH_MDS_OP_QUIESCE_PATH: return "quiesce_path";
+	case CEPH_MDS_OP_QUIESCE_INODE: return "quiesce_inode";
 	}
 	return "???";
 }

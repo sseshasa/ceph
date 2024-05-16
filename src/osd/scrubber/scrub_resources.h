@@ -18,20 +18,25 @@ namespace Scrub {
  * (prefix func, OSD id, etc.)
  */
 using log_upwards_t = std::function<void(std::string msg)>;
+class LocalResourceWrapper;
 
 /**
  * The number of concurrent scrub operations performed on an OSD is limited
  * by a configuration parameter. The 'ScrubResources' class is responsible for
- * maintaining a count of the number of scrubs currently performed, both
- * acting as primary and acting as a replica, and for enforcing the limit.
+ * maintaining a count of the number of scrubs currently performed by primary
+ * PGs on this OSD, and for enforcing the limit.
  */
 class ScrubResources {
-  /// the number of concurrent scrubs performed by Primaries on this OSD
-  int scrubs_local{0};
+  friend class LocalResourceWrapper;
 
-  /// the set of PGs that have active scrub reservations as replicas
-  /// \todo come C++23 - consider std::flat_set<pg_t>
-  std::set<pg_t> granted_reservations;
+  /**
+   * the number of concurrent scrubs performed by Primaries on this OSD.
+   *
+   * Note that, as high priority scrubs are always allowed to proceed, this
+   * counter may exceed the configured limit. When in this state - no new
+   * regular scrubs will be allowed to start.
+   */
+  int scrubs_local{0};
 
   mutable ceph::mutex resource_lock =
       ceph::make_mutex("ScrubQueue::resource_lock");
@@ -56,17 +61,28 @@ class ScrubResources {
   bool can_inc_scrubs() const;
 
   /// increments the number of scrubs acting as a Primary
-  bool inc_scrubs_local();
+  std::unique_ptr<LocalResourceWrapper> inc_scrubs_local(bool is_high_priority);
 
   /// decrements the number of scrubs acting as a Primary
   void dec_scrubs_local();
 
-  /// increments the number of scrubs acting as a Replica
-  bool inc_scrubs_remote(pg_t pgid);
-
-  /// decrements the number of scrubs acting as a Replica
-  void dec_scrubs_remote(pg_t pgid);
-
   void dump_scrub_reservations(ceph::Formatter* f) const;
 };
+
+
+/**
+ * a wrapper around a "local scrub resource". The resources bookkeeper
+ * is handing these out to the PGs that acquired the local OSD's scrub
+ * resources. The PGs use these to release the resources when they are
+ * done scrubbing.
+ */
+class LocalResourceWrapper {
+  ScrubResources& m_resource_bookkeeper;
+
+ public:
+  LocalResourceWrapper(
+      ScrubResources& resource_bookkeeper);
+  ~LocalResourceWrapper();
+};
+
 }  // namespace Scrub

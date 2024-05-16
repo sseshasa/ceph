@@ -17,6 +17,7 @@
 #include "crimson/osd/osd_operations/common/pg_pipeline.h"
 #include "crimson/osd/pg_activation_blocker.h"
 #include "crimson/osd/pg_map.h"
+#include "crimson/osd/scrub/pg_scrubber.h"
 #include "crimson/common/type_helpers.h"
 #include "crimson/common/utility.h"
 #include "messages/MOSDOp.h"
@@ -28,11 +29,12 @@ class ShardServices;
 
 class ClientRequest final : public PhasedOperationT<ClientRequest>,
                             private CommonClientRequest {
-  // Initially set to primary core, updated to pg core after move,
-  // used by put_historic
-  ShardServices *put_historic_shard_services = nullptr;
+  // Initially set to primary core, updated to pg core after with_pg()
+  ShardServices *shard_services = nullptr;
 
-  crimson::net::ConnectionRef conn;
+  crimson::net::ConnectionRef l_conn;
+  crimson::net::ConnectionXcoreRef r_conn;
+
   // must be after conn due to ConnectionPipeline's life-time
   Ref<MOSDOp> m;
   OpInfo op_info;
@@ -42,6 +44,12 @@ class ClientRequest final : public PhasedOperationT<ClientRequest>,
 public:
   class PGPipeline : public CommonPGPipeline {
     public:
+    struct RecoverMissingLockOBC : OrderedConcurrentPhaseT<RecoverMissingLockOBC> {
+      static constexpr auto type_name = "ClientRequest::PGPipeline::recover_missing_lock_obc";
+    } recover_missing_lock_obc;
+    struct RecoverMissingSnaps : OrderedExclusivePhaseT<RecoverMissingSnaps> {
+      static constexpr auto type_name = "ClientRequest::PGPipeline::recover_missing_snaps";
+    } recover_missing_snaps;
     struct AwaitMap : OrderedExclusivePhaseT<AwaitMap> {
       static constexpr auto type_name = "ClientRequest::PGPipeline::await_map";
     } await_map;
@@ -103,19 +111,26 @@ public:
       PGPipeline::WaitForActive::BlockingEvent,
       PGActivationBlocker::BlockingEvent,
       PGPipeline::RecoverMissing::BlockingEvent,
+      PGPipeline::RecoverMissingLockOBC::BlockingEvent,
+      PGPipeline::RecoverMissingSnaps::BlockingEvent,
+      scrub::PGScrubber::BlockingEvent,
       PGPipeline::GetOBC::BlockingEvent,
+      PGPipeline::LockOBC::BlockingEvent,
       PGPipeline::Process::BlockingEvent,
       PGPipeline::WaitRepop::BlockingEvent,
       PGPipeline::SendReply::BlockingEvent,
       CompletionEvent
       > pg_tracking_events;
 
+    template <class BlockingEventT>
+    typename BlockingEventT::template Trigger<ClientRequest>
+    get_trigger(ClientRequest &op) {
+      return {std::get<BlockingEventT>(pg_tracking_events), op};
+    }
+
     template <typename BlockingEventT, typename InterruptorT=void, typename F>
     auto with_blocking_event(F &&f, ClientRequest &op) {
-      auto ret = std::forward<F>(f)(
-	typename BlockingEventT::template Trigger<ClientRequest>{
-	  std::get<BlockingEventT>(pg_tracking_events), op
-	});
+      auto ret = std::forward<F>(f)(get_trigger<BlockingEventT>(op));
       if constexpr (std::is_same_v<InterruptorT, void>) {
 	return ret;
       } else {
@@ -133,6 +148,12 @@ public:
 	    return handle.template enter<ClientRequest>(
 	      stage, std::move(trigger));
 	  }, op);
+    }
+
+    template <typename StageT>
+    void enter_stage_sync(StageT &stage, ClientRequest &op) {
+      handle.template enter_sync<ClientRequest>(
+          stage, get_trigger<typename StageT::BlockingEvent>(op));
     }
 
     template <
@@ -160,11 +181,15 @@ public:
   }
   auto get_instance_handle() { return instance_handle; }
 
-  std::vector<snapid_t> snaps_need_to_recover() {
-    std::vector<snapid_t> ret;
+  std::set<snapid_t> snaps_need_to_recover() {
+    std::set<snapid_t> ret;
+    auto target = m->get_hobj();
+    if (!target.is_head()) {
+      ret.insert(target.snap);
+    }
     for (auto &op : m->ops) {
       if (op.op.op == CEPH_OSD_OP_ROLLBACK) {
-	ret.emplace_back((snapid_t)op.op.snap.snapid);
+	ret.insert((snapid_t)op.op.snap.snapid);
       }
     }
     return ret;
@@ -193,8 +218,8 @@ public:
       list.erase(list_t::s_iterator_to(request));
       intrusive_ptr_release(&request);
     }
-    void requeue(ShardServices &shard_services, Ref<PG> pg);
-    void clear_and_cancel();
+    void requeue(Ref<PG> pg);
+    void clear_and_cancel(PG &pg);
   };
   void complete_request();
 
@@ -219,26 +244,37 @@ public:
 
   PerShardPipeline &get_pershard_pipeline(ShardServices &);
 
-  crimson::net::Connection &get_connection() {
-    assert(conn);
-    return *conn;
+  crimson::net::Connection &get_local_connection() {
+    assert(l_conn);
+    assert(!r_conn);
+    return *l_conn;
   };
 
-  seastar::future<crimson::net::ConnectionFRef> prepare_remote_submission() {
-    assert(conn);
-    return conn.get_foreign(
-    ).then([this](auto f_conn) {
-      conn.reset();
-      return f_conn;
-    });
-  }
-  void finish_remote_submission(crimson::net::ConnectionFRef _conn) {
-    assert(!conn);
-    conn = make_local_shared_foreign(std::move(_conn));
+  crimson::net::Connection &get_foreign_connection() {
+    assert(r_conn);
+    assert(!l_conn);
+    return *r_conn;
+  };
+
+  crimson::net::ConnectionFFRef prepare_remote_submission() {
+    assert(l_conn);
+    assert(!r_conn);
+    auto ret = seastar::make_foreign(std::move(l_conn));
+    l_conn.reset();
+    return ret;
   }
 
-  seastar::future<> with_pg_int(
-    ShardServices &shard_services, Ref<PG> pg);
+  void finish_remote_submission(crimson::net::ConnectionFFRef conn) {
+    assert(conn);
+    assert(!l_conn);
+    assert(!r_conn);
+    r_conn = make_local_shared_foreign(std::move(conn));
+  }
+
+  interruptible_future<> with_pg_process_interruptible(
+    Ref<PG> pgref, const unsigned instance_id, instance_handle_t &ihref);
+
+  seastar::future<> with_pg_process(Ref<PG> pg);
 
 public:
   seastar::future<> with_pg(
@@ -247,19 +283,32 @@ public:
 private:
   template <typename FuncT>
   interruptible_future<> with_sequencer(FuncT&& func);
-  auto reply_op_error(const Ref<PG>& pg, int err);
+  interruptible_future<> reply_op_error(const Ref<PG>& pg, int err);
 
-  interruptible_future<> do_process(
+
+  using do_process_iertr =
+    ::crimson::interruptible::interruptible_errorator<
+      ::crimson::osd::IOInterruptCondition,
+      ::crimson::errorator<crimson::ct_error::eagain>>;
+  do_process_iertr::future<> do_process(
     instance_handle_t &ihref,
-    Ref<PG>& pg,
-    crimson::osd::ObjectContextRef obc);
+    Ref<PG> pg,
+    crimson::osd::ObjectContextRef obc,
+    unsigned this_instance_id);
   ::crimson::interruptible::interruptible_future<
     ::crimson::osd::IOInterruptCondition> process_pg_op(
-    Ref<PG> &pg);
+    Ref<PG> pg);
+  interruptible_future<>
+  recover_missing_snaps(
+    Ref<PG> pg,
+    instance_handle_t &ihref,
+    ObjectContextRef head,
+    std::set<snapid_t> &snaps);
   ::crimson::interruptible::interruptible_future<
     ::crimson::osd::IOInterruptCondition> process_op(
       instance_handle_t &ihref,
-      Ref<PG> &pg);
+      Ref<PG> pg,
+      unsigned this_instance_id);
   bool is_pg_op() const;
 
   PGPipeline &client_pp(PG &pg);
@@ -273,7 +322,7 @@ private:
   bool is_misdirected(const PG& pg) const;
 
   const SnapContext get_snapc(
-    Ref<PG>& pg,
+    PG &pg,
     crimson::osd::ObjectContextRef obc) const;
 
 public:

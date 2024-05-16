@@ -13,7 +13,7 @@ import {
   NgbTooltipModule
 } from '@ng-bootstrap/ng-bootstrap';
 import { ClickOutsideModule } from 'ng-click-outside';
-import { ChartsModule } from 'ng2-charts';
+import { NgChartsModule } from 'ng2-charts';
 import { SimplebarAngularModule } from 'simplebar-angular';
 
 import { MotdComponent } from '~/app/shared/components/motd/motd.component';
@@ -53,6 +53,10 @@ import { CardComponent } from './card/card.component';
 import { CardRowComponent } from './card-row/card-row.component';
 import { CodeBlockComponent } from './code-block/code-block.component';
 import { VerticalNavigationComponent } from './vertical-navigation/vertical-navigation.component';
+import { CardGroupComponent } from './card-group/card-group.component';
+import { HelpTextComponent } from './help-text/help-text.component';
+import { FormAdvancedFieldsetComponent } from './form-advanced-fieldset/form-advanced-fieldset.component';
+import { UpgradableComponent } from './upgradable/upgradable.component';
 
 @NgModule({
   imports: [
@@ -63,7 +67,7 @@ import { VerticalNavigationComponent } from './vertical-navigation/vertical-navi
     NgbPopoverModule,
     NgbProgressbarModule,
     NgbTooltipModule,
-    ChartsModule,
+    NgChartsModule,
     ReactiveFormsModule,
     PipesModule,
     DirectivesModule,
@@ -109,7 +113,11 @@ import { VerticalNavigationComponent } from './vertical-navigation/vertical-navi
     CardComponent,
     CardRowComponent,
     CodeBlockComponent,
-    VerticalNavigationComponent
+    VerticalNavigationComponent,
+    CardGroupComponent,
+    HelpTextComponent,
+    FormAdvancedFieldsetComponent,
+    UpgradableComponent
   ],
   providers: [],
   exports: [
@@ -143,7 +151,11 @@ import { VerticalNavigationComponent } from './vertical-navigation/vertical-navi
     CardComponent,
     CardRowComponent,
     CodeBlockComponent,
-    VerticalNavigationComponent
+    VerticalNavigationComponent,
+    CardGroupComponent,
+    HelpTextComponent,
+    FormAdvancedFieldsetComponent,
+    UpgradableComponent
   ]
 })
 export class ComponentsModule {}

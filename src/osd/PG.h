@@ -67,7 +67,6 @@ class ScrubBackend;
 namespace Scrub {
   class Store;
   class ReplicaReservations;
-  class LocalReservation;
   class ReservedByRemotePrimary;
   enum class schedule_result_t;
 }
@@ -282,6 +281,7 @@ public:
     recovery_state.update_stats(
       [t](auto &history, auto &stats) {
 	set_last_deep_scrub_stamp(t, history, stats);
+	set_last_scrub_stamp(t, history, stats);
 	return true;
       });
     on_scrub_schedule_input_change();
@@ -476,11 +476,6 @@ public:
     forward_scrub_event(&ScrubPgIF::digest_update_notification, queued, "DigestUpdate");
   }
 
-  void scrub_send_local_map_ready(epoch_t queued, ThreadPool::TPHandle& handle)
-  {
-    forward_scrub_event(&ScrubPgIF::send_local_map_done, queued, "IntLocalMapDone");
-  }
-
   void scrub_send_replmaps_ready(epoch_t queued, ThreadPool::TPHandle& handle)
   {
     forward_scrub_event(&ScrubPgIF::send_replica_maps_ready, queued, "GotReplicas");
@@ -614,13 +609,7 @@ public:
 
   void on_active_exit() override;
 
-  Context *on_clean() override {
-    if (is_active()) {
-      kick_snap_trim();
-    }
-    requeue_ops(waiting_for_clean_to_primary_repair);
-    return finish_recovery();
-  }
+  Context *on_clean() override;
 
   void on_activate(interval_set<snapid_t> snaps) override;
 
@@ -709,11 +698,16 @@ public:
   virtual void on_shutdown() = 0;
 
   bool get_must_scrub() const;
-  Scrub::schedule_result_t sched_scrub();
 
-  unsigned int scrub_requeue_priority(Scrub::scrub_prio_t with_priority, unsigned int suggested_priority) const;
+  Scrub::schedule_result_t start_scrubbing(
+      Scrub::OSDRestrictions osd_restrictions);
+
+  unsigned int scrub_requeue_priority(
+      Scrub::scrub_prio_t with_priority,
+      unsigned int suggested_priority) const;
   /// the version that refers to flags_.priority
   unsigned int scrub_requeue_priority(Scrub::scrub_prio_t with_priority) const;
+
 private:
   // auxiliaries used by sched_scrub():
   double next_deepscrub_interval() const;
@@ -782,7 +776,9 @@ public:
   struct C_DeleteMore : public Context {
     PGRef pg;
     epoch_t epoch;
-    C_DeleteMore(PG *p, epoch_t e) : pg(p), epoch(e) {}
+    int64_t num_objects;
+    C_DeleteMore(PG *p, epoch_t e, int64_t num) : pg(p), epoch(e),
+	                                          num_objects(num){}
     void finish(int r) override {
       ceph_abort();
     }
@@ -1026,6 +1022,19 @@ public:
     return num_bytes;
   }
 
+  uint64_t get_average_object_size() {
+    ceph_assert(ceph_mutex_is_locked_by_me(_lock));
+    auto num_bytes = static_cast<uint64_t>(
+      std::max<int64_t>(
+        0, // ensure bytes is non-negative
+        info.stats.stats.sum.num_bytes));
+    auto num_objects = static_cast<uint64_t>(
+      std::max<int64_t>(
+        1, // ensure objects is non-negative and non-zero
+        info.stats.stats.sum.num_objects));
+    return std::max<uint64_t>(num_bytes / num_objects, 1);
+  }
+
 protected:
 
   /*
@@ -1109,6 +1118,7 @@ protected:
 
   std::set<hobject_t> objects_blocked_on_cache_full;
   std::map<hobject_t,snapid_t> objects_blocked_on_degraded_snap;
+  std::map<hobject_t,snapid_t> objects_blocked_on_unreadable_snap;
   std::map<hobject_t,ObjectContextRef> objects_blocked_on_snap_promotion;
 
   // Callbacks should assume pg (and nothing else) is locked

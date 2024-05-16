@@ -5,6 +5,13 @@
 # abort on failure
 set -e
 
+# flush local redis server
+pid=`ps -ef | grep "redis-server"  | grep -v grep | awk -F' ' '{print $2}'`
+if [[ -n $pid ]]; then
+    echo "Flushing redis-server."
+    redis-cli FLUSHALL
+fi
+
 quoted_print() {
     for s in "$@"; do
         if [[ "$s" =~ \  ]]; then
@@ -172,9 +179,12 @@ rgw_store="rados"
 lockdep=${LOCKDEP:-1}
 spdk_enabled=0 # disable SPDK by default
 pmem_enabled=0
-zoned_enabled=0
 io_uring_enabled=0
 with_jaeger=0
+force_addr=0
+osds_per_host=0
+require_osd_and_client_version=""
+use_crush_tunables=""
 
 with_mgr_dashboard=true
 if [[ "$(get_cmake_variable WITH_MGR_DASHBOARD_FRONTEND)" != "ON" ]] ||
@@ -205,7 +215,7 @@ inc_osd_num=0
 msgr="21"
 
 read -r -d '' usage <<EOF || true
-usage: $0 [option]... \nex: MON=3 OSD=1 MDS=1 MGR=1 RGW=1 NFS=1 $0 -n -d
+usage: $0 [option]... \nex: MON=3 OSD=1 MDS=1 MGR=1 RGW=1 NFS=1 NVMEOF_GW=ceph:5500 $0 -n -d
 options:
 	-d, --debug
 	-t, --trace
@@ -252,7 +262,6 @@ options:
 	--bluestore-devs: comma-separated list of blockdevs to use for bluestore
 	--bluestore-db-devs: comma-separated list of db-devs to use for bluestore
 	--bluestore-wal-devs: comma-separated list of wal-devs to use for bluestore
-	--bluestore-zoned: blockdevs listed by --bluestore-devs are zoned devices (HM-SMR HDD or ZNS SSD)
 	--bluestore-io-uring: enable io_uring backend
 	--inc-osd: append some more osds into existing vcluster
 	--cephadm: enable cephadm orchestrator with ~/.ssh/id_rsa[.pub]
@@ -264,6 +273,9 @@ options:
 	--seastore-secondary-devs: comma-separated list of secondary blockdevs to use for seastore
 	--seastore-secondary-devs-type: device type of all secondary blockdevs. HDD, SSD(default), ZNS or RANDOM_BLOCK_SSD
 	--crimson-smp: number of cores to use for crimson
+	--osds-per-host: populate crush_location as each host holds the specified number of osds if set
+	--require-osd-and-client-version: if supplied, do set-require-min-compat-client and require-osd-release to specified value
+	--use-crush-tunables: if supplied, set tunables to specified value
 \n
 EOF
 
@@ -346,6 +358,7 @@ case $1 in
         ;;
     -l | --localhost)
         ip="127.0.0.1"
+        force_addr=1
         ;;
     -i)
         [ -z "$2" ] && usage_exit
@@ -586,9 +599,6 @@ case $1 in
         parse_bluestore_wal_devs --bluestore-wal-devs "$2"
         shift
         ;;
-    --bluestore-zoned)
-        zoned_enabled=1
-        ;;
     --bluestore-io-uring)
         io_uring_enabled=1
         shift
@@ -596,6 +606,21 @@ case $1 in
     --jaeger)
         with_jaeger=1
         echo "with_jaeger $with_jaeger"
+        ;;
+    --osds-per-host)
+        osds_per_host="$2"
+        shift
+        echo "osds_per_host $osds_per_host"
+        ;;
+    --require-osd-and-client-version)
+        require_osd_and_client_version="$2"
+        shift
+        echo "require_osd_and_client_version $require_osd_and_client_version"
+        ;;
+    --use-crush-tunables)
+        use_crush_tunables="$2"
+        shift
+        echo "use_crush_tunables $use_crush_tunables"
         ;;
     *)
         usage_exit
@@ -691,6 +716,7 @@ do_rgw_conf() {
         rgw frontends = $rgw_frontend port=${current_port}${flight_conf:+,arrow_flight}
         admin socket = ${CEPH_OUT_DIR}/radosgw.${current_port}.asok
         debug rgw_flight = 20
+        debug rgw_notification = 20
 EOF
         current_port=$((current_port + 1))
         unset flight_conf
@@ -758,6 +784,12 @@ prepare_conf() {
     if [ $msgr -eq 1 ]; then
         msgr_conf="ms bind msgr2 = false
                    ms bind msgr1 = true"
+    fi
+    if [ $force_addr -eq 1 ]; then
+        msgr_conf+="
+                   public bind addr = $IP
+                   public addr = $IP
+                   cluster addr = $IP"
     fi
 
     wconf <<EOF
@@ -846,14 +878,6 @@ EOF
                 BLUESTORE_OPTS=""
             fi
         fi
-        if [ "$zoned_enabled" -eq 1 ]; then
-            BLUESTORE_OPTS+="
-        bluestore min alloc size = 65536
-        bluestore prefer deferred size = 0
-        bluestore prefer deferred size hdd = 0
-        bluestore prefer deferred size ssd = 0
-        bluestore allocator = zoned"
-        fi
         if [ "$io_uring_enabled" -eq 1 ]; then
             BLUESTORE_OPTS+="
         bdev ioring = true"
@@ -878,6 +902,8 @@ $CCLIENTDEBUG
         rgw crypt s3 kms backend = testing
         rgw crypt s3 kms encryption keys = testkey-1=YmluCmJvb3N0CmJvb3N0LWJ1aWxkCmNlcGguY29uZgo= testkey-2=aWIKTWFrZWZpbGUKbWFuCm91dApzcmMKVGVzdGluZwo=
         rgw crypt require ssl = false
+        rgw sts key = abcdefghijklmnop
+        rgw s3 auth use sts = true
         ; uncomment the following to set LC days as the value in seconds;
         ; needed for passing lc time based s3-tests (can be verbose)
         ; rgw lc debug interval = 10
@@ -951,6 +977,26 @@ EOF
         osd pool default crimson = true
 EOF
     fi
+
+    # this is most probably a bug in ceph_mon
+    # but public_bind_addr set in [global] doesn't work
+    # when mon_host is also provided, resulting
+    # in different public and bind addresses (ports)
+    # As a result, no client can connect to the mon.
+    # The problematic code is in ceph_mon.cc, it looks like
+    #
+    #   // check if the public_bind_addr option is set
+    #  if (!g_conf()->public_bind_addr.is_blank_ip()) {
+    #    bind_addrs = make_mon_addrs(g_conf()->public_bind_addr);
+    #  }
+    #
+    if [ $force_addr -eq 1 ]; then
+        wconf <<EOF
+        ; this is to counter the explicit public_bind_addr in the [global] section
+        ; see src/vstart.sh for more info
+        public bind addr =
+EOF
+    fi   
 }
 
 write_logrotate_conf() {
@@ -1067,6 +1113,15 @@ EOF
     if [ "$crimson" -eq 1 ]; then
         $CEPH_BIN/ceph osd set-allow-crimson --yes-i-really-mean-it
     fi
+
+    if [ -n "$require_osd_and_client_version" ]; then
+        $CEPH_BIN/ceph osd set-require-min-compat-client $require_osd_and_client_version
+        $CEPH_BIN/ceph osd require-osd-release $require_osd_and_client_version --yes-i-really-mean-it
+    fi
+
+    if [ -n "$use_crush_tunables" ]; then
+        $CEPH_BIN/ceph osd crush tunables $use_crush_tunables
+    fi
 }
 
 start_osd() {
@@ -1082,24 +1137,25 @@ start_osd() {
     local osds_wait
     for osd in `seq $start $end`
     do
-	local extra_seastar_args
 	if [ "$ceph_osd" == "crimson-osd" ]; then
         bottom_cpu=$(( osd * crimson_smp ))
         top_cpu=$(( bottom_cpu + crimson_smp - 1 ))
-	    # set a single CPU nodes for each osd
-	    extra_seastar_args="--cpuset $bottom_cpu-$top_cpu"
-	    if [ "$debug" -ne 0 ]; then
-		extra_seastar_args+=" --debug"
-	    fi
-            if [ "$trace" -ne 0 ]; then
-                extra_seastar_args+=" --trace"
-            fi
+	    # set exclusive CPU nodes for each osd
+	    echo "$CEPH_BIN/ceph -c $conf_fn config set osd.$osd crimson_seastar_cpu_cores $bottom_cpu-$top_cpu"
+	    $CEPH_BIN/ceph -c $conf_fn config set "osd.$osd" crimson_seastar_cpu_cores "$bottom_cpu-$top_cpu"
 	fi
 	if [ "$new" -eq 1 -o $inc_osd_num -gt 0 ]; then
             wconf <<EOF
 [osd.$osd]
         host = $HOSTNAME
 EOF
+
+            if [ "$osds_per_host" -gt 0 ]; then
+                wconf <<EOF
+        crush location = root=default host=$HOSTNAME-$(echo "$osd / $osds_per_host" | bc)
+EOF
+            fi
+
             if [ "$spdk_enabled" -eq 1 ]; then
                 wconf <<EOF
         bluestore_block_path = spdk:${bluestore_spdk_dev[$osd]}
@@ -1274,6 +1330,14 @@ EOF
                     debug echo dashboard module not working correctly!
                 fi
             fi
+
+            ceph_adm osd pool create rbd
+            ceph_adm osd pool application enable rbd rbd
+
+            if [ -n "${NVMEOF_GW}" ]; then
+                echo "Adding nvmeof-gateway ${NVMEOF_GW} to dashboard"
+                ceph_adm dashboard nvmeof-gateway-add -i <(echo "${NVMEOF_GW}") "${NVMEOF_GW/:/_}"
+            fi
         fi
         if $with_mgr_restful; then
             create_mgr_restful_secret
@@ -1443,7 +1507,7 @@ EOF
         prun env CEPH_CONF="${conf_fn}" ganesha-rados-grace --userid $test_user -p $pool_name -n $namespace add $name
         prun env CEPH_CONF="${conf_fn}" ganesha-rados-grace --userid $test_user -p $pool_name -n $namespace
 
-        prun env CEPH_CONF="${conf_fn}" ganesha.nfsd -L "$CEPH_OUT_DIR/ganesha-$name.log" -f "$ganesha_dir/ganesha-$name.conf" -p "$CEPH_OUT_DIR/ganesha-$name.pid" -N NIV_DEBUG
+        prun env CEPH_CONF="${conf_fn}" ganesha.nfsd -L "$CEPH_OUT_DIR/ganesha-$name.log" -f "$ganesha_dir/ganesha-$name.conf" -p "$CEPH_OUT_DIR/ganesha-$name.pid" -N NIV_EVENT
 
         # Wait few seconds for grace period to be removed
         sleep 2
@@ -1578,11 +1642,6 @@ osd_debug_op_order = true
 osd_debug_misdirected_ops = true
 osd_copyfrom_max_chunk = 524288
 
-[mds]
-mds_debug_frag = true
-mds_debug_auth_pins = true
-mds_debug_subtrees = true
-
 [mgr]
 mgr/telemetry/nag = false
 mgr/telemetry/enable = false
@@ -1619,17 +1678,31 @@ debug_monc = 20
 debug_mgrc = 20
 mds_debug_scatterstat = true
 mds_verify_scatter = true
+mds_debug_frag = true
+mds_debug_auth_pins = true
+mds_debug_subtrees = true
 EOF
     fi
     if [ "$cephadm" -gt 0 ]; then
         debug echo Setting mon public_network ...
-        public_network=$(ip route list | grep -w "$IP" | grep -v default | awk '{print $1}')
+        public_network=$(ip route list | grep -w "$IP" | grep -v default | grep -E "/[0-9]+" | awk '{print $1}')
         ceph_adm config set mon public_network $public_network
     fi
 fi
 
 if [ "$ceph_osd" == "crimson-osd" ]; then
-    $CEPH_BIN/ceph -c $conf_fn config set osd crimson_seastar_smp $crimson_smp
+     if [ "$debug" -ne 0 ]; then
+        extra_seastar_args=" --debug"
+    fi
+    if [ "$trace" -ne 0 ]; then
+        extra_seastar_args=" --trace"
+    fi
+    if [ "$(expr $(nproc) - 1)" -gt "$(($CEPH_NUM_OSD * crimson_smp))" ]; then
+      echo "crimson_alien_thread_cpu_cores:" $(($CEPH_NUM_OSD * crimson_smp))-"$(expr $(nproc) - 1)"
+      $CEPH_BIN/ceph -c $conf_fn config set osd crimson_alien_thread_cpu_cores $(($CEPH_NUM_OSD * crimson_smp))-"$(expr $(nproc) - 1)"
+    else
+      echo "No alien thread cpu core isolation"
+    fi
 fi
 
 if [ $CEPH_NUM_MGR -gt 0 ]; then
@@ -1744,12 +1817,13 @@ do_rgw_create_users()
     # Create S3-test users
     # See: https://github.com/ceph/s3-tests
     debug echo "setting up s3-test users"
+
     $CEPH_BIN/radosgw-admin user create \
         --uid 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
         --access-key ABCDEFGHIJKLMNOPQRST \
         --secret abcdefghijklmnopqrstuvwxyzabcdefghijklmn \
         --display-name youruseridhere \
-        --email s3@example.com --caps="user-policy=*" -c $conf_fn > /dev/null
+        --email s3@example.com --caps="roles=*;user-policy=*" -c $conf_fn > /dev/null
     $CEPH_BIN/radosgw-admin user create \
         --uid 56789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234 \
         --access-key NOPQRSTUVWXYZABCDEFG \
@@ -1763,6 +1837,28 @@ do_rgw_create_users()
         --secret opqrstuvwxyzabcdefghijklmnopqrstuvwxyzab \
         --display-name tenanteduser \
         --email tenanteduser@example.com -c $conf_fn > /dev/null
+
+    if [ "$rgw_store" == "rados" ] ; then
+        # create accounts/users for iam s3tests
+        a1_akey='AAAAAAAAAAAAAAAAAAaa'
+        a1_skey='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+        $CEPH_BIN/radosgw-admin account create --account-id RGW11111111111111111 --account-name Account1 --email account1@ceph.com -c $conf_fn > /dev/null
+        $CEPH_BIN/radosgw-admin user create --account-id RGW11111111111111111 --uid testacct1root --account-root \
+            --display-name 'Account1Root' --access-key $a1_akey --secret $a1_skey -c $conf_fn > /dev/null
+
+        a2_akey='BBBBBBBBBBBBBBBBBBbb'
+        a2_skey='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+        $CEPH_BIN/radosgw-admin account create --account-id RGW22222222222222222 --account-name Account2 --email account2@ceph.com -c $conf_fn > /dev/null
+        $CEPH_BIN/radosgw-admin user create --account-id RGW22222222222222222 --uid testacct2root --account-root \
+            --display-name 'Account2Root' --access-key $a2_akey --secret $a2_skey -c $conf_fn > /dev/null
+
+        a1u_akey='CCCCCCCCCCCCCCCCCCcc'
+        a1u_skey='cccccccccccccccccccccccccccccccccccccccc'
+        $CEPH_BIN/radosgw-admin user create --account-id RGW11111111111111111 --uid testacct1user \
+            --display-name 'Account1User' --access-key $a1u_akey --secret $a1u_skey -c $conf_fn > /dev/null
+        $CEPH_BIN/radosgw-admin user policy attach --uid testacct1user \
+            --policy-arn arn:aws:iam::aws:policy/AmazonS3FullAccess -c $conf_fn > /dev/null
+    fi
 
     # Create Swift user
     debug echo "setting up user tester"

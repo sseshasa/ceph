@@ -28,7 +28,6 @@
 
 #include "rgw_multi.h"
 #include "rgw_notify.h"
-#include "rgw_oidc_provider.h"
 #include "rgw_putobj_processor.h"
 #include "rgw_rados.h"
 #include "rgw_role.h"
@@ -135,8 +134,10 @@ WRITE_CLASS_ENCODER(DaosUserInfo);
 
 class DaosNotification : public StoreNotification {
  public:
-  DaosNotification(Object* _obj, Object* _src_obj, rgw::notify::EventType _type)
-      : StoreNotification(_obj, _src_obj, _type) {}
+  DaosNotification(Object* _obj,
+                   Object* _src_obj,
+                   const rgw::notify::EventTypeList& _types)
+      : StoreNotification(_obj, _src_obj, _types) {}
   ~DaosNotification() = default;
 
   virtual int publish_reserve(const DoutPrefixProvider* dpp,
@@ -166,9 +167,6 @@ class DaosUser : public StoreUser {
   virtual std::unique_ptr<User> clone() override {
     return std::make_unique<DaosUser>(*this);
   }
-  int list_buckets(const DoutPrefixProvider* dpp, const std::string& marker,
-                   const std::string& end_marker, uint64_t max, bool need_stats,
-                   BucketList& buckets, optional_yield y) override;
   virtual int create_bucket(
       const DoutPrefixProvider* dpp, const rgw_bucket& b,
       const std::string& zonegroup_id, rgw_placement_rule& placement_rule,
@@ -310,10 +308,10 @@ class DaosBucket : public StoreBucket {
                                const bucket_index_layout_generation& idx_layout,
                                int shard_id,
                                boost::intrusive_ptr<ReadStatsCB> ctx) override;
-  virtual int sync_user_stats(const DoutPrefixProvider* dpp,
-                              optional_yield y) override;
+  virtual int sync_owner_stats(const DoutPrefixProvider* dpp,
+                               optional_yield y) override;
   virtual int check_bucket_shards(const DoutPrefixProvider* dpp) override;
-  virtual int chown(const DoutPrefixProvider* dpp, User& new_user,
+  virtual int chown(const DoutPrefixProvider* dpp, const rgw_owner& new_user,
                     optional_yield y) override;
   virtual int put_info(const DoutPrefixProvider* dpp, bool exclusive,
                        ceph::real_time mtime) override;
@@ -581,7 +579,7 @@ class DaosObject : public StoreObject {
     DaosDeleteOp(DaosObject* _source);
 
     virtual int delete_obj(const DoutPrefixProvider* dpp,
-                           optional_yield y) override;
+                           optional_yield y, uint32_t flags) override;
   };
 
   ds3_obj_t* ds3o = nullptr;
@@ -598,9 +596,10 @@ class DaosObject : public StoreObject {
   virtual ~DaosObject();
 
   virtual int delete_object(const DoutPrefixProvider* dpp, optional_yield y,
-                            bool prevent_versioning = false) override;
+                            uint32_t flags) override;
   virtual int copy_object(
-      User* user, req_info* info, const rgw_zone_id& source_zone,
+      const ACLOwner& owner, const rgw_user& remote_user,
+      req_info* info, const rgw_zone_id& source_zone,
       rgw::sal::Object* dest_object, rgw::sal::Bucket* dest_bucket,
       rgw::sal::Bucket* src_bucket, const rgw_placement_rule& dest_placement,
       ceph::real_time* src_mtime, ceph::real_time* mtime,
@@ -641,7 +640,8 @@ class DaosObject : public StoreObject {
                          const rgw_placement_rule& placement_rule,
                          const real_time& mtime, uint64_t olh_epoch,
                          const DoutPrefixProvider* dpp,
-                         optional_yield y) override;
+                         optional_yield y,
+                         uint32_t flags) override;
   virtual int transition_to_cloud(Bucket* bucket, rgw::sal::PlacementTier* tier,
                                   rgw_bucket_dir_entry& o,
                                   std::set<std::string>& cloud_targets,
@@ -654,10 +654,10 @@ class DaosObject : public StoreObject {
                               Formatter* f) override;
 
   /* Swift versioning */
-  virtual int swift_versioning_restore(bool& restored,
-                                       const DoutPrefixProvider* dpp) override;
-  virtual int swift_versioning_copy(const DoutPrefixProvider* dpp,
-                                    optional_yield y) override;
+  virtual int swift_versioning_restore(const ACLOwner& owner, const rgw_user& remote_user, bool& restored,
+                                       const DoutPrefixProvider* dpp, optional_yield y) override;
+  virtual int swift_versioning_copy(const ACLOwner& owner, const rgw_user& remote_user,
+                                    const DoutPrefixProvider* dpp, optional_yield y) override;
 
   /* OPs */
   virtual std::unique_ptr<ReadOp> get_read_op() override;
@@ -717,7 +717,7 @@ class MPDaosSerializer : public StoreMPSerializer {
 class DaosAtomicWriter : public StoreWriter {
  protected:
   rgw::sal::DaosStore* store;
-  const rgw_user& owner;
+  const ACLOwner& owner;
   const rgw_placement_rule* ptail_placement_rule;
   uint64_t olh_epoch;
   const std::string& unique_tag;
@@ -745,7 +745,8 @@ class DaosAtomicWriter : public StoreWriter {
                        ceph::real_time delete_at, const char* if_match,
                        const char* if_nomatch, const std::string* user_data,
                        rgw_zone_set* zones_trace, bool* canceled,
-                       const req_context& rctx) override;
+                       const req_context& rctx,
+                       uint32_t flags) override;
 };
 
 class DaosMultipartWriter : public StoreWriter {
@@ -766,7 +767,7 @@ class DaosMultipartWriter : public StoreWriter {
   DaosMultipartWriter(const DoutPrefixProvider* dpp, optional_yield y,
                       MultipartUpload* _upload,
                       rgw::sal::Object* obj,
-                      DaosStore* _store, const rgw_user& owner,
+                      DaosStore* _store, const ACLOwner& owner,
                       const rgw_placement_rule* ptail_placement_rule,
                       uint64_t _part_num, const std::string& part_num_str)
       : StoreWriter(dpp, y),
@@ -790,7 +791,8 @@ class DaosMultipartWriter : public StoreWriter {
                        ceph::real_time delete_at, const char* if_match,
                        const char* if_nomatch, const std::string* user_data,
                        rgw_zone_set* zones_trace, bool* canceled,
-                       optional_yield y) override;
+                       optional_yield y,
+                       uint32_t flags) override;
 
   const std::string& get_bucket_name();
 };
@@ -846,7 +848,7 @@ class DaosMultipartUpload : public StoreMultipartUpload {
                          int num_parts, int marker, int* next_marker,
                          bool* truncated,
                          bool assume_unsorted = false) override;
-  virtual int abort(const DoutPrefixProvider* dpp, CephContext* cct) override;
+  virtual int abort(const DoutPrefixProvider* dpp, CephContext* cct, optional_yield y) override;
   virtual int complete(const DoutPrefixProvider* dpp, optional_yield y,
                        CephContext* cct, std::map<int, std::string>& part_etags,
                        std::list<rgw_obj_index_key>& remove_objs,
@@ -859,7 +861,7 @@ class DaosMultipartUpload : public StoreMultipartUpload {
                        rgw::sal::Attrs* attrs = nullptr) override;
   virtual std::unique_ptr<Writer> get_writer(
       const DoutPrefixProvider* dpp, optional_yield y,
-      rgw::sal::Object* obj, const rgw_user& owner,
+      rgw::sal::Object* obj, const ACLOwner& owner,
       const rgw_placement_rule* ptail_placement_rule, uint64_t part_num,
       const std::string& part_num_str) override;
   const std::string& get_bucket_name() { return bucket->get_name(); }
@@ -897,6 +899,11 @@ class DaosStore : public StoreDriver {
   int load_bucket(const DoutPrefixProvider* dpp, User* u,
                   const rgw_bucket& b, std::unique_ptr<Bucket>* bucket,
                   optional_yield y) override;
+  int list_buckets(const DoutPrefixProvider* dpp,
+                   const rgw_owner& owner, const std::string& tenant,
+                   const std::string& marker, const std::string& end_marker,
+                   uint64_t max, bool need_stats,
+                   BucketList& buckets, optional_yield y) override;
   virtual bool is_meta_master() override;
   virtual Zone* get_zone() { return &zone; }
   virtual std::string zone_unique_id(uint64_t unique_num) override;
@@ -908,10 +915,14 @@ class DaosStore : public StoreDriver {
       rgw::notify::EventType event_type, optional_yield y,
       const std::string* object_name = nullptr) override;
   virtual std::unique_ptr<Notification> get_notification(
-      const DoutPrefixProvider* dpp, rgw::sal::Object* obj,
-      rgw::sal::Object* src_obj, rgw::notify::EventType event_type,
-      rgw::sal::Bucket* _bucket, std::string& _user_id,
-      std::string& _user_tenant, std::string& _req_id,
+      const DoutPrefixProvider* dpp,
+      rgw::sal::Object* obj,
+      rgw::sal::Object* src_obj,
+      const rgw::notify::EventTypeList& event_types,
+      rgw::sal::Bucket* _bucket,
+      std::string& _user_id,
+      std::string& _user_tenant,
+      std::string& _req_id,
       optional_yield y) override;
   virtual RGWLC* get_rgwlc(void) override { return NULL; }
   virtual RGWCoroutinesManagerRegistry* get_cr_registry() override {
@@ -982,28 +993,44 @@ class DaosStore : public StoreDriver {
 
   std::unique_ptr<LuaManager> get_lua_manager(const DoutPrefixProvider *dpp = nullptr, const std::string& luarocks_path = "") override;
   virtual std::unique_ptr<RGWRole> get_role(
-      std::string name, std::string tenant, std::string path = "",
-      std::string trust_policy = "", std::string max_session_duration_str = "",
+      std::string name, std::string tenant, rgw_account_id account_id, std::string path = "",
+      std::string trust_policy = "", std::string description = "", std::string max_session_duration_str = "",
       std::multimap<std::string, std::string> tags = {}) override;
   virtual std::unique_ptr<RGWRole> get_role(const RGWRoleInfo& info) override;
   virtual std::unique_ptr<RGWRole> get_role(std::string id) override;
-  virtual int get_roles(const DoutPrefixProvider* dpp, optional_yield y,
-                        const std::string& path_prefix,
-                        const std::string& tenant,
-                        std::vector<std::unique_ptr<RGWRole>>& roles) override;
-  virtual std::unique_ptr<RGWOIDCProvider> get_oidc_provider() override;
-  virtual int get_oidc_providers(
-      const DoutPrefixProvider* dpp, const std::string& tenant,
-      std::vector<std::unique_ptr<RGWOIDCProvider>>& providers) override;
+  int list_roles(const DoutPrefixProvider *dpp,
+                 optional_yield y,
+                 const std::string& tenant,
+                 const std::string& path_prefix,
+                 const std::string& marker,
+                 uint32_t max_items,
+                 RoleList& listing) override;
+  int store_oidc_provider(const DoutPrefixProvider* dpp,
+                          optional_yield y,
+                          const RGWOIDCProviderInfo& info,
+                          bool exclusive) override;
+  int load_oidc_provider(const DoutPrefixProvider* dpp,
+                         optional_yield y,
+                         std::string_view tenant,
+                         std::string_view url,
+                         RGWOIDCProviderInfo& info) override;
+  int delete_oidc_provider(const DoutPrefixProvider* dpp,
+                           optional_yield y,
+                           std::string_view tenant,
+                           std::string_view url) override;
+  int get_oidc_providers(const DoutPrefixProvider* dpp,
+                         optional_yield y,
+                         std::string_view tenant,
+                         std::vector<RGWOIDCProviderInfo>& providers) override;
   virtual std::unique_ptr<Writer> get_append_writer(
       const DoutPrefixProvider* dpp, optional_yield y,
-      rgw::sal::Object* obj, const rgw_user& owner,
+      rgw::sal::Object* obj, const ACLOwner& owner,
       const rgw_placement_rule* ptail_placement_rule,
       const std::string& unique_tag, uint64_t position,
       uint64_t* cur_accounted_size) override;
   virtual std::unique_ptr<Writer> get_atomic_writer(
       const DoutPrefixProvider* dpp, optional_yield y,
-      rgw::sal::Object* obj, const rgw_user& owner,
+      rgw::sal::Object* obj, const ACLOwner& owner,
       const rgw_placement_rule* ptail_placement_rule, uint64_t olh_epoch,
       const std::string& unique_tag) override;
   virtual const std::string& get_compression_type(

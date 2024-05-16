@@ -11,7 +11,13 @@
 
 #include "rgw_common.h"
 
+namespace rgw::sal {
+class RadosStore;
+}
+
 struct RGWServices_Def;
+
+namespace rgwrados::topic { struct cache_entry; }
 
 class RGWServiceInstance
 {
@@ -108,18 +114,20 @@ struct RGWServices_Def
   RGWServices_Def();
   ~RGWServices_Def();
 
-  int init(CephContext *cct, bool have_cache, bool raw_storage, bool run_sync,
-	   librados::Rados* rados, optional_yield y,
+  int init(CephContext *cct, rgw::sal::RadosStore* store, bool have_cache,
+	   bool raw_storage, bool run_sync, optional_yield y,
 	   const DoutPrefixProvider *dpp);
   void shutdown();
 };
 
+namespace rgw { class SiteConfig; }
 
 struct RGWServices
 {
   RGWServices_Def _svc;
 
   CephContext *cct;
+  const rgw::SiteConfig* site{nullptr};
 
   RGWSI_Finisher *finisher{nullptr};
   RGWSI_Bucket *bucket{nullptr};
@@ -150,19 +158,21 @@ struct RGWServices
   RGWSI_Role_RADOS *role{nullptr};
   RGWAsyncRadosProcessor* async_processor;
 
-  int do_init(CephContext *cct, bool have_cache, bool raw_storage,
-	      bool run_sync, librados::Rados* rados, optional_yield y,
-	      const DoutPrefixProvider *dpp);
+  int do_init(CephContext *cct, rgw::sal::RadosStore* store, bool have_cache,
+	      bool raw_storage, bool run_sync, optional_yield y,
+	      const DoutPrefixProvider *dpp, const rgw::SiteConfig& site);
 
-  int init(CephContext *cct, bool have_cache, bool run_sync,
-	   librados::Rados* rados, optional_yield y,
-	   const DoutPrefixProvider *dpp) {
-    return do_init(cct, have_cache, false, run_sync, rados, y, dpp);
+  int init(CephContext *cct, rgw::sal::RadosStore* store, bool have_cache,
+	   bool run_sync, optional_yield y, const DoutPrefixProvider *dpp,
+	   const rgw::SiteConfig& site) {
+    return do_init(cct, store, have_cache, false, run_sync, y, dpp, site);
   }
 
-  int init_raw(CephContext *cct, bool have_cache, librados::Rados* rados,
-	       optional_yield y, const DoutPrefixProvider *dpp) {
-    return do_init(cct, have_cache, true, false, rados, y, dpp);
+  int init_raw(CephContext *cct, rgw::sal::RadosStore* store,
+	       bool have_cache, optional_yield y,
+	       const DoutPrefixProvider *dpp,
+	       const rgw::SiteConfig& site) {
+    return do_init(cct, store, have_cache, true, false, y, dpp, site);
   }
   void shutdown() {
     _svc.shutdown();
@@ -175,6 +185,9 @@ class RGWUserCtl;
 class RGWBucketCtl;
 class RGWOTPCtl;
 
+template <class T>
+class RGWChainedCacheImpl;
+
 struct RGWCtlDef {
   struct _meta {
     std::unique_ptr<RGWMetadataManager> mgr;
@@ -183,6 +196,11 @@ struct RGWCtlDef {
     std::unique_ptr<RGWMetadataHandler> user;
     std::unique_ptr<RGWMetadataHandler> otp;
     std::unique_ptr<RGWMetadataHandler> role;
+    std::unique_ptr<RGWMetadataHandler> topic;
+    std::unique_ptr<RGWMetadataHandler> account;
+    std::unique_ptr<RGWMetadataHandler> group;
+
+    std::unique_ptr<RGWChainedCacheImpl<rgwrados::topic::cache_entry>> topic_cache;
 
     _meta();
     ~_meta();
@@ -195,7 +213,8 @@ struct RGWCtlDef {
   RGWCtlDef();
   ~RGWCtlDef();
 
-  int init(RGWServices& svc, rgw::sal::Driver* driver, const DoutPrefixProvider *dpp);
+  int init(RGWServices& svc, rgw::sal::Driver* driver,
+           librados::Rados& rados, const DoutPrefixProvider *dpp);
 };
 
 struct RGWCtl {
@@ -212,11 +231,15 @@ struct RGWCtl {
     RGWMetadataHandler *user{nullptr};
     RGWMetadataHandler *otp{nullptr};
     RGWMetadataHandler *role{nullptr};
+    RGWMetadataHandler* topic{nullptr};
+
+    RGWChainedCacheImpl<rgwrados::topic::cache_entry>* topic_cache{nullptr};
   } meta;
 
   RGWUserCtl *user{nullptr};
   RGWBucketCtl *bucket{nullptr};
   RGWOTPCtl *otp{nullptr};
 
-  int init(RGWServices *_svc, rgw::sal::Driver* driver, const DoutPrefixProvider *dpp);
+  int init(RGWServices *_svc, rgw::sal::Driver* driver,
+           librados::Rados& rados, const DoutPrefixProvider *dpp);
 };

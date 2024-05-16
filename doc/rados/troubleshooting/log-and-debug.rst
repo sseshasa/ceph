@@ -300,6 +300,10 @@ to their default level or to a level suitable for normal operations.
 +--------------------------+-----------+--------------+
 | ``rgw dbstore``          |     1     |      5       |
 +--------------------------+-----------+--------------+
+| ``rgw lifecycle``        |     1     |      5       |
++--------------------------+-----------+--------------+
+| ``rgw notification``     |     1     |      5       |
++--------------------------+-----------+--------------+
 | ``javaclient``           |     1     |      5       |
 +--------------------------+-----------+--------------+
 | ``asok``                 |     1     |      5       |
@@ -336,7 +340,7 @@ to their default level or to a level suitable for normal operations.
 +--------------------------+-----------+--------------+
 | ``cephfs mirror``        |     0     |      5       |
 +--------------------------+-----------+--------------+
-| ``cepgsqlite``           |     0     |      5       |
+| ``cephsqlite``           |     0     |      5       |
 +--------------------------+-----------+--------------+
 | ``seastore``             |     0     |      5       |
 +--------------------------+-----------+--------------+
@@ -380,8 +384,8 @@ to their default level or to a level suitable for normal operations.
 +--------------------------+-----------+--------------+
 
 
-Logging Settings
-----------------
+Logging and Debugging Settings
+------------------------------
 
 It is not necessary to specify logging and debugging settings in the Ceph
 configuration file, but you may override default settings when needed. Ceph

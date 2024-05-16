@@ -125,7 +125,7 @@ int RGWDataAccess::Object::put(bufferlist& data,
   std::string req_id = driver->zone_unique_id(driver->get_new_req_id());
 
   std::unique_ptr<rgw::sal::Writer> processor;
-  processor = driver->get_atomic_writer(dpp, y, obj.get(), owner.id,
+  processor = driver->get_atomic_writer(dpp, y, obj.get(), owner,
 				       nullptr, olh_epoch, req_id);
 
   int ret = processor->prepare(y);
@@ -212,7 +212,8 @@ int RGWDataAccess::Object::put(bufferlist& data,
 			    attrs, delete_at,
                             nullptr, nullptr,
                             puser_data,
-                            nullptr, nullptr, rctx);
+                            nullptr, nullptr,
+                            rctx, rgw::sal::FLAG_LOG_OP);
 }
 
 void RGWDataAccess::Object::set_policy(const RGWAccessControlPolicy& policy)

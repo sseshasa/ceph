@@ -506,7 +506,7 @@ static void grants_by_type_add_one_grant(map<int, string>& grants_by_type, int p
     s.append(", ");
 
   if (const auto user = grant.get_user(); user) {
-    s.append("id=\"" + user->id.to_str() + "\"");
+    s.append("id=\"" + to_string(user->id) + "\"");
   } else if (const auto email = grant.get_email(); email) {
     s.append("emailAddress=\"" + email->address + "\"");
   } else if (const auto group = grant.get_group(); group) {
@@ -795,7 +795,8 @@ static void send_prepare_convert(const rgw_obj& obj, string *resource)
 {
   string urlsafe_bucket, urlsafe_object;
   url_encode(obj.bucket.get_key(':', 0), urlsafe_bucket);
-  url_encode(obj.key.name, urlsafe_object);
+  // do not encode slash. It leads to 404 errors when fetching objects inside folders.
+  url_encode(obj.key.name, urlsafe_object, false);
   *resource = urlsafe_bucket + "/" + urlsafe_object;
 }
 
