@@ -13222,7 +13222,7 @@ bool PrimaryLogPG::start_recovery_ops(
       !state_test(PG_STATE_BACKFILLING)) {
     /* TODO: I think this case is broken and will make do_recovery()
      * unhappy since we're returning false */
-    dout(10) << "recovery raced and were queued twice, ignoring!" << dendl;
+    dout(3) << "recovery raced and were queued twice, ignoring!" << dendl;
     return have_unfound();
   }
 
@@ -13284,7 +13284,7 @@ bool PrimaryLogPG::start_recovery_ops(
     }
   }
 
-  dout(10) << " started " << started << dendl;
+  dout(3) << " started " << started << dendl;
   osd->logger->inc(l_osd_rop, started);
 
   if (!recovering.empty() ||
@@ -13325,7 +13325,7 @@ bool PrimaryLogPG::start_recovery_ops(
     state_clear(PG_STATE_RECOVERING);
     state_clear(PG_STATE_FORCED_RECOVERY);
     if (needs_backfill()) {
-      dout(10) << "recovery done, queuing backfill" << dendl;
+      dout(3) << "recovery done, queuing backfill" << dendl;
       queue_peering_event(
         PGPeeringEventRef(
           std::make_shared<PGPeeringEvent>(
@@ -13333,7 +13333,7 @@ bool PrimaryLogPG::start_recovery_ops(
             get_osdmap_epoch(),
             PeeringState::RequestBackfill())));
     } else {
-      dout(10) << "recovery done, no backfill" << dendl;
+      dout(3) << "recovery done, no backfill" << dendl;
       state_clear(PG_STATE_FORCED_BACKFILL);
       queue_peering_event(
         PGPeeringEventRef(
@@ -13346,7 +13346,7 @@ bool PrimaryLogPG::start_recovery_ops(
     state_clear(PG_STATE_BACKFILLING);
     state_clear(PG_STATE_FORCED_BACKFILL);
     state_clear(PG_STATE_FORCED_RECOVERY);
-    dout(10) << "recovery done, backfill done" << dendl;
+    dout(3) << "recovery done, backfill done" << dendl;
     queue_peering_event(
       PGPeeringEventRef(
         std::make_shared<PGPeeringEvent>(

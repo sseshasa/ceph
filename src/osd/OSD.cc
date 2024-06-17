@@ -6514,7 +6514,7 @@ void OSD::ms_handle_fast_accept(Connection *con)
 bool OSD::ms_handle_reset(Connection *con)
 {
   auto session = ceph::ref_cast<Session>(con->get_priv());
-  dout(2) << "ms_handle_reset con " << con << " session " << session.get() << dendl;
+  dout(5) << "ms_handle_reset con " << con << " session " << session.get() << dendl;
   if (!session)
     return false;
   session->wstate.reset(con);
@@ -8932,6 +8932,7 @@ void OSD::consume_map()
 
   service.maybe_inject_dispatch_delay();
 
+  dout(3) << __func__ << " releasing pushes: " << pushes_to_free << dendl;
   service.release_reserved_pushes(pushes_to_free);
 
   // queue null events to push maps down to individual PGs
@@ -9346,7 +9347,7 @@ void OSDService::_maybe_queue_recovery() {
       cct->_conf->osd_recovery_max_single_start);
     _queue_for_recovery(awaiting_throttle.front(), to_start);
     awaiting_throttle.pop_front();
-    dout(10) << __func__ << " starting " << to_start
+    dout(3) << __func__ << " starting " << to_start
 	     << ", recovery_ops_reserved " << recovery_ops_reserved
 	     << " -> " << (recovery_ops_reserved + to_start) << dendl;
     recovery_ops_reserved += to_start;
@@ -9359,7 +9360,7 @@ bool OSDService::_recover_now(uint64_t *available_pushes)
       *available_pushes = 0;
 
   if (ceph_clock_now() < defer_recovery_until) {
-    dout(15) << __func__ << " defer until " << defer_recovery_until << dendl;
+    dout(3) << __func__ << " defer until " << defer_recovery_until << dendl;
     return false;
   }
 
@@ -9370,7 +9371,7 @@ bool OSDService::_recover_now(uint64_t *available_pushes)
 
   uint64_t max = osd->get_recovery_max_active();
   if (max <= recovery_ops_active + recovery_ops_reserved) {
-    dout(15) << __func__ << " active " << recovery_ops_active
+    dout(3) << __func__ << " active " << recovery_ops_active
 	     << " + reserved " << recovery_ops_reserved
 	     << " >= max " << max << dendl;
     return false;
@@ -9454,16 +9455,17 @@ void OSD::do_recovery(
     }
 
     if (pg->pg_has_reset_since(queued)) {
+      dout(3) << "PG: " << *pg << " has reset since epoch " << queued << dendl;
       goto out;
     }
 
-    dout(10) << "do_recovery starting " << reserved_pushes << " " << *pg << dendl;
+    dout(3) << "do_recovery starting " << reserved_pushes << " " << *pg << dendl;
 #ifdef DEBUG_RECOVERY_OIDS
     dout(20) << "  active was " << service.recovery_oids[pg->pg_id] << dendl;
 #endif
 
     bool do_unfound = pg->start_recovery_ops(reserved_pushes, handle, &started);
-    dout(10) << "do_recovery started " << started << "/" << reserved_pushes
+    dout(3) << "do_recovery started " << started << "/" << reserved_pushes
 	     << " on " << *pg << dendl;
 
     if (do_unfound) {
@@ -9482,7 +9484,7 @@ void OSD::do_recovery(
 void OSDService::start_recovery_op(PG *pg, const hobject_t& soid)
 {
   std::lock_guard l(recovery_lock);
-  dout(10) << "start_recovery_op " << *pg << " " << soid
+  dout(3) << "start_recovery_op " << *pg << " " << soid
 	   << " (" << recovery_ops_active << "/"
 	   << osd->get_recovery_max_active() << " rops)"
 	   << dendl;
@@ -9498,7 +9500,7 @@ void OSDService::start_recovery_op(PG *pg, const hobject_t& soid)
 void OSDService::finish_recovery_op(PG *pg, const hobject_t& soid, bool dequeue)
 {
   std::lock_guard l(recovery_lock);
-  dout(10) << "finish_recovery_op " << *pg << " " << soid
+  dout(3) << "finish_recovery_op " << *pg << " " << soid
 	   << " dequeue=" << dequeue
 	   << " (" << recovery_ops_active << "/"
 	   << osd->get_recovery_max_active() << " rops)"
@@ -9528,7 +9530,7 @@ bool OSDService::is_recovery_active()
 void OSDService::release_reserved_pushes(uint64_t pushes)
 {
   std::lock_guard l(recovery_lock);
-  dout(10) << __func__ << "(" << pushes << "), recovery_ops_reserved "
+  dout(3) << __func__ << "(" << pushes << "), recovery_ops_reserved "
 	   << recovery_ops_reserved << " -> " << (recovery_ops_reserved-pushes)
 	   << dendl;
   ceph_assert(recovery_ops_reserved >= pushes);
@@ -10429,7 +10431,7 @@ void OSDShard::consume_map(
       while (!slot->waiting.empty() &&
 	     slot->waiting.front().get_map_epoch() <= new_osdmap->get_epoch()) {
 	auto& qi = slot->waiting.front();
-	dout(20) << __func__ << "  " << pgid
+	dout(3) << __func__ << "  " << pgid
 		 << " waiting item " << qi
 		 << " epoch " << qi.get_map_epoch()
 		 << " <= " << new_osdmap->get_epoch()
@@ -10438,6 +10440,7 @@ void OSDShard::consume_map(
 		     "misdirected")
 		 << ", dropping" << dendl;
         *pushes_to_free += qi.get_reserved_pushes();
+        dout(3) << __func__ << " pushes_to_free: " << *pushes_to_free << dendl;
 	slot->waiting.pop_front();
       }
     }
@@ -11014,7 +11017,7 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb)
 	       << ", will wait on " << qi << dendl;
       _add_slot_waiter(token, slot, std::move(qi));
     } else {
-      dout(20) << __func__ << " " << token
+      dout(3) << __func__ << " " << token
 	       << " no pg, shouldn't exist e" << osdmap->get_epoch()
 	       << ", dropping " << qi << dendl;
       // share map with client?
@@ -11025,6 +11028,7 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb)
       }
       unsigned pushes_to_free = qi.get_reserved_pushes();
       if (pushes_to_free > 0) {
+        dout(3) << __func__ << " releasing pushes: " << pushes_to_free << dendl;
 	sdata->shard_lock.unlock();
 	osd->service.release_reserved_pushes(pushes_to_free);
 	handle_oncommits(oncommits);
