@@ -4991,6 +4991,7 @@ PeeringState::Backfilling::Backfilling(my_context ctx)
 void PeeringState::Backfilling::backfill_release_reservations()
 {
   DECLARE_LOCALS;
+  psdout(3) << "releasing local and remote reservations" << dendl;
   pl->cancel_local_background_io_reservation();
   for (auto it = ps->backfill_targets.begin();
        it != ps->backfill_targets.end();
@@ -5009,6 +5010,7 @@ void PeeringState::Backfilling::backfill_release_reservations()
 void PeeringState::Backfilling::cancel_backfill()
 {
   DECLARE_LOCALS;
+  psdout(3) << "cancel_backfill" << dendl;
   backfill_release_reservations();
   pl->on_backfill_canceled();
 }
@@ -5016,6 +5018,7 @@ void PeeringState::Backfilling::cancel_backfill()
 boost::statechart::result
 PeeringState::Backfilling::react(const Backfilled &c)
 {
+  psdout(3) << "releasing reservations before transit to Recovered " << dendl;
   backfill_release_reservations();
   return transit<Recovered>();
 }
@@ -5025,7 +5028,7 @@ PeeringState::Backfilling::react(const DeferBackfill &c)
 {
   DECLARE_LOCALS;
 
-  psdout(10) << "defer backfill, retry delay " << c.delay << dendl;
+  psdout(3) << "defer backfill, retry delay " << c.delay << dendl;
   ps->state_set(PG_STATE_BACKFILL_WAIT);
   ps->state_clear(PG_STATE_BACKFILLING);
   cancel_backfill();
@@ -5043,7 +5046,7 @@ boost::statechart::result
 PeeringState::Backfilling::react(const UnfoundBackfill &c)
 {
   DECLARE_LOCALS;
-  psdout(10) << "backfill has unfound, can't continue" << dendl;
+  psdout(3) << "backfill has unfound, can't continue" << dendl;
   ps->state_set(PG_STATE_BACKFILL_UNFOUND);
   ps->state_clear(PG_STATE_BACKFILLING);
   cancel_backfill();
@@ -5055,6 +5058,7 @@ PeeringState::Backfilling::react(const RemoteReservationRevokedTooFull &)
 {
   DECLARE_LOCALS;
 
+  psdout(3) << "cancel_backfill on RemoteReservationRevokedTooFull" << dendl;
   ps->state_set(PG_STATE_BACKFILL_TOOFULL);
   ps->state_clear(PG_STATE_BACKFILLING);
   cancel_backfill();
@@ -5073,11 +5077,13 @@ boost::statechart::result
 PeeringState::Backfilling::react(const RemoteReservationRevoked &)
 {
   DECLARE_LOCALS;
+  psdout(3) << "cancel_backfill on RemoteReservationRevoked" << dendl;
   ps->state_set(PG_STATE_BACKFILL_WAIT);
   cancel_backfill();
   if (ps->needs_backfill()) {
     return transit<WaitLocalBackfillReserved>();
   } else {
+    psdout(3) << "raced with MOSDPGBackfill::OP_BACKFILL_FINISH, ignore" << dendl;
     // raced with MOSDPGBackfill::OP_BACKFILL_FINISH, ignore
     return discard_event();
   }
@@ -5150,6 +5156,7 @@ void PeeringState::WaitRemoteBackfillReserved::exit()
 void PeeringState::WaitRemoteBackfillReserved::retry()
 {
   DECLARE_LOCALS;
+  psdout(3) << "cancel local&remote reservations on retry" << dendl;
   pl->cancel_local_background_io_reservation();
 
   // Send CANCEL to all previously acquired reservations
@@ -5205,6 +5212,7 @@ PeeringState::WaitLocalBackfillReserved::WaitLocalBackfillReserved(my_context ct
   DECLARE_LOCALS;
 
   ps->state_set(PG_STATE_BACKFILL_WAIT);
+  psdout(3) << "waiting for local reservation" << dendl;
   pl->request_local_background_io_reservation(
     ps->get_backfill_priority(),
     std::make_unique<PGPeeringEvent>(
@@ -5496,7 +5504,7 @@ PeeringState::RepRecovering::react(const RemoteRecoveryPreempted &)
 {
   DECLARE_LOCALS;
 
-
+  psdout(3) << "revoking reservation on RemoteRecoveryPreempted" << dendl;
   pl->unreserve_recovery_space();
   pl->send_cluster_message(
     ps->primary.osd,
@@ -5531,6 +5539,7 @@ PeeringState::RepRecovering::react(const RemoteBackfillPreempted &)
   DECLARE_LOCALS;
 
 
+  psdout(3) << "revoking reservation on RemoteBackfillPreempted" << dendl;
   pl->unreserve_recovery_space();
   pl->send_cluster_message(
     ps->primary.osd,
@@ -5681,6 +5690,7 @@ void PeeringState::Recovering::release_reservations(bool cancel)
   ceph_assert(cancel || !ps->pg_log.get_missing().have_missing());
 
   // release remote reservations
+  psdout(3) << "releasing remote recovery reservations" << dendl;
   for (auto i = context< Active >().remote_shards_to_reserve_recovery.begin();
        i != context< Active >().remote_shards_to_reserve_recovery.end();
        ++i) {
@@ -5701,6 +5711,7 @@ PeeringState::Recovering::react(const AllReplicasRecovered &evt)
 {
   DECLARE_LOCALS;
   ps->state_clear(PG_STATE_FORCED_RECOVERY);
+  psdout(3) << "release reservations on AllReplicasRecovered" << dendl;
   release_reservations();
   pl->cancel_local_background_io_reservation();
   return transit<Recovered>();
@@ -5711,6 +5722,7 @@ PeeringState::Recovering::react(const RequestBackfill &evt)
 {
   DECLARE_LOCALS;
 
+  psdout(3) << "release reservations on RequestBackfill" << dendl;
   release_reservations();
 
   ps->state_clear(PG_STATE_FORCED_RECOVERY);
@@ -5735,11 +5747,12 @@ PeeringState::Recovering::react(const DeferRecovery &evt)
   if (!ps->state_test(PG_STATE_RECOVERING)) {
     // we may have finished recovery and have an AllReplicasRecovered
     // event queued to move us to the next state.
-    psdout(10) << "got defer recovery but not recovering" << dendl;
+    psdout(3) << "got defer recovery but not recovering" << dendl;
     return discard_event();
   }
-  psdout(10) << "defer recovery, retry delay " << evt.delay << dendl;
+  psdout(3) << "defer recovery, retry delay " << evt.delay << dendl;
   ps->state_set(PG_STATE_RECOVERY_WAIT);
+  psdout(3) << "release reservations on DeferRecovery" << dendl;
   pl->cancel_local_background_io_reservation();
   release_reservations(true);
   pl->schedule_event_after(
@@ -5755,8 +5768,9 @@ boost::statechart::result
 PeeringState::Recovering::react(const UnfoundRecovery &evt)
 {
   DECLARE_LOCALS;
-  psdout(10) << "recovery has unfound, can't continue" << dendl;
+  psdout(3) << "recovery has unfound, can't continue" << dendl;
   ps->state_set(PG_STATE_RECOVERY_UNFOUND);
+  psdout(3) << "release reservations on UnfoundRecovery" << dendl;
   pl->cancel_local_background_io_reservation();
   release_reservations(true);
   return transit<NotRecovering>();
@@ -6309,6 +6323,7 @@ void PeeringState::Active::exit()
 
 
   DECLARE_LOCALS;
+  psdout(3) << "Exiting Active state. Canceling local reservation" << dendl;
   pl->cancel_local_background_io_reservation();
 
   ps->blocked_by.clear();

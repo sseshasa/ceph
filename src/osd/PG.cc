@@ -417,10 +417,10 @@ void PG::queue_recovery()
   } else if (recovery_queued) {
     dout(10) << "queue_recovery -- already queued" << dendl;
   } else {
-    dout(10) << "queue_recovery -- queuing" << dendl;
     recovery_queued = true;
     // Let cost per object be the average object size
     uint64_t cost_per_object = get_average_object_size();
+    dout(3) << "queue_recovery -- queuing cost: " << cost_per_object << dendl;
     osd->queue_for_recovery(
       this, cost_per_object, recovery_state.get_recovery_op_priority()
     );
@@ -1781,6 +1781,7 @@ void PG::request_local_background_io_reservation(
   unsigned priority,
   PGPeeringEventURef on_grant,
   PGPeeringEventURef on_preempt) {
+  dout(3) << __func__ << " on " << pg_id << dendl;
   osd->local_reserver.request_reservation(
     pg_id,
     on_grant ? new QueuePeeringEvt(
@@ -1798,6 +1799,7 @@ void PG::update_local_background_io_priority(
 }
 
 void PG::cancel_local_background_io_reservation() {
+  dout(3) << __func__ << " on " << pg_id << dendl;
   osd->local_reserver.cancel_reservation(
     pg_id);
 }
@@ -1806,6 +1808,7 @@ void PG::request_remote_recovery_reservation(
   unsigned priority,
   PGPeeringEventURef on_grant,
   PGPeeringEventURef on_preempt) {
+  dout(3) << __func__ << " on " << pg_id << dendl;
   osd->remote_reserver.request_reservation(
     pg_id,
     on_grant ? new QueuePeeringEvt(
@@ -1816,6 +1819,7 @@ void PG::request_remote_recovery_reservation(
 }
 
 void PG::cancel_remote_recovery_reservation() {
+  dout(3) << __func__ << " on " << pg_id << dendl;
   osd->remote_reserver.cancel_reservation(
     pg_id);
 }
@@ -1943,6 +1947,8 @@ void PG::on_active_actmap()
       !recovery_state.get_osdmap()->test_flag(CEPH_OSDMAP_NOBACKFILL) &&
       (!recovery_state.get_osdmap()->test_flag(CEPH_OSDMAP_NOREBALANCE) ||
        recovery_state.is_degraded())) {
+    dout(3) << __func__ << " on " << pg_id
+            << ", queueing recovery" << dendl;
     queue_recovery();
   }
 }
@@ -1950,6 +1956,8 @@ void PG::on_active_actmap()
 void PG::on_backfill_reserved()
 {
   backfill_reserving = false;
+  dout(3) << __func__ << " on " << pg_id
+          << ", queueing recovery" << dendl;
   queue_recovery();
 }
 
@@ -1957,12 +1965,16 @@ void PG::on_backfill_canceled()
 {
   if (!waiting_on_backfill.empty()) {
     waiting_on_backfill.clear();
+    dout(3) << __func__ << " on " << pg_id
+            << ", finishing recovery op" << dendl;
     finish_recovery_op(hobject_t::get_max());
   }
 }
 
 void PG::on_recovery_reserved()
 {
+  dout(3) << __func__ << " on " << pg_id
+          << ", queueing recovery" << dendl;
   queue_recovery();
 }
 
