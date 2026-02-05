@@ -11768,14 +11768,23 @@ void OSDBenchTest::prefill_objects()
     memset(bp.c_str(), 'a', bp.length());
     bufferlist bl = bufferlist::static_from_mem(bp.c_str(), osize);
     bl.rebuild_page_aligned();
-    for (int i = 0; i < onum; ++i) {
-      std::string nm = fmt::format("disk_bw_test_{}", i);
+    // Batch removes in ~20% chunks to avoid overhead of a single cleanup txn
+    int cleanup_batch_size = std::max<int>(1, onum / 5); // 20% of onum
+    auto cleanupt = std::make_unique<ObjectStore::Transaction>();
+    int obj_count = 0;
+    while (obj_count < onum) {
+      std::string nm = fmt::format("disk_bw_test_{}", obj_count);
       object_t oid(nm);
       hobject_t soid(sobject_t(oid, 0));
       ObjectStore::Transaction t;
       t.write(coll_t(), ghobject_t(soid), 0, osize, bl);
       store->queue_transaction(ch, std::move(t), nullptr);
-      cleanupt.remove(coll_t(), ghobject_t(soid));
+      obj_count++;
+      cleanupt->remove(coll_t(), ghobject_t(soid));
+      if (obj_count % cleanup_batch_size == 0 || obj_count == onum) {
+        cleanuptls.push_back(std::move(*cleanupt));
+        cleanupt = std::make_unique<ObjectStore::Transaction>();
+      }
     }
 
     wait_for_flush_commit();
@@ -11814,10 +11823,14 @@ void OSDBenchTest::perform_write_test()
   std::mt19937 random_gen(std::random_device{}());
   bufferlist bl;
 
+  int64_t bytes_written = 0;
+  // Setup a transaction to help batch multiple clean-up operations
+  // Set cleanupt txn to hold a maximum of 20% of 'count' Bytes
+  uint64_t bytes_per_cleanup_batch = std::max<uint64_t>(bsize, count / 5);
+  uint64_t last_batch_boundary = 0;
+  auto cleanupt = std::make_unique<ObjectStore::Transaction>();
   utime_t start = ceph_clock_now();
-  for (int64_t bytes_written = 0;
-       bytes_written < count;
-       bytes_written += bsize) {
+  while (bytes_written < count) {
     std::string nm;
     unsigned offset = 0;
     bufferptr bp(bsize);
@@ -11839,8 +11852,17 @@ void OSDBenchTest::perform_write_test()
     ObjectStore::Transaction t;
     t.write(coll_t::meta(), ghobject_t(soid), offset, bsize, bl);
     store->queue_transaction(ch, std::move(t), nullptr);
+    bytes_written += bsize;
     if (!onum || !osize) {
-      cleanupt.remove(coll_t::meta(), ghobject_t(soid));
+      cleanupt->remove(coll_t::meta(), ghobject_t(soid));
+      bool batch_full =
+        (bytes_written - last_batch_boundary >= bytes_per_cleanup_batch);
+      bool is_final_write = (bytes_written >= count);
+      if (batch_full || is_final_write) {
+        cleanuptls.push_back(std::move(*cleanupt));
+        cleanupt = std::make_unique<ObjectStore::Transaction>();
+        last_batch_boundary = static_cast<uint64_t>(bytes_written);
+      }
     }
     bl.clear();
   }
@@ -11859,7 +11881,7 @@ void OSDBenchTest::perform_write_test()
  */
 void OSDBenchTest::cleanup()
 {
-  store->queue_transaction(ch, std::move(cleanupt), nullptr);
+  store->queue_transactions(ch, cleanuptls);
   wait_for_flush_commit();
   dout(0) << fmt::format("{}: Clean-up done.", __func__) << dendl;
 }
