@@ -1095,8 +1095,9 @@ struct OSDBenchTest {
   double iops;
   std::ostringstream errmsg;
 
-  // Transaction to clean-up test objects
-  ObjectStore::Transaction cleanupt;
+  // Cleanup transactions batched in 20% increments to avoid a single
+  // oversized transaction at the end of the test.
+  std::vector<ObjectStore::Transaction> cleanuptls;
 
   /**
    * run_test()
