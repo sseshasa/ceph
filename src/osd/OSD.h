@@ -1088,6 +1088,19 @@ struct OSDBenchTest {
   int64_t osize;
   int64_t onum;
 
+  // Device type: drives preconditioning config key selection and
+  // device-specific bench parameters set by the caller.
+  bool store_is_rotational = false;
+
+  // Preconditioning state
+  bool precondition_enabled = false; // any preconditioning active
+  bool full_precondition = false;    // include omap pollution (boot bench only)
+  uint64_t saved_deferred_size = 0;  // restored after bench
+
+  // Synthetic PG log parameters used during full preconditioning
+  int num_bench_pgs = 30;
+  int entries_per_pg = 100;
+
   // Test metrics
   double prefill_time;
   double elapsed;
@@ -1125,6 +1138,43 @@ struct OSDBenchTest {
   int precheck();
 
   /**
+   * precondition_for_steady_state()
+   *
+   * Conditions the KV store to reflect realistic steady-state operation:
+   *  - Disables BlueStore deferred writes so bench I/O uses the direct path.
+   *  - (full_precondition only) Writes synthetic PG log omap entries then
+   *    trims half of them, creating RocksDB tombstones.
+   *  - (full_precondition only, opt-in) Runs a full KV compaction.
+   * The deferred-write setting is restored in run_test() after the bench.
+   */
+  void precondition_for_steady_state();
+
+  /**
+   * enable_preconditioning()
+   *
+   * Activates full preconditioning: deferred-write override + synthetic
+   * PG log pollution + optional KV compaction.  Call before run_test().
+   * Intended for the boot-time mClock calibration bench only.
+   */
+  void enable_preconditioning() {
+    precondition_enabled = true;
+    full_precondition = true;
+  }
+
+  /**
+   * enable_preconditioning_lite()
+   *
+   * Activates lite preconditioning: deferred-write override only.
+   * No omap pollution, no compaction - safe to use on a live OSD.
+   * Ensures periodic bench measurements use the same I/O path as
+   * the boot bench, making the two results directly comparable.
+   */
+  void enable_preconditioning_lite() {
+    precondition_enabled = true;
+    full_precondition = false;
+  }
+
+  /**
    * prefill_objects()
    *
    * Prefill objects for the write test only if
@@ -1154,8 +1204,8 @@ struct OSDBenchTest {
   /**
    * cleanup()
    *
-   * Removes all the objects that were created during the write test
-   * as part of a single transaction.
+   * Queues all batched cleanup transactions accumulated during
+   * prefill and write phases via queue_transactions().
    */
   void cleanup();
 
@@ -1238,7 +1288,8 @@ struct OSDBenchTest {
     int64_t count,
     int64_t bsize,
     int64_t osize,
-    int64_t onum);
+    int64_t onum,
+    bool store_is_rotational = false);
 };
 
 class OSD : public Dispatcher,

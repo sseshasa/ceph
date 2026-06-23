@@ -1546,6 +1546,24 @@ options:
   see_also:
   - osd_op_queue
   - osd_mclock_profile
+- name: osd_mclock_bench_compact_on_precondition
+  type: bool
+  level: dev
+  desc: Trigger a full KV compaction during mClock boot bench preconditioning
+    (SSD/NVMe only, opt-in)
+  long_desc: When true and the OSD is on a non-rotational device, the boot-time
+    mClock bench preconditioning step calls store->compact() after injecting
+    omap tombstones. This produces a fully compacted LSM tree that more closely
+    models a long-running OSD. Compaction can take tens of seconds on large
+    block devices; enable only on SSD/NVMe and only when boot latency is
+    acceptable. Has no effect on rotational media.
+  fmt_desc: Trigger a full KV compaction during mClock boot bench
+    preconditioning (SSD/NVMe only). May add significant boot time.
+  default: false
+  see_also:
+  - osd_mclock_bench_interval
+  flags:
+  - startup
 # Set to true for testing.  Users should NOT set this.
 # If set to true even after reading enough shards to
 # decode the object, any error will be reported.

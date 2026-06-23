@@ -11572,6 +11572,168 @@ void OSD::ShardedOpWQ::stop_for_fast_shutdown()
 #define dout_prefix *_dout << "OSDBenchTest: "
 
 /**
+ * precondition_for_steady_state()
+ *
+ * Conditions the KV store to reflect realistic steady-state operation
+ * before the write bench. Two modes are supported:
+ *
+ * Lite (precondition_enabled && !full_precondition):
+ *   - Overrides the BlueStore deferred-write threshold to 0 so that bench
+ *     writes use the direct block-device path, matching the boot bench I/O
+ *     route. This makes periodic bench results directly comparable to the
+ *     boot-time baseline.
+ *
+ * Full (precondition_enabled && full_precondition):
+ *   - Same deferred-write override as lite.
+ *   - Writes synthetic PG log omap entries (num_bench_pgs x entries_per_pg)
+ *     to the meta collection, then trims half of them. This creates RocksDB
+ *     tombstones that simulate metadata pressure from a real workload.
+ *   - Optionally (osd_mclock_bench_compact_on_precondition=true, SSD only)
+ *     runs a full KV compaction to settle the LSM tree. Skipped on HDD
+ *     because compaction can take tens of minutes on a live OSD.
+ *
+ * The deferred-write setting is saved and restored by run_test() after the
+ * bench completes. The pgmeta objects are registered in cleanuptls so they
+ * are removed by cleanup() along with the bench test objects.
+ */
+void OSDBenchTest::precondition_for_steady_state()
+{
+  dout(0) << fmt::format(
+                 "{}: starting preconditioning "
+                 "(mode={} pgs={} entries_per_pg={})",
+                 __func__,
+                 full_precondition ? "full" : "lite",
+                 num_bench_pgs, entries_per_pg)
+          << dendl;
+  utime_t start = ceph_clock_now();
+
+  // ----------------------------------------------------------------
+  // Step 1: override the deferred-write threshold to force direct I/O.
+  //
+  // For HDD the effective threshold comes from bluestore_prefer_deferred_size_hdd
+  // (default 32 KiB), so small writes (4 KiB) go through the WAL first and
+  // report inflated IOPS. Setting it to 0 forces all writes to the block device
+  // directly, matching what the boot bench measures.
+  // For SSD the default is already 0, but we save/restore for consistency.
+  // ----------------------------------------------------------------
+  const char* deferred_key = store_is_rotational
+    ? "bluestore_prefer_deferred_size_hdd"
+    : "bluestore_prefer_deferred_size_ssd";
+  saved_deferred_size = cct->_conf.get_val<Option::size_t>(deferred_key);
+  if (saved_deferred_size != 0) {
+    g_conf().set_val(deferred_key, "0");
+    g_conf().apply_changes(nullptr);
+    dout(10) << fmt::format(
+                    "{}: {} saved={} -> 0 (restored after bench)",
+                    __func__, deferred_key, saved_deferred_size)
+             << dendl;
+  }
+
+  if (!full_precondition) {
+    dout(0) << fmt::format(
+                   "{}: lite preconditioning done in {:.2f}s",
+                   __func__, (double)(ceph_clock_now() - start))
+            << dendl;
+    return;
+  }
+
+  // ----------------------------------------------------------------
+  // Step 2: write synthetic PG log omap entries then trim half.
+  //
+  // PG logs live as omap keys on each PG's pgmeta object. Reproducing
+  // this pattern fills the same RocksDB keyspace that a production OSD
+  // uses. Trimming half the entries creates delete tombstones that
+  // RocksDB must navigate during subsequent metadata operations.
+  //
+  // Key format mirrors the real PG log schema used by BlueStore:
+  // "<epoch_u32_hex>.<version_u64_decimal>". A fixed epoch of 1 is used
+  // since only the key distribution matters, not the semantic content.
+  //
+  // Each fake pgmeta object is registered in cleanuptls for removal by
+  // cleanup() after the bench test.
+  // ----------------------------------------------------------------
+  const int TRIM_COUNT = entries_per_pg / 2;
+  // 128-byte values approximate the serialised size of a pg_log_entry_t body.
+  bufferlist val;
+  val.append(std::string(128, '\0'));
+
+  for (int pg = 0; pg < num_bench_pgs; ++pg) {
+    ghobject_t pgmeta(hobject_t(
+      sobject_t(object_t(fmt::format("bench_pglog_{}", pg)), CEPH_NOSNAP)));
+
+    // Write entries_per_pg omap keys in a single transaction.
+    {
+      std::map<std::string, bufferlist> omap;
+      for (int i = 0; i < entries_per_pg; ++i) {
+        omap[fmt::format("0000000001.{:020d}", i)] = val;
+      }
+      ObjectStore::Transaction tw;
+      tw.touch(coll_t::meta(), pgmeta);
+      tw.omap_setkeys(coll_t::meta(), pgmeta, omap);
+      store->queue_transaction(ch, std::move(tw), nullptr);
+    }
+
+    // Trim the first half - creates tombstones in RocksDB L0.
+    {
+      std::set<std::string> rmkeys;
+      for (int i = 0; i < TRIM_COUNT; ++i) {
+        rmkeys.insert(fmt::format("0000000001.{:020d}", i));
+      }
+      ObjectStore::Transaction tt;
+      tt.omap_rmkeys(coll_t::meta(), pgmeta, rmkeys);
+      store->queue_transaction(ch, std::move(tt), nullptr);
+    }
+  }
+  wait_for_flush_commit();
+
+  // Register a single cleanup batch for all pgmeta objects.
+  {
+    ObjectStore::Transaction pgmeta_cleanup;
+    for (int pg = 0; pg < num_bench_pgs; ++pg) {
+      ghobject_t pgmeta(hobject_t(
+        sobject_t(object_t(fmt::format("bench_pglog_{}", pg)), CEPH_NOSNAP)));
+      pgmeta_cleanup.remove(coll_t::meta(), pgmeta);
+    }
+    cleanuptls.push_back(std::move(pgmeta_cleanup));
+  }
+
+  // ----------------------------------------------------------------
+  // Step 3: optional full KV compaction to settle the LSM tree.
+  //
+  // Skipped on HDD unconditionally - compaction can take tens of minutes
+  // on a live or established OSD even when the total data volume is small.
+  // On SSD, gated by osd_mclock_bench_compact_on_precondition (default false)
+  // because even there it can take minutes on a large established OSD.
+  // ----------------------------------------------------------------
+  if (!store_is_rotational &&
+      cct->_conf.get_val<bool>("osd_mclock_bench_compact_on_precondition")) {
+    dout(0) << fmt::format(
+                   "{}: running full KV compaction to settle LSM tree...",
+                   __func__)
+            << dendl;
+    int r = store->compact();
+    if (r == -ENOTSUP) {
+      dout(5) << fmt::format(
+                     "{}: compact() not supported on this objectstore, skipping",
+                     __func__)
+              << dendl;
+    }
+  } else if (store_is_rotational &&
+             cct->_conf.get_val<bool>("osd_mclock_bench_compact_on_precondition")) {
+    dout(1) << fmt::format(
+                   "{}: skipping compaction on rotational device"
+                   " (would exceed boot-time budget)",
+                   __func__)
+            << dendl;
+  }
+
+  dout(0) << fmt::format(
+                 "{}: full preconditioning done in {:.2f}s",
+                 __func__, (double)(ceph_clock_now() - start))
+          << dendl;
+}
+
+/**
  * Perform multiple pre-checks before initiating the test
  *  - Validate the store and meta collection
  *  - Validate input parameters and associated limits
@@ -11693,8 +11855,12 @@ int OSDBenchTest::run_test()
 
   dout(0) << fmt::format(
                  "{}: running osd bench with "
-                 "count: {} Bytes bsize: {} onum: {} osize: {}",
-                 __func__, count, byte_u_t(bsize), onum, byte_u_t(osize))
+                 "count: {} Bytes bsize: {} onum: {} osize: {}"
+                 " precondition: {}",
+                 __func__, count, byte_u_t(bsize), onum, byte_u_t(osize),
+                 precondition_enabled
+                   ? (full_precondition ? "full" : "lite")
+                   : "none")
           << dendl;
 
   // flush store cache
@@ -11702,6 +11868,12 @@ int OSDBenchTest::run_test()
   if (ret != 0) {
     errmsg << "Error flushing objectstore cache: " << cpp_strerror(ret);
     return ret;
+  }
+
+  // Preconditioning: disables deferred writes (lite) and optionally
+  // injects synthetic PG log metadata + compaction (full).
+  if (precondition_enabled) {
+    precondition_for_steady_state();
   }
 
   // Prefill
@@ -11712,6 +11884,19 @@ int OSDBenchTest::run_test()
 
   // cleanup
   cleanup();
+
+  // Restore the deferred-write setting changed during preconditioning.
+  if (precondition_enabled && saved_deferred_size != 0) {
+    const char* deferred_key = store_is_rotational
+      ? "bluestore_prefer_deferred_size_hdd"
+      : "bluestore_prefer_deferred_size_ssd";
+    g_conf().set_val(deferred_key, std::to_string(saved_deferred_size));
+    g_conf().apply_changes(nullptr);
+    dout(10) << fmt::format(
+                    "{}: {} restored to {}",
+                    __func__, deferred_key, saved_deferred_size)
+             << dendl;
+  }
 
   // Calculate bandwidth & iops
   if (elapsed && bsize) {
@@ -11896,7 +12081,8 @@ OSDBenchTest::OSDBenchTest(
   int64_t count,
   int64_t bsize,
   int64_t osize,
-  int64_t onum)
+  int64_t onum,
+  bool store_is_rotational)
   : cct(cct),
     store(store),
     ch(ch),
@@ -11904,6 +12090,7 @@ OSDBenchTest::OSDBenchTest(
     bsize(bsize),
     osize(osize),
     onum(onum),
+    store_is_rotational(store_is_rotational),
     prefill_time(0.0),
     elapsed(0.0),
     bandwidth(0.0),
@@ -11912,8 +12099,10 @@ OSDBenchTest::OSDBenchTest(
   dout(0) << fmt::format(
                  "OSD Bench Test Params:"
                  " count: {} Bytes block size: {}"
-                 " number of objects: {} object size: {}",
-                 count, byte_u_t(bsize), onum, byte_u_t(osize))
+                 " number of objects: {} object size: {}"
+                 " device: {}",
+                 count, byte_u_t(bsize), onum, byte_u_t(osize),
+                 store_is_rotational ? "hdd" : "ssd")
           << dendl;
 }
 
