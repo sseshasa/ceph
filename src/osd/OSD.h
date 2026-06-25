@@ -1346,6 +1346,16 @@ protected:
   bool store_is_rotational = true;
   bool journal_is_rotational = true;
 
+  // mClock periodic IOPS health monitoring
+  double mclock_baseline_iops = 0.0;
+  /**
+   * True once mclock_baseline_iops comes from an accepted bench measurement
+   * (boot or periodic normalization). False when seeded from config defaults
+   * after a discarded boot bench - periodic bench then acts as normalization
+   * path in addition to monitoring.
+   */
+  bool mclock_baseline_from_measurement = false;
+
   ZTracer::Endpoint trace_endpoint;
   PerfCounters* create_logger();
   PerfCounters* create_recoverystate_perf();
