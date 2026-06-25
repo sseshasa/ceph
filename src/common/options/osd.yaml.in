@@ -1298,57 +1298,66 @@ options:
 - name: osd_mclock_max_sequential_bandwidth_hdd
   type: size
   level: basic
-  desc: Maximum sequential bandwidth (bytes/second) to assume for the OSD (rotational
-    media).
-  long_desc: The maximum sequential bandwidth (in bytes/second) to assume for an OSD
-    backed by rotational media. The mClock scheduler uses it to derive the cost factor
-    for QoS calculations. Considered only when osd_op_queue = mclock_scheduler.
-  fmt_desc: The maximum sequential bandwidth (in bytes/second) to assume for an OSD
-    backed by rotational media. The mClock scheduler uses it to derive the cost factor
-    for QoS calculations. Considered only when ``osd_op_queue`` = ``mclock_scheduler``.
-  default: 150_M
+  desc: The maximum sequential bandwidth in bytes/second of the OSD (for
+    rotational media)
+  long_desc: This option specifies the maximum sequential bandwidth to consider
+    for an OSD whose underlying device type is rotational media. This is
+    considered by the mclock scheduler to derive the cost factor to be used in
+    QoS calculations. The default (130 MiB/s) reflects the practical sustained
+    sequential write throughput for a mid-range 7200 RPM SATA HDD through the
+    ObjectStore stack; the OSD boot bench overrides this with a measured value.
+    Only considered for osd_op_queue = mclock_scheduler.
+  fmt_desc: The maximum sequential bandwidth in bytes/second to consider for the
+    OSD (for rotational media)
+  default: 130_M
   flags:
   - runtime
 - name: osd_mclock_max_sequential_bandwidth_ssd
   type: size
   level: basic
-  desc: Maximum sequential bandwidth (bytes/second) to assume for the OSD (solid-state
-    media).
-  long_desc: The maximum sequential bandwidth (in bytes/second) to assume for an OSD
-    backed by solid-state media. The mClock scheduler uses it to derive the cost factor
-    for QoS calculations. Considered only when osd_op_queue = mclock_scheduler.
-  fmt_desc: The maximum sequential bandwidth (in bytes/second) to assume for an OSD
-    backed by solid-state media. The mClock scheduler uses it to derive the cost factor
-    for QoS calculations. Considered only when ``osd_op_queue`` = ``mclock_scheduler``.
-  default: 1200_M
+  desc: The maximum sequential bandwidth in bytes/second of the OSD (for
+    SATA solid state media)
+  long_desc: This option specifies the maximum sequential bandwidth to consider
+    for an OSD whose underlying device type is a SATA solid state drive.
+    NVMe devices use osd_mclock_max_sequential_bandwidth_nvme instead. This is
+    considered by the mclock scheduler to derive the cost factor to be used in
+    QoS calculations. The default (500 MiB/s) reflects the practical sequential
+    write ceiling for SATA SSDs through the ObjectStore stack; the OSD boot
+    bench overrides this. Only considered for osd_op_queue = mclock_scheduler.
+  fmt_desc: The maximum sequential bandwidth in bytes/second to consider for the
+    OSD (for SATA solid state media)
+  default: 500_M
   flags:
   - runtime
 - name: osd_mclock_max_capacity_iops_hdd
   type: float
   level: basic
-  desc: Maximum random-write IOPS capacity (at 4 KiB block size) to assume per OSD
-    (rotational media).
-  long_desc: The maximum random-write IOPS capacity to assume for an OSD backed by
-    rotational media (measured at 4 KiB block size). It contributes to the mClock scheduler's
-    QoS calculations, and is considered only when osd_op_queue = mclock_scheduler.
-  fmt_desc: The maximum random-write IOPS capacity to assume for an OSD backed by rotational
-    media (measured at 4 KiB block size). It contributes to the mClock scheduler's
-    QoS calculations, and is considered only when ``osd_op_queue`` = ``mclock_scheduler``.
-  default: 315
+  desc: Max random write IOPS capacity (at 4KiB block size) to consider per OSD
+    (for rotational media)
+  long_desc: This option specifies the max OSD random write IOPS capacity per
+    OSD. Contributes in QoS calculations when enabling a dmclock profile. The
+    default (150) reflects realistic steady-state 4 KiB random write throughput
+    for a 7200 RPM SATA HDD through the ObjectStore stack; the OSD benchmark
+    overrides this at boot.Only considered for osd_op_queue = mclock_scheduler
+  fmt_desc: Max random write IOPS capacity (at 4 KiB block size) to consider per
+    OSD (for rotational media)
+  default: 150
   flags:
   - runtime
 - name: osd_mclock_max_capacity_iops_ssd
   type: float
   level: basic
-  desc: Maximum random-write IOPS capacity (at 4 KiB block size) to assume per OSD
-    (solid-state media).
-  long_desc: The maximum random-write IOPS capacity to assume for an OSD backed by
-    solid-state media (measured at 4 KiB block size). It contributes to the mClock
-    scheduler's QoS calculations, and is considered only when osd_op_queue = mclock_scheduler.
-  fmt_desc: The maximum random-write IOPS capacity to assume for an OSD backed by solid-state
-    media (measured at 4 KiB block size). It contributes to the mClock scheduler's
-    QoS calculations, and is considered only when ``osd_op_queue`` = ``mclock_scheduler``.
-  default: 21500
+  desc: Max random write IOPS capacity (at 4 KiB block size) to consider per OSD
+    (for solid state media)
+  long_desc: This option specifies the max OSD random write IOPS capacity per
+    OSD. Contributes in QoS calculations when enabling a dmclock profile. The
+    default (10000) is a conservative floor for SATA SSDs through the
+    ObjectStore stack; the OSD benchmark overrides this at boot with a
+    device-specific measurement. Only considered for
+    osd_op_queue = mclock_scheduler
+  fmt_desc: Max random write IOPS capacity (at 4 KiB block size) to consider per
+    OSD (for solid state media)
+  default: 10000
   flags:
   - runtime
 - name: osd_mclock_force_run_benchmark_on_init
@@ -1438,20 +1447,19 @@ options:
 - name: osd_mclock_iops_capacity_threshold_hdd
   type: float
   level: basic
-  desc: Upper bound for the startup IOPS benchmark; a 4 KiB random-write result above
-    this is rejected (rotational media).
-  long_desc: When mClock is enabled (osd_op_queue = mclock_scheduler), each OSD measures
-    its IOPS capacity at first startup with a 4 KiB random-write benchmark. mClock
-    rejects a result above this high threshold (or below osd_mclock_iops_capacity_low_threshold_hdd)
-    as implausible, keeping the configured (default) osd_mclock_max_capacity_iops_hdd
-    and logging a cluster warning that recommends benchmarking manually (e.g. FIO).
-    Rotational media only.
-  fmt_desc: When mClock is enabled (``osd_op_queue`` = ``mclock_scheduler``), each
-    OSD measures its IOPS capacity at first startup with a 4 KiB random-write benchmark.
-    mClock rejects a result above this high threshold (or below ``osd_mclock_iops_capacity_low_threshold_hdd``)
-    as implausible, keeping the configured (default) ``osd_mclock_max_capacity_iops_hdd``
-    and logging a cluster warning that recommends benchmarking manually (e.g. FIO).
-    Rotational media only.
+  desc: Threshold upper IOPS bound (at 4KiB block size) for OSD bench results
+    on rotational media; results exceeding this are discarded and mClock
+    capacity is left unchanged.
+  long_desc: If the boot-time OSD bench returns IOPS above this value on a
+    rotational OSD it likely indicates device misidentification (e.g. an SSD
+    reported as rotational by the kernel) or atypical bench conditions. A
+    cluster-log warning is emitted and the result is discarded - mClock capacity
+    is left at its current/default setting. The periodic bench will normalize
+    the capacity once it obtains a consistent, in-range result.
+    Only considered when osd_op_queue = mclock_scheduler.
+  fmt_desc: Upper IOPS threshold (at 4 KiB block size) for OSD bench results
+    on rotational media. Results above this trigger a cluster-log warning and
+    leave mClock capacity unchanged.
   default: 500
   see_also:
   - osd_mclock_max_capacity_iops_hdd
@@ -1460,20 +1468,18 @@ options:
 - name: osd_mclock_iops_capacity_low_threshold_hdd
   type: float
   level: basic
-  desc: Lower bound for the startup IOPS benchmark; a 4 KiB random-write result below
-    this is rejected (rotational media).
-  long_desc: When mClock is enabled (osd_op_queue = mclock_scheduler), each OSD measures
-    its IOPS capacity at first startup with a 4 KiB random-write benchmark. mClock
-    rejects a result below this low threshold (or above osd_mclock_iops_capacity_threshold_hdd)
-    as implausible, keeping the configured (default) osd_mclock_max_capacity_iops_hdd
-    and logging a cluster warning that recommends benchmarking manually (e.g. FIO).
-    Rotational media only.
-  fmt_desc: When mClock is enabled (``osd_op_queue`` = ``mclock_scheduler``), each
-    OSD measures its IOPS capacity at first startup with a 4 KiB random-write benchmark.
-    mClock rejects a result below this low threshold (or above ``osd_mclock_iops_capacity_threshold_hdd``)
-    as implausible, keeping the configured (default) ``osd_mclock_max_capacity_iops_hdd``
-    and logging a cluster warning that recommends benchmarking manually (e.g. FIO).
-    Rotational media only.
+  desc: Threshold minimum IOPS (at 4KiB block size) for OSD bench results on
+    rotational media; results below this leave mClock capacity
+    unchanged
+  long_desc: If the boot-time OSD bench returns IOPS below this value on a
+    rotational OSD it may indicate a severely overloaded or failing disk. A
+    cluster-log warning is emitted and the measured value is discarded -
+    mClock capacity is left at its current setting to avoid degrading
+    scheduler performance. Only considered when
+    osd_op_queue = mclock_scheduler.
+  fmt_desc: Minimum IOPS threshold (at 4 KiB block size) for OSD bench results
+    on rotational media. Results below this trigger a cluster-log warning and
+    leave mClock capacity unchanged.
   default: 50
   see_also:
   - osd_mclock_max_capacity_iops_hdd
@@ -1482,21 +1488,18 @@ options:
 - name: osd_mclock_iops_capacity_threshold_ssd
   type: float
   level: basic
-  desc: Upper bound for the startup IOPS benchmark; a 4 KiB random-write result above
-    this is rejected (solid-state media).
-  long_desc: When mClock is enabled (osd_op_queue = mclock_scheduler), each OSD measures
-    its IOPS capacity at first startup with a 4 KiB random-write benchmark. mClock
-    rejects a result above this high threshold (or below osd_mclock_iops_capacity_low_threshold_ssd)
-    as implausible, keeping the configured (default) osd_mclock_max_capacity_iops_ssd
-    and logging a cluster warning that recommends benchmarking manually (e.g. FIO).
-    Solid-state media only.
-  fmt_desc: When mClock is enabled (``osd_op_queue`` = ``mclock_scheduler``), each
-    OSD measures its IOPS capacity at first startup with a 4 KiB random-write benchmark.
-    mClock rejects a result above this high threshold (or below ``osd_mclock_iops_capacity_low_threshold_ssd``)
-    as implausible, keeping the configured (default) ``osd_mclock_max_capacity_iops_ssd``
-    and logging a cluster warning that recommends benchmarking manually (e.g. FIO).
-    Solid-state media only.
-  default: 80000
+  desc: Deprecated - upper IOPS bound for SSD bench results (advisory only,
+    no longer rejects results).
+  long_desc: This option previously capped accepted OSD bench IOPS for solid
+    state devices. It is now deprecated; NVMe/SSD performance continues to
+    improve and a static ceiling requires constant re-tuning. The bench result
+    is always applied regardless of this value. The option is retained for
+    compatibility but has no effect on mClock scheduling decisions. Raise
+    osd_mclock_iops_capacity_low_threshold_ssd if you need a threshold
+    lower bound. Only considered when osd_op_queue = mclock_scheduler.
+  fmt_desc: Deprecated upper IOPS threshold for SSD bench results. Has no
+    effect; the bench result is always applied. Retained for compatibility.
+  default: 150000
   see_also:
   - osd_mclock_max_capacity_iops_ssd
   flags:
@@ -1504,20 +1507,17 @@ options:
 - name: osd_mclock_iops_capacity_low_threshold_ssd
   type: float
   level: basic
-  desc: Lower bound for the startup IOPS benchmark; a 4 KiB random-write result below
-    this is rejected (solid-state media).
-  long_desc: When mClock is enabled (osd_op_queue = mclock_scheduler), each OSD measures
-    its IOPS capacity at first startup with a 4 KiB random-write benchmark. mClock
-    rejects a result below this low threshold (or above osd_mclock_iops_capacity_threshold_ssd)
-    as implausible, keeping the configured (default) osd_mclock_max_capacity_iops_ssd
-    and logging a cluster warning that recommends benchmarking manually (e.g. FIO).
-    Solid-state media only.
-  fmt_desc: When mClock is enabled (``osd_op_queue`` = ``mclock_scheduler``), each
-    OSD measures its IOPS capacity at first startup with a 4 KiB random-write benchmark.
-    mClock rejects a result below this low threshold (or above ``osd_mclock_iops_capacity_threshold_ssd``)
-    as implausible, keeping the configured (default) ``osd_mclock_max_capacity_iops_ssd``
-    and logging a cluster warning that recommends benchmarking manually (e.g. FIO).
-    Solid-state media only.
+  desc: Threshold minimum IOPS (at 4KiB block size) for OSD bench results on
+    solid state media; results below this leave mClock capacity unchanged
+  long_desc: If the boot-time OSD bench returns IOPS below this value on an
+    SSD/NVMe OSD it may indicate a failing device or a misconfigured I/O path.
+    A cluster-log warning is emitted and the measured value is discarded -
+    mClock capacity is left at its current setting to avoid degrading
+    scheduler performance. Only considered when
+    osd_op_queue = mclock_scheduler.
+  fmt_desc: Minimum IOPS threshold (at 4 KiB block size) for OSD bench results
+    on solid state media. Results below this trigger a cluster-log warning and
+    leave mClock capacity unchanged.
   default: 1000
   see_also:
   - osd_mclock_max_capacity_iops_ssd
