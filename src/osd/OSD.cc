@@ -10363,17 +10363,52 @@ void OSD::maybe_override_max_osd_capacity_for_qos()
                 << " default_iops: " << default_iops
                 << " cur_iops: " << cur_iops
                 << ". Skip OSD benchmark test." << dendl;
+        // cur_iops already differs from the compiled-in default, so it must
+        // have come from a legitimate prior measurement (this OSD's own
+        // earlier boot bench, a periodic-bench normalization, or an
+        // equivalent admin-applied value) — not just left at an arbitrary
+        // config default. Seed the in-memory baseline from it and mark it as
+        // measurement-derived so maybe_periodic_bench_for_health() (which
+        // bails out immediately whenever mclock_baseline_iops <= 0.0) and
+        // do_periodic_bench()'s monitoring-mode comparison both have a valid
+        // anchor from this boot onward. Without this, periodic bench would
+        // silently never run for the rest of the OSD's life whenever the
+        // boot bench is skipped — the normal, expected case for an
+        // already-benchmarked OSD.
+        mclock_baseline_iops = cur_iops;
+        mclock_baseline_from_measurement = true;
         return;
       }
     }
 
-    // Run osd bench: write 100 4MiB objects with blocksize 4KiB
-    int64_t count = 12288000; // Count of bytes to write
-    int64_t bsize = 4096;     // Block size
-    int64_t osize = 4194304;  // Object size
-    int64_t onum = 100;       // Count of objects to write
+    // Device-specific bench parameters.
+    // HDD uses a reduced I/O count and smaller object pool so the total
+    // bench time (including preconditioning) stays within ~20 seconds.
+    // SSD/NVMe uses the full parameters for a more stable measurement.
+    int64_t count, osize;
+    int64_t bsize = 4096;
+    int64_t onum;
+    int bench_num_pgs, bench_entries_per_pg;
+    if (store_is_rotational) {
+      count = 4096LL * 1000; // 1000 x 4KiB ops (~10s at 100 IOPS)
+      osize = 1 << 20;       // 1 MiB objects
+      onum = 20;
+      bench_num_pgs = 10;
+      bench_entries_per_pg = 50;
+    } else {
+      count = 12288000LL;    // 3000 x 4KiB ops (at precheck limit)
+      osize = 4 << 20;       // 4 MiB objects
+      onum = 100;
+      bench_num_pgs = 30;
+      bench_entries_per_pg = 100;
+    }
+
     OSDBenchTest osd_bench{cct, store.get(), service.meta_ch,
-                           count, bsize, osize, onum};
+                           count, bsize, osize, onum, store_is_rotational};
+    osd_bench.num_bench_pgs = bench_num_pgs;
+    osd_bench.entries_per_pg = bench_entries_per_pg;
+    osd_bench.enable_preconditioning();
+
     int ret = osd_bench.run_test();
     if (ret != 0) {
       derr << __func__
@@ -10383,7 +10418,7 @@ void OSD::maybe_override_max_osd_capacity_for_qos()
       return;
     }
 
-    // Get the threshold IOPS set for the underlying hdd/ssd.
+    // Retrieve config threshold IOPS for anomaly detection.
     double hi_threshold_iops = 0.0;
     double lo_threshold_iops = 0.0;
     if (store_is_rotational) {
@@ -10392,29 +10427,63 @@ void OSD::maybe_override_max_osd_capacity_for_qos()
       lo_threshold_iops = cct->_conf.get_val<double>(
         "osd_mclock_iops_capacity_low_threshold_hdd");
     } else {
-      hi_threshold_iops = cct->_conf.get_val<double>(
-        "osd_mclock_iops_capacity_threshold_ssd");
       lo_threshold_iops = cct->_conf.get_val<double>(
         "osd_mclock_iops_capacity_low_threshold_ssd");
+      // No upper-bound check for SSD/NVMe: any measured IOPS is valid.
+      // hi_threshold_ssd is deprecated and intentionally not consulted.
     }
 
-    // Persist the iops value to the MON store or throw cluster warning
-    // if the measured iops is not in the threshold range. If the iops is
-    // not within the threshold range, the current/default value is retained.
     double iops = osd_bench.get_iops_rate();
-    if (iops < lo_threshold_iops || iops > hi_threshold_iops) {
-      clog->warn() << "OSD bench result of " << std::to_string(iops)
-                   << " IOPS is not within the threshold limit range of "
-                   << std::to_string(lo_threshold_iops) << " IOPS and "
-                   << std::to_string(hi_threshold_iops) << " IOPS for osd."
-                   << std::to_string(whoami) << ". IOPS capacity is unchanged"
-                   << " at " << std::to_string(cur_iops) << " IOPS. The"
-                   << " recommendation is to establish the osd's IOPS capacity"
-                   << " using other benchmark tools (e.g. Fio) and then"
-                   << " override osd_mclock_max_capacity_iops_[hdd|ssd].";
-    } else {
-      mon_cmd_set_config(max_capacity_iops_config, std::to_string(iops));
+
+    // If the result is below the realistic floor for this device type,
+    // the measurement is likely unreliable (bench ran under extreme load,
+    // degraded device, or wrong rotational flag). Leave the existing mClock
+    // capacity unchanged to avoid degrading scheduler performance.
+    if (iops < lo_threshold_iops) {
+      clog->warn() << fmt::format(
+        "OSD {} bench: measured {:.0f} IOPS is below the expected minimum"
+        " ({:.0f} IOPS) for a {} device. Check device health and whether"
+        " the kernel 'rotational' attribute is correctly set."
+        " mClock capacity left unchanged.",
+        whoami, iops, lo_threshold_iops,
+        store_is_rotational ? "rotational" : "solid-state");
+      // Seed baseline from the current config so the periodic bench has a
+      // valid anchor and can normalize the capacity once conditions improve.
+      mclock_baseline_iops =
+        cct->_conf.get_val<double>(max_capacity_iops_config);
+      mclock_baseline_from_measurement = false;
+      return;
     }
+
+    // HDD upper-bound guard: result exceeds the threshold ceiling for
+    // a spinning disk.  Discard rather than apply - the measurement is suspect
+    // (device misidentification or atypical bench conditions).  The periodic
+    // bench will normalize the capacity once it obtains a consistent result.
+    if (store_is_rotational && iops > hi_threshold_iops) {
+      clog->warn() << fmt::format(
+        "OSD {} bench: measured {:.0f} IOPS exceeds the expected maximum"
+        " ({:.0f} IOPS) for a rotational device. The result is suspect"
+        " (possible device misidentification or atypical bench conditions)."
+        " mClock capacity left at {:.0f} IOPS. Verify the kernel"
+        " 'rotational' attribute or use osd_mclock_force_run_benchmark_on_init"
+        " to re-bench.",
+        whoami, iops, hi_threshold_iops,
+        cct->_conf.get_val<double>(max_capacity_iops_config));
+      // Seed baseline from current config so periodic bench has a valid anchor.
+      mclock_baseline_iops = cct->_conf.get_val<double>(max_capacity_iops_config);
+      mclock_baseline_from_measurement = false;
+      return;
+    }
+
+    mon_cmd_set_config(max_capacity_iops_config, std::to_string(iops));
+    dout(1) << fmt::format(
+                   "{}: mClock IOPS capacity set to {:.2f} (device: {})",
+                   __func__, iops, store_is_rotational ? "hdd" : "ssd")
+            << dendl;
+
+    // Baseline accepted from a real measurement ΓÇö periodic bench monitors only.
+    mclock_baseline_iops = iops;
+    mclock_baseline_from_measurement = true;
   }
 }
 
