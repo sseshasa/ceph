@@ -4826,6 +4826,12 @@ int OSD::shutdown()
     std::lock_guard l(s->osdmap_lock);
     s->shard_osdmap = OSDMapRef();
   }
+  // Wait for any in-progress periodic bench to finish before tearing down
+  // the store and service - the bench thread accesses both.
+  if (mclock_bench_thread.joinable()) {
+    mclock_bench_thread.join();
+  }
+
   service.shutdown();
 
   std::lock_guard lock(osd_lock);
@@ -6421,6 +6427,10 @@ void OSD::tick()
       dout(20) << __func__ << " last_purged_snaps_scrub " << last
 	       << " next " << next << dendl;
     }
+  }
+
+  if (is_active()) {
+    maybe_periodic_bench_for_health();
   }
 
   tick_timer.add_event_after(get_tick_interval(), new C_Tick(this));
@@ -8105,6 +8115,14 @@ vector<DaemonHealthMetric> OSD::get_health_metrics()
     auto [count, max_level] = DebugLevelGuard::count_elevated(
       cct->_conf->subsys, threshold);
     metrics.emplace_back(daemon_metric::HIGH_DEBUG_LEVEL, count, max_level);
+  }
+  {
+    // Emit mClock periodic bench health status. severity=0 means healthy
+    // (or bench not yet run); the collector ignores those and the health
+    // check self-clears when IOPS recovers.
+    uint32_t sev = mclock_bench_health_severity.load(std::memory_order_acquire);
+    uint32_t drop = mclock_bench_drop_pct.load(std::memory_order_relaxed);
+    metrics.emplace_back(daemon_metric::MCLOCK_IOPS_DEGRADED, sev, drop);
   }
   return metrics;
 }
@@ -10377,6 +10395,7 @@ void OSD::maybe_override_max_osd_capacity_for_qos()
         // already-benchmarked OSD.
         mclock_baseline_iops = cur_iops;
         mclock_baseline_from_measurement = true;
+        last_periodic_bench_time = ceph_clock_now();
         return;
       }
     }
@@ -10452,6 +10471,7 @@ void OSD::maybe_override_max_osd_capacity_for_qos()
       mclock_baseline_iops =
         cct->_conf.get_val<double>(max_capacity_iops_config);
       mclock_baseline_from_measurement = false;
+      last_periodic_bench_time = ceph_clock_now();
       return;
     }
 
@@ -10472,6 +10492,7 @@ void OSD::maybe_override_max_osd_capacity_for_qos()
       // Seed baseline from current config so periodic bench has a valid anchor.
       mclock_baseline_iops = cct->_conf.get_val<double>(max_capacity_iops_config);
       mclock_baseline_from_measurement = false;
+      last_periodic_bench_time = ceph_clock_now();
       return;
     }
 
@@ -10484,6 +10505,263 @@ void OSD::maybe_override_max_osd_capacity_for_qos()
     // Baseline accepted from a real measurement ΓÇö periodic bench monitors only.
     mclock_baseline_iops = iops;
     mclock_baseline_from_measurement = true;
+    last_periodic_bench_time = ceph_clock_now();
+  }
+}
+
+void OSD::run_sequential_bw_bench(const std::string& seq_bw_config)
+{
+  // Sequential writes at 1 MiB blocks.  HDD: 512 MiB total to overflow the
+  // write cache.  SSD: 2 GiB to overflow DRAM write cache on higher-end
+  // drives.  Large bsize ensures we bypass BlueStore deferred writes (WAL)
+  // and measure true sequential throughput to the block device.
+  const int64_t bsize = 1LL << 20;   // 1 MiB
+  const int64_t total = store_is_rotational ? (512LL << 20) : (2LL << 30);
+
+  OSDBenchTest bench{cct, store.get(), service.meta_ch,
+                     total, bsize, 0, 0, store_is_rotational};
+  bench.enable_preconditioning_lite();
+
+  int ret = bench.run_test();
+  if (ret != 0) {
+    derr << fmt::format("{}: sequential BW bench failed ({}): {}",
+                        __func__, ret, bench.get_errstr()) << dendl;
+    return;
+  }
+
+  double bw = bench.get_bandwidth_rate();
+
+  // Realistic sanity floor: HDD <30 MiB/s or SSD <150 MiB/s suggests
+  // a degraded device or bench ran under excessive load. Leave config unchanged.
+  const double lo_bw = store_is_rotational
+    ? (30.0 * (1 << 20)) : (150.0 * (1 << 20));
+  if (bw < lo_bw) {
+    clog->warn() << fmt::format(
+      "OSD {} sequential bench: {:.0f} MiB/s is below the expected minimum"
+      " for a {} device. Sequential bandwidth left unchanged.",
+      whoami, bw / (1 << 20),
+      store_is_rotational ? "rotational" : "solid-state");
+    return;
+  }
+
+  // Apply to local config immediately so MclockConfig picks it up this boot.
+  cct->_conf.set_val(seq_bw_config,
+    std::to_string(static_cast<uint64_t>(bw)));
+  cct->_conf.apply_changes(nullptr);
+
+  // Persist per-OSD to the monitor config DB so subsequent boots skip the
+  // bench (same mechanism as osd_mclock_max_capacity_iops_hdd/ssd).
+  mon_cmd_set_config(seq_bw_config, std::to_string(static_cast<uint64_t>(bw)));
+
+  dout(1) << fmt::format("{}: sequential BW {:.1f} MiB/s measured and"
+                         " persisted to monitor config",
+                         __func__, bw / (1 << 20)) << dendl;
+}
+
+bool OSD::is_osd_sufficiently_idle()
+{
+  // Signal 1: no active recovery or backfill reservation.
+  // This check is always reliable regardless of op-tracker state.
+  if (service.is_recovery_active()) {
+    return false;
+  }
+
+  // Signal 2: op-tracker in-flight count (covers client ops, scrub, and
+  // recovery pushes that are already in flight).  Only consulted when
+  // tracking is enabled; if disabled, fall through and rely on Signal 1.
+  if (op_tracker.is_tracking()) {
+    uint64_t in_flight = op_tracker.get_num_ops_in_flight();
+    uint64_t threshold =
+      cct->_conf.get_val<uint64_t>("osd_mclock_bench_max_inflight_ops");
+    if (in_flight > threshold) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+void OSD::maybe_periodic_bench_for_health()
+{
+  if (op_queue_type_t::mClockScheduler != osd_op_queue_type()) {
+    return;
+  }
+  // Don't run the periodic bench until we have a acceptable baseline
+  if (mclock_baseline_iops <= 0.0) {
+    return;
+  }
+
+  int64_t interval =
+    cct->_conf.get_val<int64_t>("osd_mclock_bench_interval");
+  if (interval <= 0) {
+    return;
+  }
+
+  utime_t now = ceph_clock_now();
+  if ((now - last_periodic_bench_time).to_nsec() <
+       static_cast<uint64_t>(interval) * 1'000'000'000ULL) {
+    return;
+  }
+
+  // Require N consecutive idle ticks to avoid starting during a lull
+  // between client bursts.
+  uint64_t required_ticks =
+    cct->_conf.get_val<uint64_t>("osd_mclock_bench_required_idle_ticks");
+
+  if (!is_osd_sufficiently_idle()) {
+    bench_consecutive_idle_ticks = 0;
+    return;
+  }
+  if (++bench_consecutive_idle_ticks < required_ticks) {
+    dout(15) << fmt::format(
+                    "{}: idle tick {}/{}, waiting",
+                    __func__,
+                    bench_consecutive_idle_ticks, required_ticks)
+             << dendl;
+    return;
+  }
+  bench_consecutive_idle_ticks = 0;
+
+  bool expected = false;
+  if (!bench_in_progress.compare_exchange_strong(expected, true)) {
+    return; // bench already running
+  }
+
+  dout(5) << fmt::format(
+                 "{}: OSD idle for {} ticks, dispatching periodic IOPS bench",
+                 __func__, required_ticks)
+          << dendl;
+  // Join the previous (already-finished) thread before overwriting it.
+  if (mclock_bench_thread.joinable()) {
+    mclock_bench_thread.join();
+  }
+  mclock_bench_thread = std::thread([this]{ do_periodic_bench(); });
+}
+
+void OSD::do_periodic_bench()
+{
+  // Use the same device-specific parameters as the boot bench so that
+  // measured IOPS is directly comparable to mclock_baseline_iops.
+  int64_t count, osize;
+  int64_t bsize = 4096;
+  int64_t onum;
+  if (store_is_rotational) {
+    count = 4096LL * 1000;
+    osize = 1 << 20;
+    onum  = 20;
+  } else {
+    count = 12288000LL;
+    osize = 4 << 20;
+    onum  = 100;
+  }
+
+  OSDBenchTest bench{cct, store.get(), service.meta_ch,
+                     count, bsize, osize, onum, store_is_rotational};
+  // Lite preconditioning only: overrides deferred-write threshold so
+  // the I/O path matches the boot bench, making results comparable.
+  // Omap pollution and compaction are omitted - too disruptive on a live OSD.
+  bench.enable_preconditioning_lite();
+
+  int ret = bench.run_test();
+  if (ret != 0) {
+    last_periodic_bench_time = ceph_clock_now();
+    bench_in_progress.store(false);
+    derr << fmt::format("{}: periodic bench failed: {}",
+                        __func__, bench.get_errstr())
+         << dendl;
+    return;
+  }
+
+  double measured_iops = bench.get_iops_rate();
+  double warn_threshold =
+    cct->_conf.get_val<double>("osd_mclock_iops_degradation_warn_threshold");
+  double error_threshold =
+    cct->_conf.get_val<double>("osd_mclock_iops_degradation_error_threshold");
+
+  // Normalization mode: boot bench was discarded (hi/lo threshold exceeded).
+  // Try to promote this result to the accepted baseline.  No health alerts
+  // are emitted until a real baseline is established.
+  if (!mclock_baseline_from_measurement) {
+    // For HDD, result must be < hi_threshold (sane for device type).
+    // For SSD, there is no upper bound - any reasonable positive result qualifies.
+    const double hi_threshold_iops = store_is_rotational
+        ? cct->_conf.get_val<double>("osd_mclock_iops_capacity_threshold_hdd")
+        : std::numeric_limits<double>::max();
+    // Result must also be consistent with the current config baseline
+    // (i.e. not an anomalous spike). If baseline is 0 (pathological), skip
+    // the consistency check and accept any result that passes hi_threshold.
+    const bool within_hi = measured_iops <= hi_threshold_iops;
+    const bool consistent = (mclock_baseline_iops == 0.0) ||
+      (measured_iops >= (1.0 - warn_threshold) * mclock_baseline_iops);
+
+    if (within_hi && consistent) {
+      const std::string iops_config = store_is_rotational
+         ? "osd_mclock_max_capacity_iops_hdd"
+         : "osd_mclock_max_capacity_iops_ssd";
+      mon_cmd_set_config(iops_config, std::to_string(measured_iops));
+      mclock_baseline_iops = measured_iops;
+      mclock_baseline_from_measurement = true;
+      mclock_bench_drop_pct.store(0, std::memory_order_relaxed);
+      mclock_bench_health_severity.store(0, std::memory_order_release);
+      dout(1) << fmt::format(
+                     "{}: normalized mClock IOPS capacity to {:.0f} IOPS ({})"
+                     "; switching to monitoring mode",
+                     __func__, measured_iops,
+                     store_is_rotational ? "hdd" : "ssd")
+              << dendl;
+    } else {
+      // Not yet trustworthy - defer normalization; clear health severity.
+      mclock_bench_drop_pct.store(0, std::memory_order_relaxed);
+      mclock_bench_health_severity.store(0, std::memory_order_release);
+      dout(5) << fmt::format(
+                     "{}: normalization deferred"
+                     " - iops={:.0f} hi_threshold={:.0f} baseline={:.0f}",
+                     __func__, measured_iops, hi_threshold_iops,
+                     mclock_baseline_iops)
+              << dendl;
+    }
+    return;
+  }
+
+  // Monitoring mode: baseline established from an accepted measurement.
+  // Compare against baseline and emit health alerts on degradation.
+  double drop_fraction = 1.0 - measured_iops / mclock_baseline_iops;
+  // Clamp to 0 for the health-metric path: a negative fraction means
+  // measured_iops exceeded the baseline (an improvement, not a drop), and
+  // OSD_MCLOCK_IOPS_DEGRADED's "X% below boot baseline" wording assumes a
+  // non-negative value.
+  uint32_t drop_pct =
+    static_cast<uint32_t>(std::max(0.0, drop_fraction) * 100.0);
+  // Signed, unclamped percentage change for logging only - unlike drop_pct,
+  // this preserves the magnitude of an improvement (e.g. +128%), which is
+  // itself a useful signal that the baseline may be stale/undershooting.
+  double pct_change = -drop_fraction * 100.0;
+
+  dout(5) << fmt::format(
+                 "{}: iops={:.2f} baseline={:.2f} pct_change={:+.1f}%"
+                 " warn_threshold={:.0f}% error_threshold={:.0f}%",
+                 __func__, measured_iops, mclock_baseline_iops, pct_change,
+                 warn_threshold * 100.0, error_threshold * 100.0)
+          << dendl;
+
+  uint32_t severity = 0;
+  if (drop_fraction >= error_threshold) {
+    severity = 2;
+  } else if (drop_fraction >= warn_threshold) {
+    severity = 1;
+  }
+  // Store atomically - read by get_health_metrics() on the main thread.
+  // Writing drop_pct before severity ensures the health metric reader never
+  // sees a stale drop value paired with a non-zero severity.
+  mclock_bench_drop_pct.store(drop_pct, std::memory_order_relaxed);
+  mclock_bench_health_severity.store(severity, std::memory_order_release);
+
+  if (severity == 0) {
+    dout(1) << fmt::format(
+                   "{}: IOPS within acceptable range"
+                   " ({:.0f} vs baseline {:.0f}, pct_change={:+.1f}%)",
+                   __func__, measured_iops, mclock_baseline_iops, pct_change)
+            << dendl;
   }
 }
 

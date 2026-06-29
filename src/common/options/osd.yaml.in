@@ -1564,6 +1564,108 @@ options:
   - osd_mclock_bench_interval
   flags:
   - startup
+- name: osd_mclock_bench_interval
+  type: int
+  level: advanced
+  desc: Seconds between periodic mClock IOPS health bench runs (0 = disabled)
+  long_desc: When set to a positive value (default - weekly) and
+    osd_op_queue = mclock_scheduler, the OSD periodically re-benchmarks its
+    storage device at 4 KiB random writes and compares the result against the
+    boot-time baseline. A cluster-log warning or error is emitted if the
+    measured IOPS drops by more than osd_mclock_iops_degradation_warn_threshold
+    or osd_mclock_iops_degradation_error_threshold respectively. If the boot
+    bench was discarded (result outside threshold bounds), the periodic bench
+    acts as a normalization path and promotes its result to the accepted
+    baseline once the measurement is consistent; after that it reverts to
+    monitoring only. Set to 0 to disable periodic benchmarking entirely.
+  fmt_desc: Interval in seconds between automatic mClock IOPS health bench
+    runs. Set to 0 to disable.
+  default: 604800
+  see_also:
+  - osd_mclock_iops_degradation_warn_threshold
+  - osd_mclock_iops_degradation_error_threshold
+  - osd_mclock_bench_max_inflight_ops
+  - osd_mclock_bench_required_idle_ticks
+  flags:
+  - runtime
+- name: osd_mclock_iops_degradation_warn_threshold
+  type: float
+  level: advanced
+  desc: Fractional IOPS drop from boot-time baseline that triggers a cluster-log
+    WARNING during periodic mClock bench (e.g. 0.20 = warn when IOPS falls
+    below 80% of baseline)
+  long_desc: The default of 0.20 (20%) sits above normal bench-to-bench
+    measurement noise on both HDD (~10-25%) and SSD (~5-15%), making it
+    sensitive enough to flag early-stage device degradation without generating
+    spurious warnings on healthy hardware. Must be less than
+    osd_mclock_iops_degradation_error_threshold. Requires
+    osd_mclock_bench_interval > 0 and osd_op_queue = mclock_scheduler.
+  fmt_desc: Fractional IOPS drop threshold for a periodic bench WARNING. The
+    default 0.20 is calibrated above typical measurement noise on both HDD and
+    SSD, catching early device wear before it impacts cluster performance.
+  default: 0.20
+  min: 0
+  max: 1.0
+  see_also:
+  - osd_mclock_bench_interval
+  - osd_mclock_iops_degradation_error_threshold
+  flags:
+  - runtime
+- name: osd_mclock_iops_degradation_error_threshold
+  type: float
+  level: advanced
+  desc: Fractional IOPS drop from boot-time baseline that triggers a cluster-log
+    ERROR during periodic mClock bench (e.g. 0.50 = error when IOPS falls
+    below 50% of baseline)
+  long_desc: A 50% drop in 4 KiB random-write IOPS represents severe device
+    impairment that is likely already affecting client latency; an ERROR
+    (rather than a warning) prompts immediate operator attention. Must be
+    greater than osd_mclock_iops_degradation_warn_threshold. Requires
+    osd_mclock_bench_interval > 0 and osd_op_queue = mclock_scheduler.
+  fmt_desc: Fractional IOPS drop threshold for a periodic bench ERROR. The
+    default 0.50 signals severe device impairment requiring immediate
+    attention, distinct from the advisory WARNING at the lower warn threshold.
+  default: 0.50
+  min: 0
+  max: 1.0
+  see_also:
+  - osd_mclock_bench_interval
+  - osd_mclock_iops_degradation_warn_threshold
+  flags:
+  - runtime
+- name: osd_mclock_bench_max_inflight_ops
+  type: uint
+  level: advanced
+  desc: Maximum number of in-flight ops (from OpTracker) allowed before
+    deferring the periodic mClock bench; 0 means any non-zero in-flight count
+    defers the bench
+  long_desc: The periodic mClock bench is deferred when OpTracker reports more
+    than this many in-flight ops. If OpTracker tracking is disabled, the check
+    is skipped and only osd_mclock_bench_required_idle_ticks and recovery state
+    are used to gate the bench. Only used when osd_mclock_bench_interval > 0.
+  fmt_desc: Max in-flight ops (OpTracker) before deferring the periodic bench.
+    0 = defer on any non-zero in-flight count.
+  default: 0
+  see_also:
+  - osd_mclock_bench_interval
+  flags:
+  - runtime
+- name: osd_mclock_bench_required_idle_ticks
+  type: uint
+  level: advanced
+  desc: Number of consecutive OSD ticks that must all appear idle before the
+    periodic mClock bench is allowed to fire
+  long_desc: Requires this many back-to-back idle ticks (additionally gated by
+    recovery inactivity and osd_mclock_bench_max_inflight_ops) before starting
+    the periodic bench. This avoids triggering a bench during a brief lull
+    between client bursts. Only used when osd_mclock_bench_interval > 0.
+  fmt_desc: Consecutive idle OSD ticks required before firing the periodic
+    mClock bench.
+  default: 5
+  see_also:
+  - osd_mclock_bench_interval
+  flags:
+  - runtime
 # Set to true for testing.  Users should NOT set this.
 # If set to true even after reading enough shards to
 # decode the object, any error will be reported.
