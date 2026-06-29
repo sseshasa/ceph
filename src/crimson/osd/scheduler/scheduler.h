@@ -73,6 +73,6 @@ std::ostream &operator<<(std::ostream &lhs, const Scheduler &);
 using SchedulerRef = std::unique_ptr<Scheduler>;
 
 SchedulerRef make_scheduler(CephContext *cct, ConfigProxy &, int whoami, uint32_t num_shards,
-                            int shard_id, bool is_rotational, bool perf_cnt);
+                            int shard_id, osd_device_type_t device_type, bool perf_cnt);
 
 }

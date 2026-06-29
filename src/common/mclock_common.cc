@@ -183,12 +183,19 @@ void MclockConfig::set_from_config()
   double osd_iop_capacity;
 
   std::tie(osd_bandwidth_capacity, osd_iop_capacity) = [&] {
-    if (is_rotational) {
+    switch (device_type) {
+    case osd_device_type_t::hdd:
       return std::make_tuple(
         cct->_conf.get_val<Option::size_t>(
           "osd_mclock_max_sequential_bandwidth_hdd"),
         cct->_conf.get_val<double>("osd_mclock_max_capacity_iops_hdd"));
-    } else {
+    case osd_device_type_t::nvme:
+      return std::make_tuple(
+        cct->_conf.get_val<Option::size_t>(
+          "osd_mclock_max_sequential_bandwidth_nvme"),
+        cct->_conf.get_val<double>("osd_mclock_max_capacity_iops_ssd"));
+    case osd_device_type_t::sata_ssd:
+    default:
       return std::make_tuple(
         cct->_conf.get_val<Option::size_t>(
           "osd_mclock_max_sequential_bandwidth_ssd"),
@@ -211,7 +218,7 @@ void MclockConfig::set_from_config()
           << osd_bandwidth_capacity_per_shard << " bytes/second"
           << dendl;
 
-  scheduler_max_starve_time = is_rotational
+  scheduler_max_starve_time = (device_type == osd_device_type_t::hdd)
     ? cct->_conf.get_val<double>("osd_mclock_max_starve_time_hdd")
     : scheduler_max_starve_time_ssd;
 

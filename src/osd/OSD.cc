@@ -3708,6 +3708,14 @@ int OSD::init()
   dout(2) << "journal looks like " << (journal_is_rotational ? "hdd" : "ssd")
           << dendl;
 
+  // NVMe detection: query only the primary data device so that WAL/DB
+  // devices on separate NVMe storage do not inflate the bandwidth seed.
+  if (!store_is_rotational) {
+    store_is_nvme = store->is_nvme();
+    dout(2) << "store device looks like "
+            << (store_is_nvme ? "nvme" : "ssd") << dendl;
+  }
+
   enable_disable_fuse(false);
 
   dout(2) << "boot" << dendl;
@@ -10357,6 +10365,15 @@ void OSD::maybe_override_max_osd_capacity_for_qos()
       max_capacity_iops_config = "osd_mclock_max_capacity_iops_ssd";
     }
 
+    // Select the sequential bandwidth config key for this device type.
+    // MclockConfig reads this key directly; a prior bench result is persisted
+    // via mon_cmd_set_config (same as IOPS), so the monitor delivers it into
+    // cct->_conf at boot before this function runs.
+    const std::string seq_bw_config = store_is_rotational
+        ? "osd_mclock_max_sequential_bandwidth_hdd"
+        : (store_is_nvme ? "osd_mclock_max_sequential_bandwidth_nvme"
+                         : "osd_mclock_max_sequential_bandwidth_ssd");
+
     double default_iops = 0.0;
     double cur_iops = 0.0;
     if (!force_run_benchmark) {
@@ -10502,11 +10519,72 @@ void OSD::maybe_override_max_osd_capacity_for_qos()
                    __func__, iops, store_is_rotational ? "hdd" : "ssd")
             << dendl;
 
+    // Run sequential bandwidth bench if no prior measurement has been persisted.
+    // A measured value is stored via mon_cmd_set_config (like IOPS), so it's
+    // available at boot from the monitor. If the config key is still at its
+    // compiled-in default, no measurement exists yet.
+    auto default_seq_bw = cct->_conf.get_val_default(seq_bw_config);
+    uint64_t cur_seq_bw = cct->_conf.get_val<Option::size_t>(seq_bw_config);
+    bool seq_bw_at_default = !default_seq_bw.has_value() ||
+      cur_seq_bw == static_cast<uint64_t>(std::stoull(default_seq_bw.value()));
+    if (force_run_benchmark || seq_bw_at_default) {
+      run_sequential_bw_bench(seq_bw_config);
+    }
+
     // Baseline accepted from a real measurement.
     mclock_baseline_iops = iops;
     mclock_baseline_from_measurement = true;
     last_periodic_bench_time = ceph_clock_now();
   }
+}
+
+void OSD::run_sequential_bw_bench(const std::string& seq_bw_config)
+{
+  // Sequential writes at 1 MiB blocks.  HDD: 512 MiB total to overflow the
+  // write cache.  SSD: 2 GiB to overflow DRAM write cache on higher-end
+  // drives.  Large bsize ensures we bypass BlueStore deferred writes (WAL)
+  // and measure true sequential throughput to the block device.
+  const int64_t bsize = 1LL << 20;   // 1 MiB
+  const int64_t total = store_is_rotational ? (512LL << 20) : (2LL << 30);
+
+  OSDBenchTest bench{cct, store.get(), service.meta_ch,
+                     total, bsize, 0, 0, store_is_rotational};
+  bench.enable_preconditioning_lite();
+
+  int ret = bench.run_test();
+  if (ret != 0) {
+    derr << fmt::format("{}: sequential BW bench failed ({}): {}",
+                        __func__, ret, bench.get_errstr()) << dendl;
+    return;
+  }
+
+  double bw = bench.get_bandwidth_rate();
+
+  // Realistic sanity floor: HDD <30 MiB/s or SSD <150 MiB/s suggests
+  // a degraded device or bench ran under excessive load. Leave config unchanged.
+  const double lo_bw = store_is_rotational
+    ? (30.0 * (1 << 20)) : (150.0 * (1 << 20));
+  if (bw < lo_bw) {
+    clog->warn() << fmt::format(
+      "OSD {} sequential bench: {:.0f} MiB/s is below the expected minimum"
+      " for a {} device. Sequential bandwidth left unchanged.",
+      whoami, bw / (1 << 20),
+      store_is_rotational ? "rotational" : "solid-state");
+    return;
+  }
+
+  // Apply to local config immediately so MclockConfig picks it up this boot.
+  cct->_conf.set_val(seq_bw_config,
+    std::to_string(static_cast<uint64_t>(bw)));
+  cct->_conf.apply_changes(nullptr);
+
+  // Persist per-OSD to the monitor config DB so subsequent boots skip the
+  // bench (same mechanism as osd_mclock_max_capacity_iops_hdd/ssd).
+  mon_cmd_set_config(seq_bw_config, std::to_string(static_cast<uint64_t>(bw)));
+
+  dout(1) << fmt::format("{}: sequential BW {:.1f} MiB/s measured and"
+                         " persisted to monitor config",
+                         __func__, bw / (1 << 20)) << dendl;
 }
 
 bool OSD::is_osd_sufficiently_idle()
@@ -11431,7 +11509,10 @@ OSDShard::OSDShard(
     shard_lock_name(shard_name + "::shard_lock"),
     shard_lock{make_mutex(shard_lock_name)},
     scheduler(ceph::osd::scheduler::make_scheduler(
-      cct, osd->whoami, osd->num_shards, id, osd->store->is_rotational(),
+      cct, osd->whoami, osd->num_shards, id,
+      osd->store->is_rotational() ? osd_device_type_t::hdd :
+        (osd->store->is_nvme() ? osd_device_type_t::nvme
+                               : osd_device_type_t::sata_ssd),
       osd->store->get_type(), osd_op_queue, osd_op_queue_cut_off)),
     context_queue(sdata_wait_lock, sdata_cond),
     ec_extent_cache_lru(cct->_conf.get_val<uint64_t>(

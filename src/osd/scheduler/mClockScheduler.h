@@ -113,7 +113,7 @@ public:
   template<typename Rep, typename Per>
   mClockScheduler(
     CephContext *cct, int whoami, uint32_t num_shards,
-    int shard_id, bool is_rotational, unsigned cutoff_priority,
+    int shard_id, osd_device_type_t device_type, unsigned cutoff_priority,
     std::chrono::duration<Rep,Per> idle_age,
     std::chrono::duration<Rep,Per> erase_age,
     std::chrono::duration<Rep,Per> check_time,
@@ -121,7 +121,7 @@ public:
     : cct(cct),
       cutoff_priority(cutoff_priority),
       mclock_conf(cct, client_registry, num_shards,
-	          is_rotational, shard_id, whoami),
+	          device_type, shard_id, whoami),
       scheduler(
 	std::bind(&ClientRegistry::get_info,
 		  &client_registry,
@@ -137,10 +137,10 @@ public:
   }
   mClockScheduler(
     CephContext *cct, int whoami, uint32_t num_shards,
-    int shard_id, bool is_rotational, unsigned cutoff_priority,
+    int shard_id, osd_device_type_t device_type, unsigned cutoff_priority,
     bool init_perfcounter=true) :
     mClockScheduler(
-      cct, whoami, num_shards, shard_id, is_rotational, cutoff_priority,
+      cct, whoami, num_shards, shard_id, device_type, cutoff_priority,
       crimson::dmclock::standard_idle_age,
       crimson::dmclock::standard_erase_age,
       crimson::dmclock::standard_check_time,

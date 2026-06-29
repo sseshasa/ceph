@@ -32,7 +32,6 @@ public:
   int whoami;
   uint32_t num_shards;
   int shard_id;
-  bool is_rotational;
   unsigned cutoff_priority;
   bool init_perfcounter;
   mClockScheduler q;
@@ -45,11 +44,10 @@ public:
     whoami(0),
     num_shards(1),
     shard_id(0),
-    is_rotational(false),
     cutoff_priority(12),
     init_perfcounter(true),
-    q(g_ceph_context, whoami, num_shards, shard_id, is_rotational,
-      cutoff_priority,
+    q(g_ceph_context, whoami, num_shards, shard_id,
+      osd_device_type_t::sata_ssd, cutoff_priority,
       2ms, 2ms, 1ms,
       init_perfcounter),
     client1(1001),
