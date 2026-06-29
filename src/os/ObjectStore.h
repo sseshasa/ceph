@@ -336,6 +336,20 @@ public:
   }
 
   /**
+   * is_nvme
+   *
+   * Check whether the primary data device is an NVMe (as opposed to a SATA
+   * SSD).  Only meaningful when is_rotational() returns false.  Considers
+   * only the main data device - WAL/DB devices on separate NVMe storage do
+   * not cause this to return true.
+   *
+   * @return true if the primary data device is NVMe
+   */
+  virtual bool is_nvme() {
+    return false;
+  }
+
+  /**
    * is_journal_rotational
    *
    * Check whether journal is backed by a rotational (HDD) or non-rotational

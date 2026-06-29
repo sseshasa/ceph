@@ -183,12 +183,19 @@ void MclockConfig::set_from_config()
   double osd_iop_capacity;
 
   std::tie(osd_bandwidth_capacity, osd_iop_capacity) = [&] {
-    if (is_rotational) {
+    switch (device_type) {
+    case osd_device_type_t::hdd:
       return std::make_tuple(
         cct->_conf.get_val<Option::size_t>(
           "osd_mclock_max_sequential_bandwidth_hdd"),
         cct->_conf.get_val<double>("osd_mclock_max_capacity_iops_hdd"));
-    } else {
+    case osd_device_type_t::nvme:
+      return std::make_tuple(
+        cct->_conf.get_val<Option::size_t>(
+          "osd_mclock_max_sequential_bandwidth_nvme"),
+        cct->_conf.get_val<double>("osd_mclock_max_capacity_iops_ssd"));
+    case osd_device_type_t::sata_ssd:
+    default:
       return std::make_tuple(
         cct->_conf.get_val<Option::size_t>(
           "osd_mclock_max_sequential_bandwidth_ssd"),

@@ -416,7 +416,8 @@ public:
     });
   }
   void register_metrics(const std::string &sched_type);
-  void initialize_scheduler(CephContext* cct, ConfigProxy &conf, bool is_rotational, int whoami);
+  void initialize_scheduler(CephContext* cct, ConfigProxy &conf,
+    osd_device_type_t device_type, int whoami);
 private:
   void dump_detail(Formatter *f) const final;
 

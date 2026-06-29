@@ -1344,6 +1344,7 @@ protected:
   cpu_set_t numa_cpu_set;
 
   bool store_is_rotational = true;
+  bool store_is_nvme = false;
   bool journal_is_rotational = true;
 
   // mClock periodic IOPS health monitoring
@@ -2307,6 +2308,7 @@ private:
   void maybe_override_sleep_options_for_qos();
   bool maybe_override_options_for_qos(
     const std::set<std::string> *changed = nullptr);
+  void run_sequential_bw_bench(const std::string& seq_bw_config);
   int run_osd_bench_test(int64_t count,
                          int64_t bsize,
                          int64_t osize,
