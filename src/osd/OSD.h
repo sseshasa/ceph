@@ -1355,6 +1355,15 @@ protected:
    * path in addition to monitoring.
    */
   bool mclock_baseline_from_measurement = false;
+  utime_t last_periodic_bench_time;
+  std::atomic<bool> bench_in_progress{false};
+  std::thread mclock_bench_thread;
+  uint32_t bench_consecutive_idle_ticks = 0;
+  // Written by do_periodic_bench() (bench thread); read by
+  // get_health_metrics() (main thread) -  must be atomic.
+  // severity: 0=healthy, 1=warn, 2=error
+  std::atomic<uint32_t> mclock_bench_health_severity{0};
+  std::atomic<uint32_t> mclock_bench_drop_pct{0};
 
   ZTracer::Endpoint trace_endpoint;
   PerfCounters* create_logger();
@@ -2305,6 +2314,26 @@ private:
                          double *elapsed,
                          std::ostream& ss);
   void mon_cmd_set_config(const std::string &key, const std::string &val);
+
+  /**
+   * Returns true when the OSD is idle enough for a background bench run:
+   * no in-flight ops (via OpTracker when enabled) and no active recovery.
+   */
+  bool is_osd_sufficiently_idle();
+
+  /**
+   * Called from tick(): fires do_periodic_bench() in a detached thread
+   * after osd_mclock_bench_required_idle_ticks consecutive idle ticks
+   * and osd_mclock_bench_interval seconds since the last bench run.
+   */
+  void maybe_periodic_bench_for_health();
+
+  /**
+   * Runs in a detached thread. Executes a lite-preconditioned bench,
+   * compares result to mclock_baseline_iops, and emits a clog warn or error
+   * depending on osd_mclock_iops_degradation_{warn,error}_threshold.
+   */
+  void do_periodic_bench();
 
   void scrub_purged_snaps();
   void probe_smart(const std::string& devid, std::ostream& ss);
