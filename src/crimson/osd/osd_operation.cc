@@ -225,10 +225,11 @@ OperationThrottler::OperationThrottler(ConfigProxy &conf)
 
 }
 
-void OperationThrottler::initialize_scheduler(CephContext *cct, ConfigProxy &conf, bool is_rotational, int whoami)
+void OperationThrottler::initialize_scheduler(CephContext *cct, ConfigProxy &conf,
+  osd_device_type_t device_type, int whoami)
 {
-  scheduler = crimson::osd::scheduler::make_scheduler(cct, conf, whoami, seastar::this_smp_shard_count(),
-            seastar::this_shard_id(), is_rotational, true);
+  scheduler = crimson::osd::scheduler::make_scheduler(cct, conf, whoami, seastar::smp::count,
+            seastar::this_shard_id(), device_type, true);
   update_from_config(conf);
 }
 

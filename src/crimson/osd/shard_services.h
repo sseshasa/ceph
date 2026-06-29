@@ -221,8 +221,8 @@ public:
     crimson::os::FuturizedStore &store,
     OSDState& osd_state);
 
-  void initialize_scheduler(CephContext* cct, bool is_rotational) {
-    throttler.initialize_scheduler(cct, crimson::common::local_conf(), is_rotational, whoami);
+  void initialize_scheduler(CephContext* cct, osd_device_type_t device_type) {
+    throttler.initialize_scheduler(cct, crimson::common::local_conf(), device_type, whoami);
     throttler.start();
  }
 

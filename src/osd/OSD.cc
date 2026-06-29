@@ -3708,6 +3708,14 @@ int OSD::init()
   dout(2) << "journal looks like " << (journal_is_rotational ? "hdd" : "ssd")
           << dendl;
 
+  // NVMe detection: query only the primary data device so that WAL/DB
+  // devices on separate NVMe storage do not inflate the bandwidth seed.
+  if (!store_is_rotational) {
+    store_is_nvme = store->is_nvme();
+    dout(2) << "store device looks like "
+            << (store_is_nvme ? "nvme" : "ssd") << dendl;
+  }
+
   enable_disable_fuse(false);
 
   dout(2) << "boot" << dendl;
@@ -10357,6 +10365,15 @@ void OSD::maybe_override_max_osd_capacity_for_qos()
       max_capacity_iops_config = "osd_mclock_max_capacity_iops_ssd";
     }
 
+    // Select the sequential bandwidth config key for this device type.
+    // MclockConfig reads this key directly; a prior bench result is persisted
+    // via mon_cmd_set_config (same as IOPS), so the monitor delivers it into
+    // cct->_conf at boot before this function runs.
+    const std::string seq_bw_config = store_is_rotational
+        ? "osd_mclock_max_sequential_bandwidth_hdd"
+        : (store_is_nvme ? "osd_mclock_max_sequential_bandwidth_nvme"
+                         : "osd_mclock_max_sequential_bandwidth_ssd");
+
     double default_iops = 0.0;
     double cur_iops = 0.0;
     if (!force_run_benchmark) {
@@ -10502,7 +10519,19 @@ void OSD::maybe_override_max_osd_capacity_for_qos()
                    __func__, iops, store_is_rotational ? "hdd" : "ssd")
             << dendl;
 
-    // Baseline accepted from a real measurement ΓÇö periodic bench monitors only.
+    // Run sequential bandwidth bench if no prior measurement has been persisted.
+    // A measured value is stored via mon_cmd_set_config (like IOPS), so it's
+    // available at boot from the monitor. If the config key is still at its
+    // compiled-in default, no measurement exists yet.
+    auto default_seq_bw = cct->_conf.get_val_default(seq_bw_config);
+    uint64_t cur_seq_bw = cct->_conf.get_val<Option::size_t>(seq_bw_config);
+    bool seq_bw_at_default = !default_seq_bw.has_value() ||
+      cur_seq_bw == static_cast<uint64_t>(std::stoull(default_seq_bw.value()));
+    if (force_run_benchmark || seq_bw_at_default) {
+      run_sequential_bw_bench(seq_bw_config);
+    }
+
+    // Baseline accepted from a real measurement - periodic bench monitors only.
     mclock_baseline_iops = iops;
     mclock_baseline_from_measurement = true;
     last_periodic_bench_time = ceph_clock_now();
@@ -11480,7 +11509,10 @@ OSDShard::OSDShard(
     shard_lock_name(shard_name + "::shard_lock"),
     shard_lock{make_mutex(shard_lock_name)},
     scheduler(ceph::osd::scheduler::make_scheduler(
-      cct, osd->whoami, osd->num_shards, id, osd->store->is_rotational(),
+      cct, osd->whoami, osd->num_shards, id,
+      osd->store->is_rotational() ? osd_device_type_t::hdd :
+        (osd->store->is_nvme() ? osd_device_type_t::nvme
+                               : osd_device_type_t::sata_ssd),
       osd->store->get_type(), osd_op_queue, osd_op_queue_cut_off)),
     context_queue(sdata_wait_lock, sdata_cond),
     ec_extent_cache_lru(cct->_conf.get_val<uint64_t>(

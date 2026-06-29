@@ -51,6 +51,12 @@ enum class scheduler_op_type_t : uint8_t {
   unknown,
 };
 
+enum class osd_device_type_t : uint8_t {
+  hdd,
+  sata_ssd,
+  nvme,
+};
+
 #ifdef WITH_CRIMSON
 using SchedulerClass = scheduler_class_t;
 using MonClient = crimson::mon::Client;
@@ -224,7 +230,7 @@ class MclockConfig final : public md_config_obs_t {
 private:
   CephContext *cct;
   uint32_t num_shards;
-  bool is_rotational;
+  osd_device_type_t device_type;
   PerfCounters *logger = nullptr;
   int shard_id;
   int whoami;
@@ -260,10 +266,10 @@ private:
   static constexpr double scheduler_max_starve_time_ssd = 0.05; // 50 msec
 public:
   MclockConfig(CephContext *cct, ClientRegistry& creg,
-               uint32_t num_shards, bool is_rotational, int shard_id,
-	       int whoami):cct(cct),
+               uint32_t num_shards, osd_device_type_t device_type,
+               int shard_id, int whoami):cct(cct),
                            num_shards(num_shards),
-                           is_rotational(is_rotational),
+                           device_type(device_type),
 			   shard_id(shard_id),
                            whoami(whoami),
 	                   client_registry(creg)
@@ -303,7 +309,8 @@ public:
       "osd_mclock_max_sequential_bandwidth_hdd"s,
       "osd_mclock_max_sequential_bandwidth_ssd"s,
       "osd_mclock_profile"s,
-      "osd_mclock_max_starve_time_hdd"s
+      "osd_mclock_max_starve_time_hdd"s,
+      "osd_mclock_max_sequential_bandwidth_nvme"s
     };
   }
   uint32_t calc_scaled_cost(int item_cost);
