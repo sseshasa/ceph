@@ -1663,6 +1663,7 @@ public:
   int get_devices(std::set<std::string> *ls) override;
 
   bool is_rotational() override;
+  bool is_nvme() override;
   bool is_journal_rotational() override;
   bool is_db_rotational();
   bool is_statfs_recoverable() const;
