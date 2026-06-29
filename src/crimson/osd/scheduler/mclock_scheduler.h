@@ -126,14 +126,14 @@ class mClockScheduler : public Scheduler, md_config_obs_t {
 public:
   template<typename Rep, typename Per>
   mClockScheduler(CephContext *cct, int whoami, uint32_t num_shards,
-    int shard_id, bool is_rotational,
+    int shard_id, osd_device_type_t device_type,
     std::chrono::duration<Rep,Per> idle_age,
     std::chrono::duration<Rep,Per> erase_age,
     std::chrono::duration<Rep,Per> check_time,
     bool init_perfcounter=true, MonClient *monc=nullptr)
   : cct(cct),
     logger(nullptr),
-    mclock_conf(cct, client_registry, num_shards, is_rotational, shard_id, whoami),
+    mclock_conf(cct, client_registry, num_shards, device_type, shard_id, whoami),
     scheduler(
       std::bind(&ClientRegistry::get_info,
                 &client_registry,
@@ -159,10 +159,10 @@ public:
     cutoff_priority = get_op_queue_cut_off();
 }
   mClockScheduler(CephContext *cct, int whoami, uint32_t num_shards,
-    int shard_id, bool is_rotational,
+    int shard_id, osd_device_type_t device_type = osd_device_type_t::sata_ssd,
     bool init_perfcounter=true, MonClient *monc=nullptr) :
     mClockScheduler(
-      cct, whoami, num_shards, shard_id, is_rotational,
+      cct, whoami, num_shards, shard_id, device_type,
       crimson::dmclock::standard_idle_age,
       crimson::dmclock::standard_erase_age,
       crimson::dmclock::standard_check_time,

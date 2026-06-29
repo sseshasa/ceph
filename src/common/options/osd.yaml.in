@@ -1329,6 +1329,23 @@ options:
   default: 500_M
   flags:
   - runtime
+- name: osd_mclock_max_sequential_bandwidth_nvme
+  type: size
+  level: basic
+  desc: Default maximum sequential bandwidth in bytes/second for NVMe devices
+    before boot bench calibration
+  long_desc: Used as the initial sequential bandwidth value when an NVMe device
+    is detected and no prior measurement exists in the Monitor store.
+    osd_mclock_max_sequential_bandwidth_ssd defaults (500 MiB/s) assume SATA
+    SSD speeds, which significantly underestimate NVMe throughput. After the
+    boot bench runs, the measured value is stored in the Monitor store and
+    used on subsequent boots, superseding this default. Only considered for
+    osd_op_queue = mclock_scheduler.
+  fmt_desc: Default maximum sequential bandwidth for NVMe devices (bytes/second)
+    applied before the OSD boot bench provides a measured value
+  default: 2500_M
+  flags:
+  - runtime
 - name: osd_mclock_max_capacity_iops_hdd
   type: float
   level: basic

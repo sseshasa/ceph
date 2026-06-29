@@ -3920,6 +3920,49 @@ bool BlueStore::is_rotational()
   return _use_rotational_settings();
 }
 
+bool BlueStore::is_nvme()
+{
+  // Separate NVMe storage must not influence this result. Only
+  // the main block device type is checked if it's 'nvme'. The
+  // intent is to ignore separate nvme storage used for WAL+db.
+  auto query = [&]() {
+    std::set<std::string> devnames;
+    bdev->get_devices(&devnames);
+    return std::any_of(devnames.begin(), devnames.end(),
+      [](const std::string& d) { return d.rfind("nvme", 0) == 0; });
+  };
+
+  if (bdev) {
+    return query();
+  }
+
+  // Store not yet mounted - temporarily open bdev, mirroring is_rotational().
+  bool nvme = false;
+  int r = _open_path();
+  if (r < 0)
+    goto out;
+  r = _open_fsid(false);
+  if (r < 0)
+    goto out_path;
+  r = _read_fsid(&fsid);
+  if (r < 0)
+    goto out_fsid;
+  r = _lock_fsid();
+  if (r < 0)
+    goto out_fsid;
+  r = _open_bdev(false);
+  if (r < 0)
+    goto out_fsid;
+  nvme = query();
+  _close_bdev();
+ out_fsid:
+  _close_fsid();
+ out_path:
+  _close_path();
+ out:
+  return nvme;
+}
+
 bool BlueStore::is_journal_rotational()
 {
   if (!bluefs) {
