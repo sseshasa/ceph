@@ -16,6 +16,7 @@ enum class daemon_metric : uint8_t {
   PENDING_CREATING_PGS = 1,
   NONE = 2,
   HIGH_DEBUG_LEVEL = 3,
+  MCLOCK_IOPS_DEGRADED = 4,
 };
 
 static inline const char *daemon_metric_name(daemon_metric t) {
@@ -24,6 +25,7 @@ static inline const char *daemon_metric_name(daemon_metric t) {
   case daemon_metric::PENDING_CREATING_PGS: return "PENDING_CREATING_PGS";
   case daemon_metric::NONE: return "NONE";
   case daemon_metric::HIGH_DEBUG_LEVEL: return "HIGH_DEBUG_LEVEL";
+  case daemon_metric::MCLOCK_IOPS_DEGRADED: return "MCLOCK_IOPS_DEGRADED";
   default: return "???";
   }
 }
