@@ -11821,7 +11821,17 @@ void OSDBenchTest::prefill_objects()
 void OSDBenchTest::perform_write_test()
 {
   std::mt19937 random_gen(std::random_device{}());
+
+  // Pre-fill a single write buffer and reuse it for all writes.
+  // Regenerating random data per-write via generate_n (one mt19937 call per
+  // byte, ~100 MB/s) would be the bottleneck on any fast SSD or NVMe device.
+  bufferptr bp(bsize);
+  std::generate_n(bp.c_str(), bp.length(), [&random_gen]() {
+      return static_cast<char>(random_gen() & 0xff);
+  });
   bufferlist bl;
+  bl.push_back(bp);
+  bl.rebuild_page_aligned();
 
   int64_t bytes_written = 0;
   // Setup a transaction to help batch multiple clean-up operations
@@ -11833,12 +11843,6 @@ void OSDBenchTest::perform_write_test()
   while (bytes_written < count) {
     std::string nm;
     unsigned offset = 0;
-    bufferptr bp(bsize);
-    std::generate_n(bp.c_str(), bp.length(), [&random_gen]() {
-        return static_cast<char>(random_gen() & 0xff);
-    });
-    bl.push_back(std::move(bp));
-    bl.rebuild_page_aligned();
     if (onum && osize) {
       nm = fmt::format("disk_bw_test_{}", (int)(random_gen() % onum));
       offset = random_gen() % (osize / bsize) * bsize;
@@ -11864,7 +11868,6 @@ void OSDBenchTest::perform_write_test()
         last_batch_boundary = static_cast<uint64_t>(bytes_written);
       }
     }
-    bl.clear();
   }
 
   wait_for_flush_commit();
