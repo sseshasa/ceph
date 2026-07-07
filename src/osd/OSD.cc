@@ -10421,6 +10421,9 @@ void OSD::maybe_override_max_osd_capacity_for_qos()
     // HDD uses a reduced I/O count and smaller object pool so the total
     // bench time (including preconditioning) stays within ~20 seconds.
     // SSD/NVMe uses the full parameters for a more stable measurement.
+    // SSD/NVMe targets ~1s of sustained writes (~300 MiB) for a stable
+    // measurement - long enough to average out transient RocksDB/device
+    // stalls that a sub-100ms sample would be dominated by.
     int64_t count, osize;
     int64_t bsize = 4096;
     int64_t onum;
@@ -10432,7 +10435,8 @@ void OSD::maybe_override_max_osd_capacity_for_qos()
       bench_num_pgs = 10;
       bench_entries_per_pg = 50;
     } else {
-      count = 12288000LL;    // 3000 x 4KiB ops (at precheck limit)
+      //count = 12288000LL;    // 3000 x 4KiB ops (at precheck limit)
+      count = 314572800LL;   // 76800 x 4KiB ops
       osize = 4 << 20;       // 4 MiB objects
       onum = 100;
       bench_num_pgs = 30;
@@ -10441,6 +10445,9 @@ void OSD::maybe_override_max_osd_capacity_for_qos()
 
     OSDBenchTest osd_bench{cct, store.get(), service.meta_ch,
                            count, bsize, osize, onum, store_is_rotational};
+    // Internally-generated count, not user-supplied - the admin-command
+    // safety ceiling in precheck() doesn't apply here.
+    osd_bench.skip_size_precheck();
     osd_bench.num_bench_pgs = bench_num_pgs;
     osd_bench.entries_per_pg = bench_entries_per_pg;
     osd_bench.enable_preconditioning();
@@ -10679,13 +10686,40 @@ void OSD::do_periodic_bench()
     osize = 1 << 20;
     onum  = 20;
   } else {
-    count = 12288000LL;
+    //count = 12288000LL;
+    count = 314572800LL;
     osize = 4 << 20;
     onum  = 100;
   }
 
+  // Durability sanity check: osd_mclock_iops_bench_bytes_ssd is sized
+  // assuming the default weekly-or-longer osd_mclock_bench_interval. An
+  // aggressively short interval combined with that larger byte count can
+  // add up to non-trivial write volume over the device's life. Warn once
+  // (not every run) rather than block, since the interval is the operator's
+  // call to make.
+  /*if (!store_is_rotational && !mclock_bench_short_interval_warned) {
+    int64_t interval =
+      cct->_conf.get_val<int64_t>("osd_mclock_bench_interval");
+    double bytes_per_day = interval > 0
+        ? static_cast<double>(count) * 86400.0 / interval : 0.0;
+    constexpr double warn_bytes_per_day = 10.0 * (1LL << 30); // 10 GiB/day
+    if (bytes_per_day > warn_bytes_per_day) {
+      clog->warn() << fmt::format(
+        "OSD {} periodic mClock bench: osd_mclock_bench_interval ({}s) with"
+        " osd_mclock_iops_bench_bytes_ssd ({}) writes an estimated {:.1f}"
+        " GiB/day to this device. Consider a longer interval or a smaller"
+        " byte count if device write endurance is a concern.",
+        whoami, interval, byte_u_t(count), bytes_per_day / (1LL << 30));
+      mclock_bench_short_interval_warned = true;
+    }
+  }*/
+
   OSDBenchTest bench{cct, store.get(), service.meta_ch,
                      count, bsize, osize, onum, store_is_rotational};
+  // Internally-generated count, not user-supplied - the admin-command
+  // safety ceiling in precheck() doesn't apply here.
+  bench.skip_size_precheck();
   // Lite preconditioning only: overrides deferred-write threshold so
   // the I/O path matches the boot bench, making results comparable.
   // Omap pollution and compaction are omitted - too disruptive on a live OSD.
@@ -12157,7 +12191,7 @@ int OSDBenchTest::precheck()
            << " 'osd_bench_max_block_size'";
     ret = -EINVAL;
     return ret;
-  } else if (bsize < (int64_t) (1 << 20)) {
+  } else if (!bypass_size_precheck && bsize < (int64_t) (1 << 20)) {
     // entering the realm of small block sizes.
     // limit the count to a sane value, assuming a configurable amount of
     // IOPS and duration, so that the OSD doesn't get hung up on this,
@@ -12175,7 +12209,7 @@ int OSDBenchTest::precheck()
       ret = -EINVAL;
       return ret;
     }
-  } else {
+  } else if (!bypass_size_precheck) {
     // 1MB block sizes are big enough so that we get more stuff done.
     // However, to avoid the osd from getting hung on this and having
     // timers being triggered, we are going to limit the count assuming
