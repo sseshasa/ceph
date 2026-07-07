@@ -1097,6 +1097,14 @@ struct OSDBenchTest {
   bool full_precondition = false;    // include omap pollution (boot bench only)
   uint64_t saved_deferred_size = 0;  // restored after bench
 
+  // When set, precheck() skips its size/duration safety ceiling (derived
+  // from osd_bench_duration and osd_bench_small_size_max_iops /
+  // osd_bench_large_size_max_throughput). That ceiling protects against
+  // unbounded user-supplied 'ceph osd bench' invocations; it does not apply
+  // to the internally-generated boot/periodic mClock bench, whose count and
+  // bsize are chosen and trusted by the caller.
+  bool bypass_size_precheck = false;
+
   // Synthetic PG log parameters used during full preconditioning
   int num_bench_pgs = 30;
   int entries_per_pg = 100;
@@ -1172,6 +1180,17 @@ struct OSDBenchTest {
   void enable_preconditioning_lite() {
     precondition_enabled = true;
     full_precondition = false;
+  }
+
+  /**
+   * skip_size_precheck()
+   *
+   * Bypasses precheck()'s admin-command-oriented size/duration safety
+   * ceiling. Call before run_test() for internally-generated (not
+   * user-supplied) bench invocations, e.g. the boot/periodic mClock bench.
+   */
+  void skip_size_precheck() {
+    bypass_size_precheck = true;
   }
 
   /**
@@ -1365,6 +1384,9 @@ protected:
   // severity: 0=healthy, 1=warn, 2=error
   std::atomic<uint32_t> mclock_bench_health_severity{0};
   std::atomic<uint32_t> mclock_bench_drop_pct{0};
+  // One-shot: avoids repeating the short-interval durability warning on
+  // every periodic bench run if the operator has set an aggressive interval.
+  //bool mclock_bench_short_interval_warned = false;
 
   ZTracer::Endpoint trace_endpoint;
   PerfCounters* create_logger();
