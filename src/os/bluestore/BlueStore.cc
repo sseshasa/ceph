@@ -8660,6 +8660,20 @@ int BlueStore::compact()
   return r;
 }
 
+bool BlueStore::is_kv_compaction_active()
+{
+  ceph_assert(db);
+  uint64_t compaction_pending = 0, num_running_compactions = 0,
+           flush_pending = 0, num_running_flushes = 0;
+  db->get_property("rocksdb.compaction-pending", &compaction_pending);
+  db->get_property("rocksdb.num-running-compactions",
+                    &num_running_compactions);
+  db->get_property("rocksdb.mem-table-flush-pending", &flush_pending);
+  db->get_property("rocksdb.num-running-flushes", &num_running_flushes);
+  return compaction_pending || num_running_compactions ||
+         flush_pending || num_running_flushes;
+}
+
 void BlueStore::collect_metadata(map<string,string> *pm)
 {
   dout(10) << __func__ << dendl;
