@@ -12357,6 +12357,11 @@ int OSDBenchTest::run_test()
   // Prefill
   prefill_objects();
 
+  // Preconditioning and prefill_objects() can themselves trigger a KV
+  // compaction/flush large enough to still be running here; wait
+  // (bounded) for it to drain before starting the timed write phase.
+  wait_for_kv_compaction_idle();
+
   // write test
   perform_write_test();
 
@@ -12403,6 +12408,34 @@ void OSDBenchTest::wait_for_flush_commit()
   C_SaferCond waiter;
   if (!ch->flush_commit(&waiter)) {
     waiter.wait();
+  }
+}
+
+void OSDBenchTest::wait_for_kv_compaction_idle()
+{
+  if (!precondition_enabled) {
+    return;
+  }
+  for (uint32_t poll = 0; poll < kPostPrefillCompactionMaxPolls; ++poll) {
+    if (!store->is_kv_compaction_active()) {
+      return;
+    }
+    dout(10) << fmt::format(
+                   "{}: KV store compaction/flush active after"
+                   " preconditioning/prefill, waiting ({}/{})",
+                   __func__, poll + 1, kPostPrefillCompactionMaxPolls)
+             << dendl;
+    std::this_thread::sleep_for(
+      std::chrono::milliseconds(kPostPrefillCompactionPollIntervalMs));
+  }
+  if (store->is_kv_compaction_active()) {
+    dout(5) << fmt::format(
+                   "{}: KV store still compacting/flushing after {}ms,"
+                   " starting timed write phase anyway",
+                   __func__,
+                   kPostPrefillCompactionMaxPolls *
+                     kPostPrefillCompactionPollIntervalMs)
+            << dendl;
   }
 }
 

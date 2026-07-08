@@ -1086,6 +1086,17 @@ struct OSDBenchTest {
   // observed compaction frequency) instead of a fixed cap.
   static constexpr uint32_t kMaxKvActiveDefers = 3;
 
+  // Preconditioning and prefill_objects() can themselves write enough data
+  // (e.g. the SSD path's 100 x 4MiB prefill) to trigger a RocksDB memtable
+  // flush or compaction that is still draining when the timed write phase
+  // starts, folding a self-induced stall into the measured IOPS. These
+  // bound how long run_test() polls is_kv_compaction_active() and waits
+  // for it to drain, immediately before starting that timed phase. Kept as
+  // internal constants rather than config options, for the same reason as
+  // kMaxKvActiveDefers above.
+  static constexpr uint32_t kPostPrefillCompactionMaxPolls = 10;
+  static constexpr uint32_t kPostPrefillCompactionPollIntervalMs = 200;
+
   CephContext *cct;
   ObjectStore *store;
   ObjectStore::CollectionHandle ch;
@@ -1208,6 +1219,20 @@ struct OSDBenchTest {
    * 'osize' and 'onum' are specified.
    */
   void prefill_objects();
+
+  /**
+   * wait_for_kv_compaction_idle()
+   *
+   * Polls the backend's KV store for active compaction/flush and waits
+   * (bounded by kPostPrefillCompactionMaxPolls) for it to drain. Called
+   * after preconditioning and prefill_objects() complete, immediately
+   * before the timed write phase starts, so a compaction/flush triggered
+   * by that same write burst doesn't fold an unrelated internal stall
+   * into the measured IOPS. Only meaningful when precondition_enabled is
+   * set, since only the internal boot/periodic bench calls precondition
+   * (the admin 'ceph osd bench' path does not).
+   */
+  void wait_for_kv_compaction_idle();
 
   /**
    * perform_write_test()
