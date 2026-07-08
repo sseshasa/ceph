@@ -1425,6 +1425,16 @@ protected:
   // One-shot: avoids repeating the short-interval durability warning on
   // every periodic bench run if the operator has set an aggressive interval.
   //bool mclock_bench_short_interval_warned = false;
+  // Bound on how many times do_periodic_bench() will immediately re-run a
+  // short bench after a first sample looks degraded vs mclock_baseline_iops,
+  // before accepting the latest measurement regardless. Catches transient
+  // noise (self-induced KV compaction not fully drained, NVMe-internal
+  // GC/thermal stalls) that OSDBenchTest::kMaxKvActiveDefers structurally
+  // cannot see, by requiring two consecutive runs to agree (within
+  // osd_mclock_iops_degradation_warn_threshold of each other) before a
+  // degraded reading is trusted. Kept as an internal constant rather than a
+  // config option, for the same reason as kMaxKvActiveDefers.
+  static constexpr uint32_t kMaxAnomalyRetries = 2;
 
   ZTracer::Endpoint trace_endpoint;
   PerfCounters* create_logger();
