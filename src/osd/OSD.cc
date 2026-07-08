@@ -10662,6 +10662,31 @@ void OSD::maybe_periodic_bench_for_health()
   }
   bench_consecutive_idle_ticks = 0;
 
+  // Secondary gate: avoid starting the bench while the backend's KV store
+  // is actively compacting/flushing, since that would fold an unrelated
+  // internal stall into the measured IOPS. Bounded (OSDBenchTest::
+  // kMaxKvActiveDefers) so sustained compaction load can't starve the bench
+  // indefinitely; the idle-tick streak above is left untouched since
+  // compaction activity is orthogonal to client load.
+  if (store->is_kv_compaction_active()) {
+    if (++bench_consecutive_kv_active_defers <
+        OSDBenchTest::kMaxKvActiveDefers) {
+      dout(15) << fmt::format(
+                      "{}: deferring bench, KV store compaction/flush active"
+                      " ({}/{})",
+                      __func__, bench_consecutive_kv_active_defers,
+                      OSDBenchTest::kMaxKvActiveDefers)
+               << dendl;
+      return;
+    }
+    dout(5) << fmt::format(
+                   "{}: KV store still active after {} deferred ticks,"
+                   " running bench anyway",
+                   __func__, bench_consecutive_kv_active_defers)
+            << dendl;
+  }
+  bench_consecutive_kv_active_defers = 0;
+
   bool expected = false;
   if (!bench_in_progress.compare_exchange_strong(expected, true)) {
     return; // bench already running
