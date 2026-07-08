@@ -1078,6 +1078,14 @@ struct OSDShard {
 };
 
 struct OSDBenchTest {
+  // Consecutive ticks the periodic mClock bench will defer while the
+  // backend's KV store is actively compacting/flushing (see
+  // OSD::maybe_periodic_bench_for_health()) before running anyway, so
+  // sustained compaction load can't starve the bench indefinitely.
+  // A future change may make this adaptive (e.g. back off based on
+  // observed compaction frequency) instead of a fixed cap.
+  static constexpr uint32_t kMaxKvActiveDefers = 3;
+
   CephContext *cct;
   ObjectStore *store;
   ObjectStore::CollectionHandle ch;
@@ -1379,6 +1387,11 @@ protected:
   std::atomic<bool> bench_in_progress{false};
   std::thread mclock_bench_thread;
   uint32_t bench_consecutive_idle_ticks = 0;
+  // Consecutive ticks the periodic bench has been deferred because the
+  // backend's KV store was actively compacting/flushing. Bounded by
+  // OSDBenchTest::kMaxKvActiveDefers so sustained compaction load can't
+  // starve the bench indefinitely.
+  uint32_t bench_consecutive_kv_active_defers = 0;
   // Written by do_periodic_bench() (bench thread); read by
   // get_health_metrics() (main thread) -  must be atomic.
   // severity: 0=healthy, 1=warn, 2=error

@@ -825,6 +825,15 @@ public:
   virtual bool has_builtin_csum() const {
     return false;
   }
+
+  /**
+   * Report whether the backend's internal metadata store is currently
+   * compacting or flushing. Used to defer bench-style measurements that
+   * would otherwise fold an unrelated internal stall into the result.
+   * Backends without such a concept (or without cheap visibility into it)
+   * report false so callers proceed unaffected.
+   */
+  virtual bool is_kv_compaction_active() { return false; }
 };
 
 #endif

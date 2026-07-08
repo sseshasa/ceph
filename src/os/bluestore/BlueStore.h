@@ -2094,7 +2094,7 @@ public:
   bool has_builtin_csum() const override {
     return true;
   }
-
+  bool is_kv_compaction_active() override;
   static int debug_write_bdev_label(
     CephContext* cct, BlockDevice* bdev, const std::string &path,
     const bluestore_bdev_label_t& label, uint64_t disk_position) {
