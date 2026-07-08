@@ -10790,6 +10790,65 @@ void OSD::do_periodic_bench()
   double error_threshold =
     cct->_conf.get_val<double>("osd_mclock_iops_degradation_error_threshold");
 
+  // Retry-on-anomaly: a single short bench can still be contaminated by
+  // noise that OSDBenchTest::wait_for_kv_compaction_idle() cannot see
+  // (e.g. NVMe-internal GC/thermal stalls, or host-level contention). If
+  // this first sample looks degraded vs the current baseline, don't trust
+  // it yet - immediately re-run and only accept once two consecutive
+  // results agree (within warn_threshold of each other). Bounded by
+  // kMaxAnomalyRetries so a genuine, sustained degradation is still
+  // reported rather than retried forever.
+  if (mclock_baseline_iops > 0.0 &&
+      (1.0 - measured_iops / mclock_baseline_iops) >= warn_threshold) {
+    dout(5) << fmt::format(
+                   "{}: first sample looks degraded ({:.0f} vs baseline"
+                   " {:.0f}), re-running to check for a transient anomaly",
+                   __func__, measured_iops, mclock_baseline_iops)
+            << dendl;
+    double prev_iops = measured_iops;
+    bool agreed = false;
+    for (uint32_t attempt = 0; attempt < kMaxAnomalyRetries; ++attempt) {
+      OSDBenchTest retry_bench{cct, store.get(), service.meta_ch,
+                               count, bsize, osize, onum, store_is_rotational};
+      retry_bench.skip_size_precheck();
+      retry_bench.enable_preconditioning_lite();
+      int retry_ret = retry_bench.run_test();
+      if (retry_ret != 0) {
+        derr << fmt::format("{}: anomaly-retry bench failed: {}",
+                            __func__, retry_bench.get_errstr())
+             << dendl;
+        break; // fall back to the most recent successful measurement
+      }
+      double retry_iops = retry_bench.get_iops_rate();
+      double iops_diff = retry_iops - prev_iops;
+      double rel_diff = (iops_diff < 0.0 ? -iops_diff : iops_diff) /
+                         std::max(prev_iops, retry_iops);
+      dout(5) << fmt::format(
+                     "{}: anomaly retry {}/{}: iops={:.0f}"
+                     " (previous {:.0f}, rel_diff={:.1f}%)",
+                     __func__, attempt + 1, kMaxAnomalyRetries, retry_iops,
+                     prev_iops, rel_diff * 100.0)
+              << dendl;
+      measured_iops = retry_iops;
+      if (rel_diff <= warn_threshold) {
+        agreed = true;
+        break;
+      }
+      prev_iops = retry_iops;
+    }
+    if (!agreed) {
+      dout(5) << fmt::format(
+                     "{}: anomaly retries exhausted without two consecutive"
+                     " runs agreeing; proceeding with latest measurement"
+                     " ({:.0f} IOPS)",
+                     __func__, measured_iops)
+              << dendl;
+    }
+  }
+
+  last_periodic_bench_time = ceph_clock_now();
+  bench_in_progress.store(false);
+
   // Normalization mode: boot bench was discarded (hi/lo threshold exceeded).
   // Try to promote this result to the accepted baseline.  No health alerts
   // are emitted until a real baseline is established.
