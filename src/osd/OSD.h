@@ -1436,6 +1436,30 @@ protected:
   // config option, for the same reason as kMaxKvActiveDefers.
   static constexpr uint32_t kMaxAnomalyRetries = 2;
 
+  // Post-restart re-verification of mclock_baseline_iops, scoped to the
+  // skip-boot-bench path in maybe_override_max_osd_capacity_for_qos() (an
+  // OSD restart where a prior measurement was already persisted). Raw-device
+  // fio testing - independent of Ceph, replicated on two separate NVMe
+  // drives showed a genuine ~20-24% IOPS level-shift across a stop/resume
+  // of sustained I/O is normal device/firmware behavior, not a fault. The
+  // stale pre-restart baseline therefore shouldn't be trusted for
+  // health-severity comparisons until a small number of consecutive
+  // periodic readings agree with each other; no severity is raised while
+  // mclock_baseline_pending_reverify is set. Not applied to a fresh boot
+  // bench measurement, which is already a direct reading.
+  bool mclock_baseline_pending_reverify = false;
+  double mclock_reverify_last_iops = 0.0;
+  uint32_t mclock_reverify_consecutive_agree = 0;
+  uint32_t mclock_reverify_ticks = 0;
+  // Number of consecutive periodic readings (within
+  // osd_mclock_iops_degradation_warn_threshold of each other) required to
+  // confirm a new post-restart baseline.
+  static constexpr uint32_t kBaselineReverifyConsensusCount = 2;
+  // Bound on how many periodic ticks re-verification may take before
+  // accepting the latest reading regardless, so a device that never
+  // stabilizes can't defer health monitoring indefinitely.
+  static constexpr uint32_t kBaselineReverifyMaxTicks = 5;
+
   ZTracer::Endpoint trace_endpoint;
   PerfCounters* create_logger();
   PerfCounters* create_recoverystate_perf();
