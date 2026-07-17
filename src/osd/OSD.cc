@@ -10769,26 +10769,39 @@ void OSD::do_periodic_bench()
   }
 
   double measured_iops = bench.get_iops_rate();
+  bool kv_activity_detected = bench.detected_kv_activity_during_write();
   double warn_threshold =
     cct->_conf.get_val<double>("osd_mclock_iops_degradation_warn_threshold");
   double error_threshold =
     cct->_conf.get_val<double>("osd_mclock_iops_degradation_error_threshold");
 
   // Retry-on-anomaly: a single short bench can still be contaminated by
-  // noise that OSDBenchTest::wait_for_kv_compaction_idle() cannot see
-  // (e.g. NVMe-internal GC/thermal stalls, or host-level contention). If
-  // this first sample looks degraded vs the current baseline, don't trust
-  // it yet - immediately re-run and only accept once two consecutive
-  // results agree (within warn_threshold of each other). Bounded by
-  // kMaxAnomalyRetries so a genuine, sustained degradation is still
-  // reported rather than retried forever.
-  if (mclock_baseline_iops > 0.0 &&
-      (1.0 - measured_iops / mclock_baseline_iops) >= warn_threshold) {
-    dout(5) << fmt::format(
-                   "{}: first sample looks degraded ({:.0f} vs baseline"
-                   " {:.0f}), re-running to check for a transient anomaly",
-                   __func__, measured_iops, mclock_baseline_iops)
-            << dendl;
+  // either NVMe-internal GC/thermal stalls or host-level contention (looks
+  // degraded vs baseline), or a RocksDB "Write Buffer Full" flush that this
+  // measurement's OWN write volume triggers partway through (confirmed on
+  // real hardware; see OSDBenchTest::kKvActivityCheckIntervalMs). Either
+  // condition means don't trust this sample yet - immediately re-run and
+  // only accept once a retry both agrees with the previous result (within
+  // warn_threshold) AND was itself free of detected KV activity. Bounded by
+  // kMaxAnomalyRetries so a genuine, sustained degradation (or persistent
+  // KV churn) is still reported rather than retried forever.
+  bool looks_degraded = mclock_baseline_iops > 0.0 &&
+    (1.0 - measured_iops / mclock_baseline_iops) >= warn_threshold;
+  if (looks_degraded || kv_activity_detected) {
+    if (kv_activity_detected) {
+      dout(5) << fmt::format(
+                     "{}: first sample was contaminated by a self-induced"
+                     " KV flush/compaction ({:.0f} IOPS), re-running to"
+                     " check for a transient anomaly",
+                     __func__, measured_iops)
+              << dendl;
+    } else {
+      dout(5) << fmt::format(
+                     "{}: first sample looks degraded ({:.0f} vs baseline"
+                     " {:.0f}), re-running to check for a transient anomaly",
+                     __func__, measured_iops, mclock_baseline_iops)
+              << dendl;
+    }
     double prev_iops = measured_iops;
     bool agreed = false;
     for (uint32_t attempt = 0; attempt < kMaxAnomalyRetries; ++attempt) {
@@ -10804,17 +10817,20 @@ void OSD::do_periodic_bench()
         break; // fall back to the most recent successful measurement
       }
       double retry_iops = retry_bench.get_iops_rate();
+      bool retry_kv_activity = retry_bench.detected_kv_activity_during_write();
       double iops_diff = retry_iops - prev_iops;
       double rel_diff = (iops_diff < 0.0 ? -iops_diff : iops_diff) /
                          std::max(prev_iops, retry_iops);
       dout(5) << fmt::format(
                      "{}: anomaly retry {}/{}: iops={:.0f}"
-                     " (previous {:.0f}, rel_diff={:.1f}%)",
+                     " (previous {:.0f}, rel_diff={:.1f}%{})",
                      __func__, attempt + 1, kMaxAnomalyRetries, retry_iops,
-                     prev_iops, rel_diff * 100.0)
+                     prev_iops, rel_diff * 100.0,
+                     retry_kv_activity ? ", KV activity detected during write"
+                                       : "")
               << dendl;
       measured_iops = retry_iops;
-      if (rel_diff <= warn_threshold) {
+      if (rel_diff <= warn_threshold && !retry_kv_activity) {
         agreed = true;
         break;
       }
@@ -10822,8 +10838,8 @@ void OSD::do_periodic_bench()
     }
     if (!agreed) {
       dout(5) << fmt::format(
-                     "{}: anomaly retries exhausted without two consecutive"
-                     " runs agreeing; proceeding with latest measurement"
+                     "{}: anomaly retries exhausted without a clean,"
+                     " agreeing run; proceeding with latest measurement"
                      " ({:.0f} IOPS)",
                      __func__, measured_iops)
               << dendl;
@@ -12621,7 +12637,9 @@ void OSDBenchTest::perform_write_test()
   uint64_t bytes_per_cleanup_batch = std::max<uint64_t>(bsize, count / 5);
   uint64_t last_batch_boundary = 0;
   auto cleanupt = std::make_unique<ObjectStore::Transaction>();
+  kv_activity_during_write = false;
   utime_t start = ceph_clock_now();
+  utime_t last_kv_check = start;
   while (bytes_written < count) {
     std::string nm;
     unsigned offset = 0;
@@ -12648,6 +12666,22 @@ void OSDBenchTest::perform_write_test()
         cleanuptls.push_back(std::move(*cleanupt));
         cleanupt = std::make_unique<ObjectStore::Transaction>();
         last_batch_boundary = static_cast<uint64_t>(bytes_written);
+      }
+    }
+    // wait_for_kv_compaction_idle() only guards against compaction/flush
+    // already active before this loop starts - it can't see one that this
+    // loop's own write volume triggers partway through. Poll for that here,
+    // no more than once per kKvActivityCheckIntervalMs so the check itself
+    // doesn't add per-write overhead to the timed measurement.
+    if (!kv_activity_during_write) {
+      utime_t now = ceph_clock_now();
+      if ((now - last_kv_check).to_nsec() >=
+          std::chrono::nanoseconds(
+            std::chrono::milliseconds(kKvActivityCheckIntervalMs)).count()) {
+        last_kv_check = now;
+        if (store->is_kv_compaction_active()) {
+          kv_activity_during_write = true;
+        }
       }
     }
   }
