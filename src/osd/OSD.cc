@@ -10413,6 +10413,14 @@ void OSD::maybe_override_max_osd_capacity_for_qos()
         mclock_baseline_iops = cur_iops;
         mclock_baseline_from_measurement = true;
         last_periodic_bench_time = ceph_clock_now();
+        // The persisted value predates this restart, and a genuine device-
+        // level IOPS shift across a restart is expected (see
+        // kBaselineReverifyConsensusCount). Don't trust it for health
+        // severity until periodic bench re-confirms it.
+        mclock_baseline_pending_reverify = true;
+        mclock_reverify_last_iops = 0.0;
+        mclock_reverify_consecutive_agree = 0;
+        mclock_reverify_ticks = 0;
         return;
       }
     }
@@ -10848,6 +10856,65 @@ void OSD::do_periodic_bench()
 
   last_periodic_bench_time = ceph_clock_now();
   bench_in_progress.store(false);
+
+  // Post-restart re-verification: the skip-boot-bench path seeded
+  // mclock_baseline_iops from the pre-restart persisted config value, but
+  // that value may no longer reflect the device's current steady state
+  // (confirmed via raw-device fio testing, independent of Ceph - see
+  // kBaselineReverifyConsensusCount). Require consecutive periodic readings
+  // to agree with each other before trusting a baseline for health
+  // severity; no severity is raised while this is in progress.
+  if (mclock_baseline_pending_reverify) {
+    ++mclock_reverify_ticks;
+    bool agreed = false;
+    if (mclock_reverify_last_iops > 0.0) {
+      double iops_diff = measured_iops - mclock_reverify_last_iops;
+      double rel_diff = (iops_diff < 0.0 ? -iops_diff : iops_diff) /
+                         std::max(measured_iops, mclock_reverify_last_iops);
+      if (rel_diff <= warn_threshold) {
+        ++mclock_reverify_consecutive_agree;
+        agreed = mclock_reverify_consecutive_agree >=
+                 kBaselineReverifyConsensusCount;
+      } else {
+        mclock_reverify_consecutive_agree = 1;
+      }
+    } else {
+      mclock_reverify_consecutive_agree = 1;
+    }
+    mclock_reverify_last_iops = measured_iops;
+
+    bool ticks_exhausted = !agreed &&
+      mclock_reverify_ticks >= kBaselineReverifyMaxTicks;
+    if (agreed || ticks_exhausted) {
+     const std::string iops_config = store_is_rotational
+       ? "osd_mclock_max_capacity_iops_hdd"
+       : "osd_mclock_max_capacity_iops_ssd";
+      mon_cmd_set_config(iops_config, std::to_string(measured_iops));
+      mclock_baseline_iops = measured_iops;
+      mclock_baseline_pending_reverify = false;
+      mclock_reverify_consecutive_agree = 0;
+      mclock_reverify_ticks = 0;
+      mclock_bench_drop_pct.store(0, std::memory_order_relaxed);
+      mclock_bench_health_severity.store(0, std::memory_order_release);
+      dout(1) << fmt::format(
+                     "{}: post-restart re-verification {} at {:.0f} IOPS;"
+                     " switching to monitoring mode",
+                     __func__,
+                     agreed ? "confirmed" : "gave up without consensus",
+                     measured_iops)
+              << dendl;
+    } else {
+      mclock_bench_drop_pct.store(0, std::memory_order_relaxed);
+      mclock_bench_health_severity.store(0, std::memory_order_release);
+      dout(5) << fmt::format(
+                     "{}: re-verifying post-restart capacity"
+                     " ({:.0f} IOPS, tick {}/{})",
+                     __func__, measured_iops, mclock_reverify_ticks,
+                     kBaselineReverifyMaxTicks)
+              << dendl;
+    }
+    return;
+  }
 
   // Normalization mode: boot bench was discarded (hi/lo threshold exceeded).
   // Try to promote this result to the accepted baseline.  No health alerts
