@@ -1096,6 +1096,16 @@ struct OSDBenchTest {
   // kMaxKvActiveDefers above.
   static constexpr uint32_t kPostPrefillCompactionMaxPolls = 10;
   static constexpr uint32_t kPostPrefillCompactionPollIntervalMs = 200;
+  // wait_for_kv_compaction_idle() above only guards against compaction/flush
+  // already in progress before the timed write phase starts. It cannot see
+  // a flush that the timed write's OWN data volume triggers partway through
+  // that same phase (confirmed on real hardware: a "Write Buffer Full"
+  // RocksDB flush firing mid-measurement, self-induced by the bench's own
+  // ~300MB write burst). perform_write_test() polls is_kv_compaction_active()
+  // no more than once per this interval while writing, to flag such
+  // in-flight contamination without adding per-write overhead to the timed
+  // loop itself.
+  static constexpr uint32_t kKvActivityCheckIntervalMs = 100;
 
   CephContext *cct;
   ObjectStore *store;
@@ -1133,6 +1143,11 @@ struct OSDBenchTest {
   double elapsed;
   double bandwidth;
   double iops;
+  // Set by perform_write_test() if is_kv_compaction_active() was ever seen
+  // true while the timed write phase was running - i.e. this measurement's
+  // own write volume triggered a self-induced flush/compaction mid-run.
+  // See kKvActivityCheckIntervalMs.
+  bool kv_activity_during_write = false;
   std::ostringstream errmsg;
 
   // Cleanup transactions batched in 20% increments to avoid a single
@@ -1331,6 +1346,19 @@ struct OSDBenchTest {
    */
   std::string get_errstr() {
     return errmsg.str();
+  }
+
+  /**
+   * detected_kv_activity_during_write()
+   *
+   * Returns true if the bench itself triggered a KV flush/compaction during
+   * th course of the test.
+   *
+   * @return true if the test itself triggered a KV flush/compaction, false
+   * otherwise
+   */
+  bool detected_kv_activity_during_write() {
+    return kv_activity_during_write;
   }
 
   OSDBenchTest(
