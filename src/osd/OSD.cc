@@ -10418,6 +10418,7 @@ void OSD::maybe_override_max_osd_capacity_for_qos()
         // kBaselineReverifyConsensusCount). Don't trust it for health
         // severity until periodic bench re-confirms it.
         mclock_baseline_pending_reverify = true;
+        mclock_reverify_after_fresh_boot = false;
         mclock_reverify_last_iops = 0.0;
         mclock_reverify_consecutive_agree = 0;
         mclock_reverify_ticks = 0;
@@ -10546,9 +10547,21 @@ void OSD::maybe_override_max_osd_capacity_for_qos()
       run_sequential_bw_bench(seq_bw_config);
     }
 
-    // Baseline accepted from a real measurement - periodic bench monitors only.
+    // Baseline accepted from a real measurement. Still not fully trusted for
+    // health severity yet, though: on real hardware, a fresh boot bench's
+    // one-off reading has repeatedly measured meaningfully higher than the
+    // device's true periodic-bench steady-state (see
+    // mclock_baseline_pending_reverify). This value is used for actual
+    // mClock QoS immediately (already persisted above); periodic bench will
+    // quietly re-confirm or correct it before health-severity reporting
+    // begins.
     mclock_baseline_iops = iops;
     mclock_baseline_from_measurement = true;
+    mclock_baseline_pending_reverify = true;
+    mclock_reverify_after_fresh_boot = true;
+    mclock_reverify_last_iops = 0.0;
+    mclock_reverify_consecutive_agree = 0;
+    mclock_reverify_ticks = 0;
     last_periodic_bench_time = ceph_clock_now();
   }
 }
@@ -10849,14 +10862,16 @@ void OSD::do_periodic_bench()
   last_periodic_bench_time = ceph_clock_now();
   bench_in_progress.store(false);
 
-  // Post-restart re-verification: the skip-boot-bench path seeded
-  // mclock_baseline_iops from the pre-restart persisted config value, but
-  // that value may no longer reflect the device's current steady state
-  // (confirmed via raw-device fio testing, independent of Ceph - see
-  // kBaselineReverifyConsensusCount). Require consecutive periodic readings
-  // to agree with each other before trusting a baseline for health
-  // severity; no severity is raised while this is in progress.
+  // Re-verification: mclock_baseline_iops was seeded either from a
+  // pre-restart persisted config value (skip-boot-bench path) or from a
+  // fresh boot bench's one-off reading - in both cases real hardware has
+  // shown the value may not reflect the device's true periodic-bench
+  // steady state (see kBaselineReverifyConsensusCount). Require consecutive
+  // periodic readings to agree with each other before trusting a baseline
+  // for health severity; no severity is raised while this is in progress.
   if (mclock_baseline_pending_reverify) {
+    const char *reverify_context =
+      mclock_reverify_after_fresh_boot ? "post-boot" : "post-restart";
     ++mclock_reverify_ticks;
     bool agreed = false;
     if (mclock_reverify_last_iops > 0.0) {
@@ -10884,14 +10899,15 @@ void OSD::do_periodic_bench()
       mon_cmd_set_config(iops_config, std::to_string(measured_iops));
       mclock_baseline_iops = measured_iops;
       mclock_baseline_pending_reverify = false;
+      mclock_reverify_after_fresh_boot = false;
       mclock_reverify_consecutive_agree = 0;
       mclock_reverify_ticks = 0;
       mclock_bench_drop_pct.store(0, std::memory_order_relaxed);
       mclock_bench_health_severity.store(0, std::memory_order_release);
       dout(1) << fmt::format(
-                     "{}: post-restart re-verification {} at {:.0f} IOPS;"
+                     "{}: {} re-verification {} at {:.0f} IOPS;"
                      " switching to monitoring mode",
-                     __func__,
+                     __func__, reverify_context,
                      agreed ? "confirmed" : "gave up without consensus",
                      measured_iops)
               << dendl;
@@ -10899,10 +10915,10 @@ void OSD::do_periodic_bench()
       mclock_bench_drop_pct.store(0, std::memory_order_relaxed);
       mclock_bench_health_severity.store(0, std::memory_order_release);
       dout(5) << fmt::format(
-                     "{}: re-verifying post-restart capacity"
+                     "{}: re-verifying {} capacity"
                      " ({:.0f} IOPS, tick {}/{})",
-                     __func__, measured_iops, mclock_reverify_ticks,
-                     kBaselineReverifyMaxTicks)
+                     __func__, reverify_context, measured_iops,
+                     mclock_reverify_ticks, kBaselineReverifyMaxTicks)
               << dendl;
     }
     return;
