@@ -1464,18 +1464,28 @@ protected:
   // config option, for the same reason as kMaxKvActiveDefers.
   static constexpr uint32_t kMaxAnomalyRetries = 2;
 
-  // Post-restart re-verification of mclock_baseline_iops, scoped to the
-  // skip-boot-bench path in maybe_override_max_osd_capacity_for_qos() (an
-  // OSD restart where a prior measurement was already persisted). Raw-device
-  // fio testing - independent of Ceph, replicated on two separate NVMe
-  // drives showed a genuine ~20-24% IOPS level-shift across a stop/resume
-  // of sustained I/O is normal device/firmware behavior, not a fault. The
-  // stale pre-restart baseline therefore shouldn't be trusted for
-  // health-severity comparisons until a small number of consecutive
-  // periodic readings agree with each other; no severity is raised while
-  // mclock_baseline_pending_reverify is set. Not applied to a fresh boot
-  // bench measurement, which is already a direct reading.
+  // Re-verification of mclock_baseline_iops before trusting it for health
+  // severity, set from two call sites in maybe_override_max_osd_capacity_
+  // for_qos(): (a) the skip-boot-bench path (an OSD restart where a prior
+  // measurement was already persisted) and (b) a successful fresh boot
+  // bench. In both cases the value just seeded may not reflect true
+  // steady-state: raw-device fio testing - independent of Ceph, replicated
+  // on two separate NVMe drives - showed a genuine ~20-24% IOPS level-shift
+  // across a restart is normal device/firmware behavior, and separately, a
+  // fresh boot bench's one-off reading has repeatedly measured meaningfully
+  // higher than the device's real periodic-bench steady-state on real
+  // hardware. Neither is trusted for health-severity comparisons until a
+  // small number of consecutive periodic readings agree with each other;
+  // no severity is raised while mclock_baseline_pending_reverify is set.
+  // The seeded value (boot measurement or persisted cur_iops) is still
+  // persisted/used for actual mClock QoS immediately in either case - only
+  // health-severity reporting and the eventual corrected baseline wait on
+  // re-verification.
   bool mclock_baseline_pending_reverify = false;
+  // Which of the two call sites above set mclock_baseline_pending_reverify,
+  // purely to distinguish "post-boot" vs "post-restart" in do_periodic_
+  // bench()'s re-verification log messages.
+  bool mclock_reverify_after_fresh_boot = false;
   double mclock_reverify_last_iops = 0.0;
   uint32_t mclock_reverify_consecutive_agree = 0;
   uint32_t mclock_reverify_ticks = 0;
