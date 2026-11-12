@@ -1076,7 +1076,7 @@ void PeeringState::clear_primary_state()
   peer_last_complete_ondisk.clear();
   peer_activated.clear();
   // the next activation shares our full info (history included) anyway
-  rebuild_stats_close_unshared = false;
+  rebuild_stats_unshared = false;
   min_last_complete_ondisk = eversion_t();
   pg_trim_to = eversion_t();
   might_have_unfound.clear();
@@ -3325,7 +3325,7 @@ void PeeringState::share_pg_info()
 
   info.history.refresh_prior_readable_until_ub(pl->get_mnow(),
 					       prior_readable_until_ub);
-  rebuild_stats_close_unshared = false;
+  rebuild_stats_unshared = false;
 
   // share new pg_info_t with replicas
   ceph_assert(!acting_recovery_backfill.empty());
@@ -4653,6 +4653,13 @@ std::optional<pg_stat_t> PeeringState::prepare_stats_for_publish(
            // Mark info dirty here and let PG::publish_stats_to_osd() force an
            // immediate, standalone write if nothing else is already about to.
           dirty_info = true;
+          // Also flag that replicas don't know about this onset yet: a
+          // primary handover before any share goes out would otherwise hand
+          // a peer a pre-arm view, and it would latch a fresh onset of its
+          // own instead of inheriting this one. Active::react(AdvMap)
+          // retries share_pg_info() on our behalf until one actually goes
+          // out, the same way it already does for a just-recorded close.
+          rebuild_stats_unshared = true;
         }
       } else if (info.history.last_degraded > info.history.vuln_window_reported &&
                  (info.stats.state & PG_STATE_CLEAN) &&
@@ -4695,7 +4702,7 @@ std::optional<pg_stat_t> PeeringState::prepare_stats_for_publish(
          // shares right after), so Active::react(AdvMap) retries
          // share_pg_info() on our behalf until one actually goes out.
         dirty_info = true;
-        rebuild_stats_close_unshared = true;
+        rebuild_stats_unshared = true;
       }
       // pg_history_t is the source of truth for last_degraded; mirror it into
       // pg_stat_t for external reporting (ceph pg query/pg dump), and resend
@@ -5912,6 +5919,13 @@ void PeeringState::arm_rebuild_span()
     // Mark info dirty and let PG::publish_stats_to_osd() force an immediate,
     // standalone write if nothing else is already about to.
     dirty_info = true;
+    // Also flag that replicas don't know about this onset yet: a primary
+    // handover before any share goes out would otherwise hand a peer a
+    // pre-arm view, and it would latch a fresh onset of its own instead of
+    // inheriting this one. Active::react(AdvMap) retries share_pg_info() on
+    // our behalf until one actually goes out, the same way it already does
+    // for a just-recorded close.
+    rebuild_stats_unshared = true;
   }
 }
 
@@ -5934,6 +5948,10 @@ void PeeringState::pause_rebuild_span()
     // Mark info dirty and let PG::publish_stats_to_osd() force an immediate,
     // standalone write if nothing else is already about to.
     dirty_info = true;
+    // Also flag that replicas don't know about this pause yet -- same
+    // reasoning as arm_rebuild_span()'s own flag set, for a handover landing
+    // between a pause and the next share.
+    rebuild_stats_unshared = true;
   }
 }
 
@@ -5961,7 +5979,7 @@ void PeeringState::close_rebuild_span()
     }
     info.history.rebuild_active_accum = utime_t();
     dirty_info = true;
-    rebuild_stats_close_unshared = true;
+    rebuild_stats_unshared = true;
   }
 }
 
@@ -7605,12 +7623,12 @@ boost::statechart::result PeeringState::Active::react(const AdvMap& advmap)
   psdout(10) << "Active advmap" << dendl;
 
   pl->on_active_advmap(advmap.osdmap);
-  if (ps->dirty_big_info || ps->rebuild_stats_close_unshared) {
+  if (ps->dirty_big_info || ps->rebuild_stats_unshared) {
     // share updated purged_snaps to mgr/mon so that we (a) stop reporting
     // purged snaps and (b) perhaps share more snaps that we have purged
-    // but didn't fit in pg_stat_t. Also share a rebuild-stats episode
-    // (vulnerability window or active-rebuild) recorded with no share
-    // followed yet (see rebuild_stats_close_unshared).
+    // but didn't fit in pg_stat_t. Also share a rebuild-stats transition
+    // (vulnerability window or active-rebuild, armed/paused/closed) with no
+    // share followed yet (see rebuild_stats_unshared).
     ps->share_pg_info();
   }
 
