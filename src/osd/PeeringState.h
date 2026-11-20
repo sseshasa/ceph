@@ -2425,15 +2425,26 @@ public:
    * Set whenever either rebuild-stats counter -- pg_vulnerability_duration
    * (prepare_stats_for_publish()) or pg_rebuild_duration (arm_rebuild_span()/
    * pause_rebuild_span()/close_rebuild_span()) -- latches an onset, pauses,
-   * or records a close; cleared by share_pg_info(), which sends info.history
-   * (and so both counters' onset/"reported" fields) wholesale. Replicas only
-   * learn of any of these transitions through that share. Left unshared
-   * across a primary handover, a peer can either treat an already-armed
-   * onset as unarmed and latch a fresh one of its own (losing the true
-   * onset), or treat an already-recorded episode as still open and record
-   * it again (double-counting). Active::react(AdvMap) retries
-   * share_pg_info() while this is set, the same way it already does for
-   * dirty_big_info.
+   * or records a close; cleared by share_pg_info() or by activate() (which
+   * already sends info.history to every peer as part of peering), either of
+   * which sends info.history, and so both counters' onset/"reported" fields,
+   * wholesale. Replicas only learn of any of these transitions through one
+   * of those two sends. Left unshared across a primary handover, a peer can
+   * either treat an already-armed onset as unarmed and latch a fresh one of
+   * its own (losing the true onset), or treat an already-recorded episode as
+   * still open and record it again (double-counting).
+   *
+   * The Recovering/Backfilling/NotRecovering/NotBackfilling constructors
+   * share this immediately and synchronously, right when they arm or pause:
+   * they only ever run as substates of Active, where acting_recovery_backfill
+   * is already populated, so share_pg_info() is always safe to call there.
+   * The vulnerability-window's own open branch cannot do the same -- it runs
+   * inside publish_stats_to_osd()/prepare_stats_for_publish(), which is also
+   * reachable from pre-Active contexts (e.g. GetInfo, Primary::react(ActMap))
+   * where acting_recovery_backfill is not yet populated and share_pg_info()
+   * would fail its own assert. For that case, and as a fallback for anything
+   * else, Active::react(AdvMap) retries share_pg_info() while this stays
+   * set, the same way it already does for dirty_big_info.
    */
   bool rebuild_stats_unshared = false;
 

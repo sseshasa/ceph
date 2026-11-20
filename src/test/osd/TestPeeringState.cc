@@ -3532,10 +3532,14 @@ TEST_F(PeeringStateTest, VulnerabilityWindowOpenSharesWithReplicasOnAdvMap) {
 // ============================================================================
 // Test 16: Same as Test 15, for the other rebuild-stats counter's own
 // open/arm transition: arm_rebuild_span() (reached when test_peering()
-// drives the PG into Recovering here).
-//  ============================================================================
-TEST_F(PeeringStateTest, RebuildSpanOpenSharesWithReplicasOnAdvMap) {
-  dout(0) << "== RebuildSpanOpenSharesWithReplicasOnAdvMap ==" << dendl;
+// drives the PG into Recovering here). Unlike the vulnerability window's
+// own open branch (Test 15), arm_rebuild_span() is shared synchronously
+// from Recovering::Recovering() itself the moment it arms, not deferred to
+// a later AdvMap retry -- see rebuild_stats_unshared's own comment in
+// PeeringState.h for why the two differ.
+// ============================================================================
+TEST_F(PeeringStateTest, RebuildSpanOpenSharesWithReplicasImmediately) {
+  dout(0) << "== RebuildSpanOpenSharesWithReplicasImmediately ==" << dendl;
   test_create_peering_state();
   test_init();
   test_event_initialize();
@@ -3545,7 +3549,7 @@ TEST_F(PeeringStateTest, RebuildSpanOpenSharesWithReplicasOnAdvMap) {
 
   // Introduce a missing replica: swap acting[1] from OSD 1 to OSD 9.
   // test_peering() drives the PG straight into Recovering, arming the
-  // active-rebuild latch.
+  // active-rebuild latch and sharing it synchronously right there.
   modify_up_acting(1, 9);
   test_create_peering_state(9, 1);
   test_init(9);
@@ -3555,22 +3559,9 @@ TEST_F(PeeringStateTest, RebuildSpanOpenSharesWithReplicasOnAdvMap) {
   auto *primary = get_ps(acting_primary);
   const utime_t onset = primary->get_info().history.last_rebuild_active_start;
   ASSERT_GT(onset, primary->get_info().history.rebuild_span_reported);
-  EXPECT_TRUE(primary->rebuild_stats_unshared);
 
-  for (auto osd : acting) {
-    if (osd == acting_primary) continue;
-    EXPECT_LE(get_ps(osd)->get_info().history.last_rebuild_active_start,
-              get_ps(osd)->get_info().history.rebuild_span_reported)
-        << "osd." << osd << " has not been told about the arm yet";
-  }
-
-  {
-    ObjectStore::Transaction t;
-    primary->write_if_dirty(t);
-  }
-  test_event_advance_map(acting_primary);  // same map: Active AdvMap
-  dispatch_all();
-
+  // Already shared, synchronously, by Recovering::Recovering() itself --
+  // no AdvMap needed.
   EXPECT_FALSE(primary->rebuild_stats_unshared);
   for (auto osd : acting) {
     if (osd == acting_primary) continue;

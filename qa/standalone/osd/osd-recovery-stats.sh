@@ -3323,22 +3323,35 @@ function TEST_rebuild_perf_replica_history_survives_handover_after_close() {
 }
 
 # Test stale-onset fix, open side: arm_rebuild_span()/pause_rebuild_span()
-# and prepare_stats_for_publish()'s vulnerability-window open branch mark
-# info dirty for a local write, but gave replicas no guarantee the onset
-# would be shared before a handover. A promoted peer that never received it
-# latched a fresh onset of its own instead of inheriting the true one,
-# understating the real exposure/rebuild time.
+# and prepare_stats_for_publish()'s vulnerability-window open branch now
+# share the onset directly at the moment they latch it (see
+# rebuild_stats_unshared in PeeringState.h), instead of only marking info
+# dirty for a local write and hoping a later, unrelated event shared it
+# before a handover. A promoted peer that never received the onset would
+# otherwise latch a fresh one of its own instead of inheriting the true
+# one, understating the real exposure/rebuild time.
 #
-# Deterministic, not timing-dependent: after confirming Recovering has armed
-# both counters, an explicit noout toggle forces an ordinary OSDMap epoch
-# advance on the primary -- Active::react(AdvMap)'s retry-share
-# (rebuild_stats_unshared) always fires on the very next one, the same
-# mechanism already relied on for the close side above, just triggered
-# deterministically here instead of via incidental map churn. noscrub/
-# nodeep-scrub are set so nothing else gets a chance to re-share info on its
-# own first. primary-affinity (not a kill) is used for the handover so all
-# three OSDs stay up+in and no new, legitimate degradation is introduced of
-# its own.
+# The handover below marks osd.${primary_a} down (not out) while noup is
+# set -- the same technique TEST_rebuild_perf_active_rebuild_handover uses,
+# which is what actually caught this bug in a teuthology run -- rather than
+# lowering its primary-affinity. osd.${primary_a} keeps running throughout
+# (it just rejoins once noup is unset below, no restart needed), but it is
+# excluded from up/acting for a genuine interval change, which a
+# primary-affinity handover would not produce: osd.${primary_a} would stay
+# up and acting, and the new primary would learn the true onset from the
+# ordinary GetInfo/notify exchange (proc_replica_notify() ->
+# update_history() -> pg_history_t::merge(), PeeringState.cc:476)
+# regardless of whether this fix's share ever ran, making the test pass
+# even on unfixed code.
+#
+# 60 objects (not 5) queue up behind the held-down replica so recovery
+# takes long enough -- under mClock's recovery-op throttling -- for the
+# query-then-handover sequence below to reliably land before recovery
+# finishes on its own; the query results are themselves asserted to still
+# be open for the same reason. osd_recovery_sleep would not help here: it
+# (and its _hdd/_ssd/_hybrid variants) are explicitly ignored under the
+# mClock scheduler these standalone tests already run with
+# (--osd-mclock-skip-benchmark=true).
 function TEST_rebuild_perf_replica_history_shares_handover_after_open() {
     local dir=$1
     local OSDS=3
@@ -3366,20 +3379,23 @@ function TEST_rebuild_perf_replica_history_shares_handover_after_open() {
 
     local PG
     PG=$(get_pg $poolname obj1)
+    local pg_re
+    pg_re=$(echo "$PG" | sed 's/\./\\./')
     local primary_a
     primary_a=$(get_primary $poolname obj1)
     local otherosd
     otherosd=$(get_not_primary $poolname obj1)
     local log_a=$dir/osd.${primary_a}.log
 
-    # Degrade: same small, log-continuous gap as
-    # TEST_rebuild_perf_recovering_case, forcing a genuine Recovering
-    # episode -- but deliberately do NOT wait for clean below: the handover
-    # must land while both counters are still open.
+    # Degrade: hold a replica down with a growing backlog, then let it
+    # back up -- the primary drives a genuine, multi-object recovery to
+    # catch it up, arming both counters. Deliberately do NOT wait for
+    # clean below: the handover must land while both counters are still
+    # open.
     ceph osd set noup || return 1
     ceph osd down osd.${otherosd} || return 1
 
-    for i in $(seq 6 10)
+    for i in $(seq 6 65)
     do
       rados -p $poolname put obj$i /etc/hostname || return 1
     done
@@ -3389,7 +3405,8 @@ function TEST_rebuild_perf_replica_history_shares_handover_after_open() {
     local armed=0
     for i in $(seq 1 60)
     do
-      test -f "$log_a" && grep -q "enter Started/Primary/Active/Recovering" $log_a && {
+      test -f "$log_a" && \
+        grep -q "pg\[${pg_re}(.*enter Started/Primary/Active/Recovering" "$log_a" && {
         armed=1
         break
       }
@@ -3406,8 +3423,11 @@ function TEST_rebuild_perf_replica_history_shares_handover_after_open() {
     local q
     q=$(ceph pg $PG query) || return 1
     local original_vuln_onset original_rebuild_onset
+    local vuln_window_reported rebuild_span_reported
     original_vuln_onset=$(jq -r '.info.history.last_degraded' <<< "$q")
     original_rebuild_onset=$(jq -r '.info.history.last_rebuild_active_start' <<< "$q")
+    vuln_window_reported=$(jq -r '.info.history.vuln_window_reported' <<< "$q")
+    rebuild_span_reported=$(jq -r '.info.history.rebuild_span_reported' <<< "$q")
     test -n "$original_vuln_onset" -a "$original_vuln_onset" != "null" || {
       echo "FAIL: couldn't read info.history.last_degraded from" \
            "osd.${primary_a}"
@@ -3419,15 +3439,30 @@ function TEST_rebuild_perf_replica_history_shares_handover_after_open() {
       return 1
     }
 
-    # Force an ordinary OSDMap epoch advance on osd.${primary_a} -- this is
-    # what gives the fix's retry-share a guaranteed trigger point before the
-    # handover below.
-    ceph osd set noout || return 1
-    ceph osd unset noout || return 1
-    sleep 2
+    # Both episodes must still be genuinely open right now -- otherwise the
+    # handover below would prove nothing about the open/arm path this test
+    # exists to cover.
+    test "$(awk -v a="$original_vuln_onset" -v b="$vuln_window_reported" 'BEGIN { print (a > b) }')" = 1 || {
+      echo "FAIL: the vulnerability window already closed" \
+           "(last_degraded=${original_vuln_onset}," \
+           "vuln_window_reported=${vuln_window_reported}) before the" \
+           "handover -- recovery finished too fast for this test to catch" \
+           "it still open"
+      return 1
+    }
+    test "$(awk -v a="$original_rebuild_onset" -v b="$rebuild_span_reported" 'BEGIN { print (a > b) }')" = 1 || {
+      echo "FAIL: the active-rebuild span already closed" \
+           "(last_rebuild_active_start=${original_rebuild_onset}," \
+           "rebuild_span_reported=${rebuild_span_reported}) before the" \
+           "handover -- recovery finished too fast for this test to catch" \
+           "it still open"
+      return 1
+    }
 
-    # --- Handover: primary-affinity, not a kill -- see header comment.
-    ceph osd primary-affinity osd.${primary_a} 0 || return 1
+    # --- Handover: exclude osd.${primary_a} from up/acting (not a process
+    # kill -- see header comment) while the episode is still open.
+    ceph osd set noup || return 1
+    ceph osd down osd.${primary_a} || return 1
 
     local primary_b=""
     for i in $(seq 1 30)
@@ -3437,8 +3472,7 @@ function TEST_rebuild_perf_replica_history_shares_handover_after_open() {
       sleep 1
     done
     test -n "$primary_b" -a "$primary_b" != "$primary_a" || {
-      echo "FAIL: primary never changed after osd.${primary_a}'s" \
-           "primary-affinity was lowered"
+      echo "FAIL: primary never changed after osd.${primary_a} went down"
       return 1
     }
 
@@ -3470,9 +3504,9 @@ function TEST_rebuild_perf_replica_history_shares_handover_after_open() {
       return 1
     }
 
-    # --- Restore osd.${primary_a}'s primary-affinity and let the episode
-    # resolve, ending this test in its default state.
-    ceph osd primary-affinity osd.${primary_a} 1 || return 1
+    # --- Bring osd.${primary_a} back (it never stopped running) and let
+    # the episode resolve, ending this test in its default state.
+    ceph osd unset noup || return 1
     wait_for_clean || return 1
     flush_pg_stats || return 1
 

@@ -3189,6 +3189,13 @@ void PeeringState::activate(
       }
     }
 
+    // Every peer above was just sent the current info.history wholesale
+    // (directly via ctx.send_info(), or embedded in the MOSDPGLog sent for
+    // the empty-log/backfill/catch-up cases), so any rebuild-stats
+    // transition latched before or during this peering round has already
+    // reached every peer; the AdvMap retry has nothing left to do for it.
+    rebuild_stats_unshared = false;
+
     // Set up missing_loc
     set<pg_shard_t> complete_shards;
     for (auto i = acting_recovery_backfill.begin();
@@ -5946,6 +5953,13 @@ PeeringState::Backfilling::Backfilling(my_context ctx)
   pl->on_backfill_reserved();
   ps->arm_rebuild_span();
   pl->publish_stats_to_osd();
+  // Share the arm (and anything publish_stats_to_osd() just latched for the
+  // vulnerability window) right away instead of waiting on the AdvMap retry
+  // -- we're a substate of Active, so acting_recovery_backfill is already
+  // populated and share_pg_info() is safe to call directly here.
+  if (ps->rebuild_stats_unshared) {
+    ps->share_pg_info();
+  }
 }
 
 void PeeringState::Backfilling::backfill_release_reservations()
@@ -6204,6 +6218,12 @@ PeeringState::NotBackfilling::NotBackfilling(my_context ctx)
   // Pause the active-rebuild latch: backfill is paused, not finished.
   ps->pause_rebuild_span();
   pl->publish_stats_to_osd();
+  // Share the pause right away instead of waiting on the AdvMap retry --
+  // we're a substate of Active, so acting_recovery_backfill is already
+  // populated and share_pg_info() is safe to call directly here.
+  if (ps->rebuild_stats_unshared) {
+    ps->share_pg_info();
+  }
 }
 
 boost::statechart::result PeeringState::NotBackfilling::react(const QueryUnfound& q)
@@ -6247,6 +6267,12 @@ PeeringState::NotRecovering::NotRecovering(my_context ctx)
   // Pause the active-rebuild latch: recovery is paused, not finished.
   ps->pause_rebuild_span();
   pl->publish_stats_to_osd();
+  // Share the pause right away instead of waiting on the AdvMap retry --
+  // we're a substate of Active, so acting_recovery_backfill is already
+  // populated and share_pg_info() is safe to call directly here.
+  if (ps->rebuild_stats_unshared) {
+    ps->share_pg_info();
+  }
 }
 
 boost::statechart::result PeeringState::NotRecovering::react(const QueryUnfound& q)
@@ -6678,6 +6704,13 @@ PeeringState::Recovering::Recovering(my_context ctx)
   ceph_assert(!ps->state_test(PG_STATE_ACTIVATING));
   ps->arm_rebuild_span();
   pl->publish_stats_to_osd();
+  // Share the arm (and anything publish_stats_to_osd() just latched for the
+  // vulnerability window) right away instead of waiting on the AdvMap retry
+  // -- we're a substate of Active, so acting_recovery_backfill is already
+  // populated and share_pg_info() is safe to call directly here.
+  if (ps->rebuild_stats_unshared) {
+    ps->share_pg_info();
+  }
 }
 
 void PeeringState::Recovering::release_reservations(bool cancel)
@@ -6798,6 +6831,16 @@ PeeringState::Recovered::Recovered(my_context ctx)
   // Backfilled (from Backfilling) both transition straight here.
   // A no-op if nothing ever needed recovering (e.g. Activating -> Recovered).
   ps->close_rebuild_span();
+  // Share the close right away instead of waiting on the AdvMap retry --
+  // we're a substate of Active, so acting_recovery_backfill is already
+  // populated and share_pg_info() is safe to call directly here. GoClean()
+  // may fire below and have try_mark_clean() share again right after this;
+  // that's one harmless extra message, not a correctness issue, and it's
+  // only when GoClean() does *not* fire immediately (not every replica is
+  // activated yet) that this share is the only thing closing the gap.
+  if (ps->rebuild_stats_unshared) {
+    ps->share_pg_info();
+  }
 
   ceph_assert(!ps->needs_recovery());
 
@@ -6938,9 +6981,11 @@ boost::statechart::result PeeringState::Active::react(const AdvMap& advmap)
   if (ps->dirty_big_info || ps->rebuild_stats_unshared) {
     // share updated purged_snaps to mgr/mon so that we (a) stop reporting
     // purged snaps and (b) perhaps share more snaps that we have purged
-    // but didn't fit in pg_stat_t. Also share a rebuild-stats transition
-    // (vulnerability window or active-rebuild, armed/paused/closed) with no
-    // share followed yet (see rebuild_stats_unshared).
+    // but didn't fit in pg_stat_t. Also share a vulnerability-window open
+    // that prepare_stats_for_publish() couldn't share directly (see
+    // rebuild_stats_unshared) -- the active-rebuild arm/pause/close paths
+    // already share synchronously at their own state transitions, so this
+    // is a fallback for those too, not their primary mechanism.
     ps->share_pg_info();
   }
 
